@@ -1153,33 +1153,10 @@ pub fn build(
         collision_grid.set_blocked(*gx, *gy, true);
     }
 
+    // Collision is only added for objects that are actually rendered, so the
+    // player never walks into an invisible wall from one of the thousands of
+    // unrendered OSRS objects in the loaded block.
     let mut def_cache: HashMap<u32, ObjectDefinition> = HashMap::new();
-    for (rx, ry, locations) in &all_locations {
-        for loc in &locations.locations {
-            if let std::collections::hash_map::Entry::Vacant(entry) = def_cache.entry(loc.id) {
-                if let Some(data) = object_files.get(&loc.id) {
-                    if let Ok(def) = ObjectDefinition::parse(loc.id, data) {
-                        entry.insert(def);
-                    }
-                }
-            }
-            let Some(def) = def_cache.get(&loc.id) else {
-                continue;
-            };
-            if !is_blocking_object(def) {
-                continue;
-            }
-            let mut w = def.size_x.max(1) as i32;
-            let mut h = def.size_y.max(1) as i32;
-            if loc.rotation % 2 == 1 {
-                std::mem::swap(&mut w, &mut h);
-            }
-            let gx = (*rx as i32 * 64 + loc.x as i32) - origin_tile_x;
-            let gy = (*ry as i32 * 64 + loc.y as i32) - origin_tile_y;
-            collision_grid.block_rect(gx, gy, w, h);
-            sight_grid.block_rect(gx, gy, w, h);
-        }
-    }
 
     let center = Vec3::new(
         (center_x as f32 * 64.0 + 32.0) * 128.0,
@@ -1197,7 +1174,7 @@ pub fn build(
         for loc in &locations.locations {
             let wx = ((*rx as f32 * 64.0) + loc.x as f32 + 0.5) * 128.0;
             let wz = ((*ry as f32 * 64.0) + loc.y as f32 + 0.5) * 128.0;
-            if map.distance_to_lane(wx, wz) < 5.0 * 128.0 {
+            if map.distance_to_lane(wx, wz) < 6.5 * 128.0 {
                 continue;
             }
             let dx = wx - center.x;
@@ -1250,6 +1227,16 @@ pub fn build(
         append_model_foliage(&mut model_mesh, model, base, angle, is_plant_object(&def));
         let shadow_size = (def.size_x.max(def.size_y) as f32 * 128.0 * 0.55).clamp(55.0, 360.0);
         push_blob_quad(&mut shadow_mesh, base, shadow_size, 0.24);
+        // What you can see is what blocks: collide with the rendered prop.
+        let mut w = def.size_x.max(1) as i32;
+        let mut h = def.size_y.max(1) as i32;
+        if loc.rotation % 2 == 1 {
+            std::mem::swap(&mut w, &mut h);
+        }
+        let gx = (rx as i32 * 64 + loc.x as i32) - origin_tile_x;
+        let gy = (ry as i32 * 64 + loc.y as i32) - origin_tile_y;
+        collision_grid.block_rect(gx, gy, w, h);
+        sight_grid.block_rect(gx, gy, w, h);
         placements += 1;
     }
 

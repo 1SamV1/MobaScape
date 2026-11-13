@@ -1091,14 +1091,8 @@ impl App {
                         &self.shop,
                     ) {
                         Some(i) => format!(
-                            " | SHOP {} {}g{}",
-                            self.shop.items[i].name,
-                            self.shop.items[i].cost,
-                            if animated.in_fountain_range() {
-                                ""
-                            } else {
-                                " (return to fountain)"
-                            }
+                            " | SHOP {} {}g",
+                            self.shop.items[i].name, self.shop.items[i].cost
                         ),
                         None => " | SHOP open (B)".to_string(),
                     }

@@ -1,6 +1,6 @@
 # Status
 
-Last updated: M5.9 shader-radius fog of war, 2026-11-13.
+Last updated: M5.10 collision consistency, 2026-11-13.
 
 ## Working
 
@@ -58,6 +58,10 @@ Last updated: M5.9 shader-radius fog of war, 2026-11-13.
   visible; projectiles are only drawn inside the team's line of sight.
 - Movement: click-to-move A* path following; hold-to-steer with collision
   sliding; camera follow/pan; selection and click rings; minimap click-to-pan.
+- Collision: only rendered props block movement (base scenery, pocket props,
+  lane trees and ruins), so there are no invisible walls; the pathfinder snaps
+  start/goal up to 20 tiles so a hero pushed onto a blocked tile can escape.
+- Shop: purchases work anywhere (the fountain still heals and respawns).
 - Lane: three-minion waves per lane every 25 s; minion AI, tower targeting,
   inhibitor-gated nexus, victory/defeat.
 - Inhibitors: destroyed inhibitors respawn after 120 s. While an enemy

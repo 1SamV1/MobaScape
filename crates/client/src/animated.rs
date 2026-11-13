@@ -532,9 +532,6 @@ impl AnimatedScene {
         if player.health <= 0.0 {
             return Err("dead");
         }
-        if player.pos.distance(self.player_spawn) > 900.0 {
-            return Err("out of fountain range");
-        }
         player.gold = player.gold.saturating_add(item.cost / 2);
         player.attack_damage = (player.attack_damage - item.damage).max(1.0);
         if item.health > 0.0 {

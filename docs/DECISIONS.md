@@ -428,3 +428,20 @@ gives a consistent lateral circle at every z level, cannot z-fight with
 anything, and has no geometry cost. The gameplay visibility grid is unchanged:
 it still decides which enemy units and projectiles are drawn and what the
 minimap reveals.
+
+
+## ADR-034 — Only rendered props collide; shop purchases are unrestricted
+
+**Status:** accepted for M5.10.
+
+The scene used to add collision for every blocking OSRS object in the loaded
+5x5 block, but only the nearest 900 scenery models were rendered. That left
+thousands of invisible walls on the hills and between tiles, which is what
+made the hero feel stuck. Collision is now added only for objects that are
+actually drawn (base scenery, pocket props, lane trees and ruins), so what the
+player can see is what blocks. Pathfinding also snaps the start and goal up to
+20 tiles, which keeps a hero that was pushed onto a blocked tile moving.
+
+The fountain-only purchase rule was removed. The shop opens with `B` and any
+affordable item can be bought anywhere; the fountain still heals and is still
+the respawn point.

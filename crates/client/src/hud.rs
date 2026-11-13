@@ -1336,7 +1336,7 @@ impl Hud {
             let item = &shop.items[*item_index];
             let hover = player.shop_hover == Some(*item_index);
             let selected = player.shop_selected == Some(*item_index);
-            let can_buy = affordable[*item_index] && player.shop_in_range;
+            let can_buy = affordable[*item_index];
             let border = if selected {
                 [230, 190, 90]
             } else if hover {
@@ -1435,7 +1435,7 @@ impl Hud {
         let detail_index = player.shop_hover.or(player.shop_selected).or(shop.selected);
         if let Some(index) = detail_index {
             if let Some(item) = shop.items.get(index) {
-                let can_buy = affordable[index] && player.shop_in_range && shop.has_free_slot();
+                let can_buy = affordable[index] && shop.has_free_slot();
                 let name: String = item.name.chars().take(20).collect();
                 self.text(
                     width,
@@ -1489,9 +1489,7 @@ impl Hud {
                 }
 
                 let owned = shop.owned_count(index);
-                let status = if !player.shop_in_range {
-                    "RETURN TO FOUNTAIN"
-                } else if owned > 0 {
+                let status = if owned > 0 {
                     "OWNED"
                 } else if !affordable[index] {
                     "NEED GOLD"

@@ -9,8 +9,10 @@ const DIAGONAL: i32 = 14;
 /// A* on an 8-connected grid. Diagonals may not cut through blocked corners.
 /// Returns tile coordinates including the start and goal.
 pub fn find_path(grid: &Grid, start: (i32, i32), goal: (i32, i32)) -> Option<Vec<(i32, i32)>> {
-    let start = grid.nearest_walkable(start.0, start.1, 8)?;
-    let goal = grid.nearest_walkable(goal.0, goal.1, 8)?;
+    // Snap generously: a hero can be pushed onto a blocked tile by scenery
+    // or a teleport, and a click can land on a rock or a wall.
+    let start = grid.nearest_walkable(start.0, start.1, 20)?;
+    let goal = grid.nearest_walkable(goal.0, goal.1, 20)?;
     if start == goal {
         return Some(vec![start]);
     }
