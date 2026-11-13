@@ -32,6 +32,8 @@ struct SceneGlobals {
     sky_top: [f32; 4],
     sky_horizon: [f32; 4],
     sun_screen: [f32; 4],
+    light_view_proj: [[f32; 4]; 4],
+    shadow_params: [f32; 4],
     tuning: [f32; 4],
     lights: [GpuLight; 16],
     light_count: [u32; 4],
@@ -65,6 +67,8 @@ impl SceneGlobals {
             sky_top: color(atmosphere.sky_top),
             sky_horizon: color(atmosphere.sky_horizon),
             sun_screen: [0.0; 4],
+            light_view_proj: Mat4::IDENTITY.to_cols_array_2d(),
+            shadow_params: [1.0 / 1024.0, 0.0020, 0.0, 0.0],
             tuning: [1.0, 4.0, 0.0, 0.0],
             lights: [GpuLight::default(); 16],
             light_count: [0; 4],
@@ -105,6 +109,17 @@ impl Camera {
     }
 }
 
+fn directional_shadow_matrix(center: Vec3, sun_dir: Vec3, extent: f32) -> Mat4 {
+    let up = if sun_dir.dot(Vec3::Y).abs() > 0.99 {
+        Vec3::Z
+    } else {
+        Vec3::Y
+    };
+    let view = Mat4::look_at_rh(center + sun_dir * 20_000.0, center, up);
+    let proj = Mat4::orthographic_rh(-extent, extent, -extent, extent, 1.0, 40_000.0);
+    proj * view
+}
+
 struct GpuMesh {
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
@@ -140,13 +155,24 @@ pub struct Renderer {
     hud_pipeline: wgpu::RenderPipeline,
     sky_pipeline: wgpu::RenderPipeline,
     blob_pipeline: wgpu::RenderPipeline,
+    shadow_pipeline: wgpu::RenderPipeline,
     bind_group: wgpu::BindGroup,
+    shadow_bind_group: wgpu::BindGroup,
     scene_buffer: wgpu::Buffer,
     scene_globals: SceneGlobals,
+    _shadow_texture: wgpu::Texture,
+    shadow_view: wgpu::TextureView,
+    shadow_mode: u32,
+    shadow_tick: u32,
     depth_view: wgpu::TextureView,
     terrain: GpuMesh,
     models: GpuMesh,
     static_shadows: GpuMesh,
+    caster_vertex_buffer: wgpu::Buffer,
+    caster_index_buffer: wgpu::Buffer,
+    caster_vertex_capacity: usize,
+    caster_index_capacity: usize,
+    caster_index_count: u32,
     dynamic_vertex_buffer: wgpu::Buffer,
     dynamic_index_buffer: wgpu::Buffer,
     dynamic_vertex_capacity: usize,
@@ -244,6 +270,10 @@ impl Renderer {
             label: Some("rift blob shadow shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("blob.wgsl").into()),
         });
+        let shadow_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("rift sun shadow shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shadow.wgsl").into()),
+        });
 
         let scene_globals = SceneGlobals::from_atmosphere(&scene.atmosphere);
         let scene_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -254,33 +284,117 @@ impl Renderer {
         });
         queue.write_buffer(&scene_buffer, 0, bytemuck::bytes_of(&scene_globals));
 
+        let shadow_size = 1024u32;
+        let shadow_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("sun shadow map"),
+            size: wgpu::Extent3d {
+                width: shadow_size,
+                height: shadow_size,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Depth32Float,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let shadow_view = shadow_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let shadow_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("sun shadow sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            compare: Some(wgpu::CompareFunction::LessEqual),
+            ..Default::default()
+        });
+
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("scene globals layout"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
                 },
-                count: None,
-            }],
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Depth,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
+                    count: None,
+                },
+            ],
         });
 
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("scene globals bind group"),
             layout: &bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: scene_buffer.as_entire_binding(),
-            }],
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: scene_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&shadow_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&shadow_sampler),
+                },
+            ],
         });
 
         let scene_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("scene pipeline layout"),
                 bind_group_layouts: &[Some(&bind_group_layout)],
+                immediate_size: 0,
+            });
+        let shadow_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("shadow globals layout"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+            });
+        let shadow_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("shadow globals bind group"),
+            layout: &shadow_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: scene_buffer.as_entire_binding(),
+            }],
+        });
+        let shadow_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("shadow pipeline layout"),
+                bind_group_layouts: &[Some(&shadow_bind_group_layout)],
                 immediate_size: 0,
             });
         let hud_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -338,6 +452,45 @@ impl Renderer {
                 depth_compare: Some(wgpu::CompareFunction::Less),
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
+        let shadow_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("sun shadow pipeline"),
+            layout: Some(&shadow_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shadow_shader,
+                entry_point: Some("vs"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                buffers: &[Some(wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<SceneVertex>() as wgpu::BufferAddress,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &SCENE_ATTRS,
+                })],
+            },
+            fragment: None,
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                unclipped_depth: false,
+                conservative: false,
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Less),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState {
+                    constant: 2,
+                    slope_scale: 2.0,
+                    clamp: 0.0,
+                },
             }),
             multisample: wgpu::MultisampleState::default(),
             multiview_mask: None,
@@ -496,6 +649,21 @@ impl Renderer {
             wgpu::BufferUsages::INDEX,
         );
 
+        let caster_vertex_capacity = 1024;
+        let caster_index_capacity = 3072;
+        let caster_vertex_buffer = create_dynamic_buffer(
+            &device,
+            "caster vertices",
+            caster_vertex_capacity * std::mem::size_of::<SceneVertex>(),
+            wgpu::BufferUsages::VERTEX,
+        );
+        let caster_index_buffer = create_dynamic_buffer(
+            &device,
+            "caster indices",
+            caster_index_capacity * std::mem::size_of::<u32>(),
+            wgpu::BufferUsages::INDEX,
+        );
+
         let shadow_vertex_capacity = 1024;
         let shadow_index_capacity = 1536;
         let shadow_vertex_buffer = create_dynamic_buffer(
@@ -550,13 +718,24 @@ impl Renderer {
             hud_pipeline,
             sky_pipeline,
             blob_pipeline,
+            shadow_pipeline,
             bind_group,
+            shadow_bind_group,
             scene_buffer,
             scene_globals,
+            _shadow_texture: shadow_texture,
+            shadow_view,
+            shadow_mode: 2,
+            shadow_tick: 0,
             depth_view,
             terrain,
             models,
             static_shadows,
+            caster_vertex_buffer,
+            caster_index_buffer,
+            caster_vertex_capacity,
+            caster_index_capacity,
+            caster_index_count: 0,
             dynamic_vertex_buffer,
             dynamic_index_buffer,
             dynamic_vertex_capacity,
@@ -617,6 +796,12 @@ impl Renderer {
         } else {
             self.scene_globals.sun_screen = [0.0, 0.0, 0.0, 0.0];
         }
+
+        let extent = 60.0 * 128.0;
+        self.scene_globals.light_view_proj =
+            directional_shadow_matrix(self.camera.target, sun_dir, extent).to_cols_array_2d();
+        self.scene_globals.shadow_params[0] = 1.0 / 1024.0;
+        self.scene_globals.shadow_params[1] = 0.0020;
         self.upload_globals();
     }
 
@@ -638,7 +823,7 @@ impl Renderer {
         if !enhanced {
             self.scene_globals.light_count = [0; 4];
         }
-        self.upload_globals();
+        self.set_shadow_mode(if enhanced { 2 } else { 1 });
     }
 
     pub fn set_debug_view(&mut self, view: u32) {
@@ -669,6 +854,47 @@ impl Renderer {
         }
         self.scene_globals.light_count = [count as u32, 0, 0, 0];
         self.upload_globals();
+    }
+
+    pub fn set_shadow_mode(&mut self, mode: u32) {
+        self.shadow_mode = mode;
+        self.scene_globals.shadow_params[3] = if mode == 2 { 1.0 } else { 0.0 };
+        self.upload_globals();
+    }
+
+    pub fn set_caster_mesh(&mut self, vertices: &[SceneVertex], indices: &[u32]) {
+        if vertices.len() > self.caster_vertex_capacity {
+            let capacity = vertices.len().next_power_of_two();
+            self.caster_vertex_buffer = create_dynamic_buffer(
+                &self.device,
+                "caster vertices",
+                capacity * std::mem::size_of::<SceneVertex>(),
+                wgpu::BufferUsages::VERTEX,
+            );
+            self.caster_vertex_capacity = capacity;
+        }
+        if indices.len() > self.caster_index_capacity {
+            let capacity = indices.len().next_power_of_two();
+            self.caster_index_buffer = create_dynamic_buffer(
+                &self.device,
+                "caster indices",
+                capacity * std::mem::size_of::<u32>(),
+                wgpu::BufferUsages::INDEX,
+            );
+            self.caster_index_capacity = capacity;
+        }
+        if !vertices.is_empty() {
+            self.queue.write_buffer(
+                &self.caster_vertex_buffer,
+                0,
+                bytemuck::cast_slice(vertices),
+            );
+        }
+        if !indices.is_empty() {
+            self.queue
+                .write_buffer(&self.caster_index_buffer, 0, bytemuck::cast_slice(indices));
+        }
+        self.caster_index_count = indices.len() as u32;
     }
 
     pub fn set_dynamic_mesh(&mut self, vertices: &[SceneVertex], indices: &[u32]) {
@@ -883,6 +1109,39 @@ impl Renderer {
                 label: Some("rift frame"),
             });
 
+        let update_shadow = self.shadow_mode == 2 && self.shadow_tick % 2 == 0;
+        self.shadow_tick = self.shadow_tick.wrapping_add(1);
+        if update_shadow {
+            let mut shadow_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("sun shadow pass"),
+                color_attachments: &[],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.shadow_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            shadow_pass.set_pipeline(&self.shadow_pipeline);
+            shadow_pass.set_bind_group(0, &self.shadow_bind_group, &[]);
+            // Static scenery is expensive to re-render into a camera-relative
+            // shadow map every frame; keep blob shadows for it and use the
+            // shadow map for dynamic units until static shadow caching lands.
+            if self.caster_index_count > 0 {
+                shadow_pass.set_vertex_buffer(0, self.caster_vertex_buffer.slice(..));
+                shadow_pass.set_index_buffer(
+                    self.caster_index_buffer.slice(..),
+                    wgpu::IndexFormat::Uint32,
+                );
+                shadow_pass.draw_indexed(0..self.caster_index_count, 0, 0..1);
+            }
+        }
+
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("scene pass"),
@@ -1004,4 +1263,31 @@ fn create_depth_view(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Te
         view_formats: &[],
     });
     texture.create_view(&wgpu::TextureViewDescriptor::default())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shadow_matrix_centers_the_frustum() {
+        let matrix = directional_shadow_matrix(
+            Vec3::ZERO,
+            Vec3::new(-0.45, 0.78, 0.35).normalize(),
+            60.0 * 128.0,
+        );
+        let clip = matrix * Vec4::new(0.0, 0.0, 0.0, 1.0);
+        let ndc = clip.truncate() / clip.w;
+        assert!(ndc.x.abs() < 1e-4);
+        assert!(ndc.y.abs() < 1e-4);
+        assert!((0.0..=1.0).contains(&ndc.z));
+    }
+
+    #[test]
+    fn shadow_defaults_are_disabled_until_requested() {
+        let globals = SceneGlobals::from_atmosphere(&Atmosphere::default());
+        assert!((globals.shadow_params[0] - 1.0 / 1024.0).abs() < 1e-9);
+        assert!(globals.shadow_params[1] > 0.0);
+        assert_eq!(globals.shadow_params[3], 0.0);
+    }
 }

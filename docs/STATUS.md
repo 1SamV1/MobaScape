@@ -1,6 +1,6 @@
 # Status
 
-Last updated: M5.0 117HD Core, 2026-11-13.
+Last updated: M5.1 Shadows + contact AO, 2026-11-13.
 
 ## Working
 
@@ -50,8 +50,12 @@ Last updated: M5.0 117HD Core, 2026-11-13.
   - Static scenery blob shadows + per-unit blob shadows.
   - Up to 16 dynamic point lights: fountain, Q muzzle/impact, E/R effects,
     projectiles.
-  - `--graphics 117hd|classic`, `--debug-view albedo|normal|lighting|fog|lights`,
-    `--pitch` for verification.
+  - **Sun shadow map**: 1024px depth map, 60x60-tile orthographic frustum, PCF
+    via comparison sampler, dynamic player/structure/camp casters, alternating
+    frame updates. `--shadows off|blob|map`.
+  - **Contact AO**: baked terrain cavity AO and model/unit base AO.
+  - `--graphics 117hd|classic`,
+    `--debug-view albedo|normal|lighting|fog|lights|shadow|ao`, `--pitch`.
 - Fog/brush: 192×192 visibility grid; hidden enemies/neutrals; dark fog mesh;
   minimap draws 8×8-tile fog blocks and hides unseen units.
 - HUD: health/mana/XP/shield/buff bars, four ability boxes, six inventory slots,
@@ -61,9 +65,12 @@ Last updated: M5.0 117HD Core, 2026-11-13.
 
 ## Verified
 
-- `cargo test --workspace`: 25 tests pass (6 cache, 12 client, 7 sim).
+- `cargo test --workspace`: 27 tests pass (6 cache, 14 client, 7 sim).
 - `cargo clippy --workspace --all-targets`: no warnings.
-- 117HD Core runs at **60 fps at 1280×720** on the dev machine at timescale 1.
+- 117HD Core runs at **60–68 fps at 1280×720** on the dev machine at timescale 1;
+  shadow modes measured **67 fps (off)**, **68 fps (blob)**, **66 fps (map)**.
+- Shadow debug view confirmed dark cast shadows under structures/units; AO
+  debug view confirmed baked terrain/model contact darkening.
 - A/B captures: `--graphics classic` flat/unlit baseline vs `--graphics 117hd`
   lit terrain/models, sky/clouds, fog, blob shadows, dynamic lights.
 - Debug views confirmed albedo, normals, lighting, fog, and dynamic-light
@@ -79,8 +86,12 @@ Last updated: M5.0 117HD Core, 2026-11-13.
 
 ## Known issues
 
-- 117HD Core has **no textures, HD water, directional shadow maps, bloom,
-  MSAA/FXAA, or draw-distance streaming** yet. These are M5.1–M5.4.
+- 117HD Core has **no textures, HD water, bloom, MSAA/FXAA, full SSAO, or
+  draw-distance streaming** yet. These are M5.2–M5.4.
+- The shadow map covers dynamic units/structures/camps only; static scenery
+  still uses blob shadows. Static shadow caching/chunked casters are pending.
+- The shadow map is 1024px and updates every other frame; fast camera movement
+  can show slight shadow lag.
 - The 3×3 region block edge is still visible at low camera pitch. A distant
   backdrop plane and horizon haze hide it from the default camera, but true
   117HD draw distance needs chunked streaming/LOD.
@@ -98,12 +109,12 @@ Last updated: M5.0 117HD Core, 2026-11-13.
 
 ## Next tasks
 
-1. **M5.1 117HD Shadows**: directional shadow map, PCF, static/dynamic caching.
-2. **M5.2 117HD Water**: water mesh, fresnel, sky reflection, specular, caustics.
-3. **M5.3 117HD Textures**: texture decoding, atlas, model/ground textures,
+1. **M5.2 117HD Water**: water mesh, fresnel, sky reflection, specular, caustics.
+2. **M5.3 117HD Textures**: texture decoding, atlas, model/ground textures,
    ground blending, anisotropic filtering.
-4. **M5.4 117HD Post + Draw Distance**: MSAA/FXAA, bloom, color grading,
-   chunked streaming/LOD, model batching.
+3. **M5.4 117HD Post + Draw Distance**: full SSAO, MSAA/FXAA, bloom, color
+   grading, chunked streaming/LOD, model batching.
+4. Static scenery shadow caching/chunked casters.
 5. Item selling/combining/passives and five champions with distinct kits.
 6. Server-authoritative fog, economy, and shop transactions.
 7. Deterministic 30 Hz sim tick in `crates/sim` + state hash.
@@ -114,14 +125,15 @@ Last updated: M5.0 117HD Core, 2026-11-13.
   walkable, no corner cutting, simplification, bounds, LOS).
 - `cargo test -p rift-cache`: 6 tests (smart reads, chained smart, XTEA, HSL,
   group rejection, framemap/frame parse).
-- `cargo test -p rift-client`: 12 tests (4 items, 2 font, 2 minimap,
-  4 scene/lighting).
+- `cargo test -p rift-client`: 14 tests (4 items, 2 font, 2 minimap,
+  4 scene/lighting, 2 shadow matrix/defaults).
 - Shop demo: 6/6 items, dmg 45, HP 730/730, MP 260/260, speed 460, AP 45%,
   gold 300.
 - Base demo: 200/500 -> 410/500 HP; gold 8 -> 64.
 - Inhibitor demo: 2/3 -> respawn 3/3; nexus re-shielded; super minions spawned.
 - 117HD debug: albedo/normal/lighting/fog views render; dynamic lights show
-  green fountain and orange Q impact pools.
+  green fountain and orange Q impact pools; shadow/AO debug views render.
+- Shadow modes: off 67 fps, blob 68 fps, map 66 fps at 1280×720.
 - Champion runs: Jad 700 HP / 260 mana; Kree 420 HP / 240 mana; W/E/R true.
 - Fog run: visible enemies 7–13; dark fog mesh over unseen tiles.
 - Three-lane 20× run: victory states, towers/inhibitors/nexus live.

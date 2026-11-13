@@ -16,12 +16,16 @@ struct SceneGlobals {
     sky_top: vec4<f32>,
     sky_horizon: vec4<f32>,
     sun_screen: vec4<f32>,
+    light_view_proj: mat4x4<f32>,
+    shadow_params: vec4<f32>,
     tuning: vec4<f32>,
     lights: array<Light, 16>,
     light_count: vec4<u32>,
 };
 
 @group(0) @binding(0) var<uniform> scene: SceneGlobals;
+@group(0) @binding(1) var shadow_map: texture_depth_2d;
+@group(0) @binding(2) var shadow_sampler: sampler_comparison;
 
 struct VsIn {
     @location(0) position: vec3<f32>,
@@ -70,6 +74,23 @@ fn dynamic_lighting(input: VsOut) -> vec3<f32> {
     return sum;
 }
 
+fn shadow_factor(input: VsOut) -> f32 {
+    if (scene.shadow_params.w < 0.5) {
+        return 1.0;
+    }
+    let coord = scene.light_view_proj * vec4<f32>(input.world, 1.0);
+    let proj = coord.xyz / coord.w;
+    let uv = vec2<f32>(proj.x * 0.5 + 0.5, -proj.y * 0.5 + 0.5);
+    if (any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0))
+        || proj.z < 0.0 || proj.z > 1.0) {
+        return 1.0;
+    }
+    let texel = scene.shadow_params.x;
+    let bias = scene.shadow_params.y;
+    // The comparison sampler's linear filter provides a cheap 2x2 PCF.
+    return textureSampleCompare(shadow_map, shadow_sampler, uv, proj.z - bias);
+}
+
 fn lighting(input: VsOut) -> vec3<f32> {
     let N = normalize(input.normal);
     let L = normalize(scene.sun_dir.xyz);
@@ -85,7 +106,7 @@ fn lighting(input: VsOut) -> vec3<f32> {
         N.y * 0.5 + 0.5
     );
 
-    let sun = scene.sun_color.rgb * 0.82;
+    let sun = scene.sun_color.rgb * 0.82 * shadow_factor(input);
     let unit_fill = select(0.10, 0.45, input.material == 3u);
     let fill = max(dot(N, normalize(scene.camera_pos.xyz - input.world)), 0.0) * unit_fill;
     let ambient = select(0.86, 1.10, input.material == 3u);
@@ -123,6 +144,12 @@ fn fs(input: VsOut) -> @location(0) vec4<f32> {
     }
     if (debug_view == 5u) {
         return vec4<f32>(dynamic_lighting(input), 1.0);
+    }
+    if (debug_view == 6u) {
+        return vec4<f32>(vec3<f32>(shadow_factor(input)), 1.0);
+    }
+    if (debug_view == 7u) {
+        return vec4<f32>(vec3<f32>(input.ao), 1.0);
     }
 
     // Unlit geometry: fog-of-war, world-space bars, rings, and markers.

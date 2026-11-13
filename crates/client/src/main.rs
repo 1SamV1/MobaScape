@@ -76,9 +76,12 @@ struct Cli {
     /// Graphics preset: 117hd or classic.
     #[arg(long, default_value = "117hd")]
     graphics: String,
-    /// Debug view: lit, albedo, normal, lighting, fog.
+    /// Debug view: lit, albedo, normal, lighting, fog, lights, shadow, ao.
     #[arg(long, default_value = "lit")]
     debug_view: String,
+    /// Shadows: off, blob, or map.
+    #[arg(long, default_value = "map")]
+    shadows: String,
     /// Simulation speed multiplier for verification.
     #[arg(long, default_value_t = 1.0)]
     timescale: f32,
@@ -169,6 +172,7 @@ fn main() -> Result<()> {
         hud: Hud::new(),
         graphics_classic: cli.graphics.eq_ignore_ascii_case("classic"),
         debug_view: parse_debug_view(&cli.debug_view),
+        shadow_mode: cli.shadows.clone(),
         app_time: 0.0,
         fog_timer: 0.0,
         lane_log_timer: 0.0,
@@ -224,6 +228,7 @@ struct App {
     hud: Hud,
     graphics_classic: bool,
     debug_view: u32,
+    shadow_mode: String,
     app_time: f32,
     fog_timer: f32,
     lane_log_timer: f32,
@@ -267,6 +272,7 @@ impl ApplicationHandler for App {
             renderer.camera.pitch = pitch;
         }
         renderer.set_graphics_mode(!self.graphics_classic);
+        renderer.set_shadow_mode(parse_shadow_mode(&self.shadow_mode));
         renderer.set_debug_view(self.debug_view);
         renderer.update_camera();
         tracing::info!(
@@ -731,6 +737,7 @@ impl App {
             }
             renderer.set_dynamic_mesh(&animated.vertices, &animated.indices);
             renderer.set_shadow_mesh(&animated.shadow_vertices, &animated.shadow_indices);
+            renderer.set_caster_mesh(&animated.caster_vertices, &animated.caster_indices);
             renderer.set_lights(&animated.lights());
             renderer.set_time(self.app_time);
             self.fog_timer += dt;
@@ -1194,6 +1201,15 @@ fn rebuild_fog(
     renderer.set_fog_mesh(&vertices, &indices);
 }
 
+fn parse_shadow_mode(name: &str) -> u32 {
+    match name.to_ascii_lowercase().as_str() {
+        "off" => 0,
+        "blob" => 1,
+        "map" => 2,
+        _ => 2,
+    }
+}
+
 fn parse_debug_view(name: &str) -> u32 {
     match name.to_ascii_lowercase().as_str() {
         "albedo" => 1,
@@ -1201,6 +1217,8 @@ fn parse_debug_view(name: &str) -> u32 {
         "lighting" => 3,
         "fog" => 4,
         "lights" => 5,
+        "shadow" => 6,
+        "ao" => 7,
         _ => 0,
     }
 }

@@ -172,6 +172,8 @@ pub struct AnimatedScene {
     pub player_index: usize,
     pub vertices: Vec<SceneVertex>,
     pub indices: Vec<u32>,
+    pub caster_vertices: Vec<SceneVertex>,
+    pub caster_indices: Vec<u32>,
     pub shadow_vertices: Vec<SceneVertex>,
     pub shadow_indices: Vec<u32>,
     pub marker: Option<(Vec3, f32)>,
@@ -407,6 +409,8 @@ impl AnimatedScene {
             player_index,
             vertices: Vec::new(),
             indices: Vec::new(),
+            caster_vertices: Vec::new(),
+            caster_indices: Vec::new(),
             shadow_vertices: Vec::new(),
             shadow_indices: Vec::new(),
             marker: None,
@@ -1952,17 +1956,41 @@ fn append_unit(scene: &mut AnimatedScene, unit: &AnimatedUnit, positions: &[[f32
             rgb[2] = (rgb[2] as f32 * 0.55) as u8;
         }
 
+        let ao_at = |p: Vec3| {
+            (0.74 + 0.26 * ((p.y - unit.pos.y).max(0.0) / (unit.scale * 220.0)).clamp(0.0, 1.0))
+                .clamp(0.66, 1.0)
+        };
         let mut va = SceneVertex::new(pa, normal, rgb);
         let mut vb = SceneVertex::new(pb, normal, rgb);
         let mut vc = SceneVertex::new(pc, normal, rgb);
         va.material = 3;
         vb.material = 3;
         vc.material = 3;
+        va.ao = ao_at(pa);
+        vb.ao = ao_at(pb);
+        vc.ao = ao_at(pc);
         let base = scene.vertices.len() as u32;
         scene.vertices.push(va);
         scene.vertices.push(vb);
         scene.vertices.push(vc);
         scene.indices.extend_from_slice(&[base, base + 1, base + 2]);
+
+        if matches!(
+            unit.kind,
+            UnitKind::Player
+                | UnitKind::Tower
+                | UnitKind::Inhibitor
+                | UnitKind::Nexus
+                | UnitKind::Camp
+        ) {
+            let cbase = scene.caster_vertices.len() as u32;
+            scene.caster_vertices.push(va);
+            scene.caster_vertices.push(vb);
+            scene.caster_vertices.push(vc);
+            scene
+                .caster_indices
+                .extend_from_slice(&[cbase, cbase + 1, cbase + 2]);
+        }
     }
 }
 

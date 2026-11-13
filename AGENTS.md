@@ -156,7 +156,7 @@ Cache location: `.cache/osrs-235/cache` by default. Pass `--cache` and
 - Renderer changes: include a headless screenshot or a manual visual check note.
 - Performance: 1080p/60 target on the AMD 680M iGPU. Profile before optimizing.
 
-## 8. Known M5.0 limitations
+## 8. Known M5.1 limitations
 
 - Client renders a 3×3 region block (192×192 tiles); there is no terrain skirt
   or streaming beyond it, and the collision grid is approximate (water + object
@@ -174,10 +174,15 @@ Cache location: `.cache/osrs-235/cache` by default. Pass `--cache` and
 - **117HD Core** rendering is in: `SceneVertex` carries position, normal,
   colour, UV, AO, and material; terrain uses smooth heightfield normals, models
   use flat per-face normals; the scene shader does sun + hemispheric ambient,
-  height fog, sky/clouds, blob shadows, and up to 16 point lights. `--graphics
-  classic` preserves a flat baseline; `--debug-view albedo|normal|lighting|fog|
-  lights` helps tune it. Textures, HD water, shadow maps, bloom, MSAA, and
-  draw-distance streaming are not implemented yet.
+  height fog, sky/clouds, blob shadows, and up to 16 point lights.
+- **M5.1 shadows**: a 1024px sun shadow map covers 60x60 tiles around the
+  camera with PCF. Player, towers, inhibitors, nexuses, and camps are dynamic
+  casters; static scenery uses blob shadows. The map updates every other frame
+  and can be toggled with `--shadows off|blob|map`. Terrain and model vertices
+  carry baked contact AO. Full screen-space SSAO, textures, HD water, bloom,
+  MSAA, and draw-distance streaming are not implemented yet.
+- `--graphics classic` preserves a flat baseline; `--debug-view albedo|normal|
+  lighting|fog|lights|shadow|ao` helps tune the renderer.
 - Three data-driven champions (`monkey`, `jad`, `kree`) with distinct models,
   stats, and ability numbers. They share the Q/W/E/R shape; Kree has ranged
   auto-attacks. No champion-select UI or passive.

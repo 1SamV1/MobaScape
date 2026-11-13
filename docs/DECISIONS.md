@@ -259,3 +259,18 @@ intermediate buffers.
 
 This milestone deliberately does not include textures, HD water, directional
 shadow maps, bloom, MSAA, or draw-distance streaming. Those are M5.1–M5.4.
+
+## ADR-024 — Sun shadow map + contact AO
+
+**Status:** accepted for the prototype.
+
+The 117HD Core scene now renders a 1024x1024 Depth32Float sun shadow map over a
+60x60-tile orthographic frustum around the camera. Player, tower, inhibitor,
+nexus, and camp models are dynamic casters; static scenery keeps blob shadows
+until chunked static caster caching lands. PCF is done with a comparison
+sampler. The shadow pass runs every other frame to keep the renderer near 60 fps
+on the dev machine. `--shadows off|blob|map` controls the mode.
+
+Terrain and model vertices carry baked contact AO (height-cavity for terrain,
+base-to-top gradient for models/units). This is AO v0; full screen-space SSAO
+will arrive with the offscreen post-processing pass in M5.4.

@@ -10,6 +10,8 @@ struct SceneGlobals {
     sky_top: vec4<f32>,
     sky_horizon: vec4<f32>,
     sun_screen: vec4<f32>,
+    light_view_proj: mat4x4<f32>,
+    shadow_params: vec4<f32>,
     tuning: vec4<f32>,
     lights: array<vec4<f32>, 48>,
     light_count: vec4<u32>,

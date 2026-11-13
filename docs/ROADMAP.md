@@ -112,18 +112,21 @@ Done:
 - **M5.0 117HD Core**: sRGB-correct scene pipeline, per-face model normals,
   smooth terrain normals, sun + hemispheric ambient lighting, optional light
   banding, sky gradient/clouds, height fog, static + unit blob shadows, and up
-  to 16 dynamic ability/fountain lights. `--graphics 117hd|classic`,
-  `--debug-view albedo|normal|lighting|fog|lights`, and `--pitch` for
-  verification.
+  to 16 dynamic ability/fountain lights.
+- **M5.1 Shadows + contact AO**: 1024px sun shadow map, PCF, dynamic
+  player/structure/camp casters, alternating shadow updates, baked terrain and
+  model contact AO. `--shadows off|blob|map`, `--debug-view shadow|ao`.
+- `--graphics 117hd|classic`, `--debug-view albedo|normal|lighting|fog|lights`,
+  and `--pitch` for verification.
 
 Remaining:
 
-- **M5.1 117HD Shadows**: directional shadow map, PCF, static/dynamic caching.
 - **M5.2 117HD Water**: water mesh, fresnel, sky reflection, specular, caustics.
 - **M5.3 117HD Textures**: texture decoding, atlas, model/ground textures,
   ground blending, anisotropic filtering.
-- **M5.4 117HD Post + Draw Distance**: MSAA/FXAA, bloom, color grading,
-  chunked streaming/LOD, model batching.
+- **M5.4 117HD Post + Draw Distance**: full SSAO, MSAA/FXAA, bloom, color
+  grading, chunked streaming/LOD, model batching.
+- Static scenery shadow caching for the sun shadow map.
 - Server-authoritative fog and brush visuals.
 - Item selling/combining/passives and five champions with distinct kits.
 - Cache-native font atlas and richer shop/scoreboard screens.

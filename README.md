@@ -4,7 +4,7 @@ A 5v5 MOBA built on a custom Rust engine, using modern Old School RuneScape
 cache assets for its visual identity. Server-authoritative, data-driven, and
 designed for fast-paced low-team-count matches.
 
-> Status: **M5.0 117HD Core**. The cache reader, terrain/location/model/
+> Status: **M5.1 Shadows + contact AO**. The cache reader, terrain/location/model/
 > sequence decoders, animated NPCs, a 3x3 Karamja block, A* pathfinding with
 > collision, hold-to-steer, a bitmap-font HUD, auto-attacks, a Q/W/E/R kit
 > with mana/cooldowns/XP/gold, three data-driven champions, a six-item shop
@@ -14,8 +14,10 @@ designed for fast-paced low-team-count matches.
 > a fogged minimap with click-to-pan, and a win condition are working.
 > **117HD Core** adds sRGB-correct sun/ambient lighting, per-face model
 > normals, smooth terrain lighting, a sky with clouds, height fog, static and
-> unit blob shadows, and dynamic ability/fountain point lights. Textures, HD
-> water, shadow maps, bloom, and draw-distance streaming are next. See
+> unit blob shadows, and dynamic ability/fountain point lights. **M5.1** adds a
+> 1024px sun shadow map with PCF, dynamic player/structure/camp casters,
+> alternating shadow updates, and baked contact AO. Textures, HD water, bloom,
+> full SSAO, and draw-distance streaming are next. See
 > [docs/STATUS.md](docs/STATUS.md).
 
 ## What exists
@@ -80,9 +82,12 @@ cargo run -p rift-client -- --champion kree
 cargo run -p rift-client -- --graphics 117hd
 cargo run -p rift-client -- --graphics classic
 
-# Inspect lighting, normals, albedo, or fog
+# Inspect lighting, normals, albedo, fog, shadows, or AO
 cargo run -p rift-client -- --graphics 117hd --debug-view lighting
 cargo run -p rift-client -- --graphics 117hd --debug-view normal
+cargo run -p rift-client -- --graphics 117hd --debug-view shadow
+cargo run -p rift-client -- --graphics 117hd --debug-view ao
+cargo run -p rift-client -- --graphics 117hd --shadows off|blob|map
 cargo run -p rift-client -- --graphics 117hd --pitch 0.22
 
 # Grant gold, open the shop, and buy all six items

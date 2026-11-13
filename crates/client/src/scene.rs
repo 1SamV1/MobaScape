@@ -722,17 +722,31 @@ pub fn build(
             let n10 = normal_at(gx + 1, gy);
             let n01 = normal_at(gx, gy + 1);
             let n11 = normal_at(gx + 1, gy + 1);
+            let ao_at = |vx: usize, vy: usize| {
+                let i = vy * size + vx;
+                let h = heights[i];
+                let hl = if vx > 0 { heights[i - 1] } else { h };
+                let hr = if vx + 1 < size { heights[i + 1] } else { h };
+                let hd = if vy > 0 { heights[i - size] } else { h };
+                let hu = if vy + 1 < size { heights[i + size] } else { h };
+                let cavity = (((hl + hr + hd + hu) * 0.25 - h) / 96.0).clamp(-1.0, 1.0);
+                (0.82 - cavity * 0.22).clamp(0.58, 1.0)
+            };
+            let ao00 = ao_at(gx, gy);
+            let ao10 = ao_at(gx + 1, gy);
+            let ao01 = ao_at(gx, gy + 1);
+            let ao11 = ao_at(gx + 1, gy + 1);
 
-            terrain_mesh.push_triangle(
-                SceneVertex::new(p00, n00, color),
-                SceneVertex::new(p01, n01, color),
-                SceneVertex::new(p10, n10, color),
-            );
-            terrain_mesh.push_triangle(
-                SceneVertex::new(p10, n10, color),
-                SceneVertex::new(p01, n01, color),
-                SceneVertex::new(p11, n11, color),
-            );
+            let mut v00 = SceneVertex::new(p00, n00, color);
+            let mut v10 = SceneVertex::new(p10, n10, color);
+            let mut v01 = SceneVertex::new(p01, n01, color);
+            let mut v11 = SceneVertex::new(p11, n11, color);
+            v00.ao = ao00;
+            v10.ao = ao10;
+            v01.ao = ao01;
+            v11.ao = ao11;
+            terrain_mesh.push_triangle(v00, v01, v10);
+            terrain_mesh.push_triangle(v10, v01, v11);
         }
     }
 
@@ -1215,11 +1229,16 @@ fn append_model_scaled(mesh: &mut MeshData, model: &Model, base: Vec3, angle: f3
             hsl_to_rgb(model.face_colors[face_idx], 1.0)
         };
 
-        mesh.push_triangle(
-            SceneVertex::new(pa, normal, rgb),
-            SceneVertex::new(pb, normal, rgb),
-            SceneVertex::new(pc, normal, rgb),
-        );
+        let ao_at = |p: Vec3| {
+            (0.78 + 0.22 * ((p.y - base.y).max(0.0) / 400.0).clamp(0.0, 1.0)).clamp(0.70, 1.0)
+        };
+        let mut va = SceneVertex::new(pa, normal, rgb);
+        let mut vb = SceneVertex::new(pb, normal, rgb);
+        let mut vc = SceneVertex::new(pc, normal, rgb);
+        va.ao = ao_at(pa);
+        vb.ao = ao_at(pb);
+        vc.ao = ao_at(pc);
+        mesh.push_triangle(va, vb, vc);
     }
 }
 

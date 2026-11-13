@@ -39,6 +39,9 @@ cargo run -p rift-client -- --demo-kit --timescale 4
 cargo run -p rift-client -- --graphics 117hd
 cargo run -p rift-client -- --graphics classic
 cargo run -p rift-client -- --graphics 117hd --debug-view lighting
+cargo run -p rift-client -- --graphics 117hd --debug-view shadow
+cargo run -p rift-client -- --graphics 117hd --debug-view ao
+cargo run -p rift-client -- --graphics 117hd --shadows map
 cargo run -p rift-client -- --graphics 117hd --pitch 0.22
 cargo run -p rift-client -- --demo-shop --timescale 4
 cargo run -p rift-client -- --demo-base --timescale 4
