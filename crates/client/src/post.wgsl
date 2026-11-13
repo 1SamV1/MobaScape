@@ -4,7 +4,8 @@ struct VsOut {
 };
 
 @group(0) @binding(0) var scene_texture: texture_2d<f32>;
-@group(0) @binding(1) var scene_sampler: sampler;
+@group(0) @binding(1) var bloom_texture: texture_2d<f32>;
+@group(0) @binding(2) var scene_sampler: sampler;
 
 @vertex
 fn vs(@builtin(vertex_index) vertex_index: u32) -> VsOut {
@@ -20,22 +21,33 @@ fn vs(@builtin(vertex_index) vertex_index: u32) -> VsOut {
     return output;
 }
 
-fn sample_scene(uv: vec2<f32>) -> vec3<f32> {
-    return textureSample(scene_texture, scene_sampler, uv).rgb;
+fn tonemap(c: vec3<f32>) -> vec3<f32> {
+    let a = 2.51;
+    let b = 0.03;
+    let c2 = 2.43;
+    let d = 0.59;
+    let e = 0.14;
+    return clamp((c * (a * c + b)) / (c * (c2 * c + d) + e), vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
+fn composite(uv: vec2<f32>) -> vec3<f32> {
+    let scene = textureSample(scene_texture, scene_sampler, uv).rgb;
+    let bloom = textureSample(bloom_texture, scene_sampler, uv).rgb;
+    return tonemap(scene + bloom * 0.45);
 }
 
 fn luma(c: vec3<f32>) -> f32 {
     return dot(c, vec3<f32>(0.299, 0.587, 0.114));
 }
 
-// Console-style FXAA: edge-direction blur with a luma clamp.
+// Console-style FXAA on the tonemapped composite.
 fn fxaa(uv: vec2<f32>, texel: vec2<f32>) -> vec3<f32> {
-    let rgbM = sample_scene(uv);
+    let rgbM = composite(uv);
     let lumaM = luma(rgbM);
-    let lumaNW = luma(sample_scene(uv + vec2<f32>(-1.0, -1.0) * texel));
-    let lumaNE = luma(sample_scene(uv + vec2<f32>(1.0, -1.0) * texel));
-    let lumaSW = luma(sample_scene(uv + vec2<f32>(-1.0, 1.0) * texel));
-    let lumaSE = luma(sample_scene(uv + vec2<f32>(1.0, 1.0) * texel));
+    let lumaNW = luma(composite(uv + vec2<f32>(-1.0, -1.0) * texel));
+    let lumaNE = luma(composite(uv + vec2<f32>(1.0, -1.0) * texel));
+    let lumaSW = luma(composite(uv + vec2<f32>(-1.0, 1.0) * texel));
+    let lumaSE = luma(composite(uv + vec2<f32>(1.0, 1.0) * texel));
 
     let lumaMin = min(lumaM, min(min(lumaNW, lumaNE), min(lumaSW, lumaSE)));
     let lumaMax = max(lumaM, max(max(lumaNW, lumaNE), max(lumaSW, lumaSE)));
@@ -53,12 +65,12 @@ fn fxaa(uv: vec2<f32>, texel: vec2<f32>) -> vec3<f32> {
     dir = clamp(dir * rcpDirMin, vec2<f32>(-8.0), vec2<f32>(8.0)) * texel;
 
     let rgbA = 0.5 * (
-        sample_scene(uv + dir * (1.0 / 3.0 - 0.5))
-        + sample_scene(uv + dir * (2.0 / 3.0 - 0.5))
+        composite(uv + dir * (1.0 / 3.0 - 0.5))
+        + composite(uv + dir * (2.0 / 3.0 - 0.5))
     );
     let rgbB = rgbA * 0.5 + 0.25 * (
-        sample_scene(uv - dir)
-        + sample_scene(uv + dir)
+        composite(uv - dir)
+        + composite(uv + dir)
     );
     let lumaB = luma(rgbB);
     if (lumaB < lumaMin || lumaB > lumaMax) {
@@ -67,34 +79,16 @@ fn fxaa(uv: vec2<f32>, texel: vec2<f32>) -> vec3<f32> {
     return rgbB;
 }
 
-fn cheap_bloom(uv: vec2<f32>, texel: vec2<f32>) -> vec3<f32> {
-    var sum = vec3<f32>(0.0);
-    let radius = texel * 4.0;
-    sum += max(sample_scene(uv + vec2<f32>(radius.x, 0.0)) - 0.82, vec3<f32>(0.0));
-    sum += max(sample_scene(uv + vec2<f32>(-radius.x, 0.0)) - 0.82, vec3<f32>(0.0));
-    sum += max(sample_scene(uv + vec2<f32>(0.0, radius.y)) - 0.82, vec3<f32>(0.0));
-    sum += max(sample_scene(uv + vec2<f32>(0.0, -radius.y)) - 0.82, vec3<f32>(0.0));
-    sum += max(sample_scene(uv + radius) - 0.82, vec3<f32>(0.0));
-    sum += max(sample_scene(uv - radius) - 0.82, vec3<f32>(0.0));
-    sum += max(sample_scene(uv + vec2<f32>(radius.x, -radius.y)) - 0.82, vec3<f32>(0.0));
-    sum += max(sample_scene(uv + vec2<f32>(-radius.x, radius.y)) - 0.82, vec3<f32>(0.0));
-    return sum * 0.009;
-}
-
 @fragment
 fn fs(input: VsOut) -> @location(0) vec4<f32> {
     let dimensions = vec2<f32>(textureDimensions(scene_texture));
     let texel = 1.0 / dimensions;
 
     var color = fxaa(input.uv, texel);
-    color += cheap_bloom(input.uv, texel);
 
-    // Gentle 117HD-style grade: lift exposure, contrast, saturation, and a
-    // warm highlight / cool shadow tint.
-    color *= 1.08;
-    let display = pow(max(color, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.2));
-    let graded = (display - vec3<f32>(0.5)) * 1.03 + vec3<f32>(0.5);
-    color = pow(max(graded, vec3<f32>(0.0)), vec3<f32>(2.2));
+    // Gentle grade after tonemapping, in display space.
+    color *= 0.98;
+    color = (color - vec3<f32>(0.5)) * 1.03 + vec3<f32>(0.5);
     let l = luma(color);
     color = mix(vec3<f32>(l), color, 1.06);
     color = mix(
@@ -103,7 +97,16 @@ fn fs(input: VsOut) -> @location(0) vec4<f32> {
         smoothstep(0.45, 0.85, l)
     );
 
+    // Dota style vignette: the corners fall off so the eye is pulled to the
+    // centre of the fight.
+    let centred = input.uv - vec2<f32>(0.5);
+    let vignette = 1.0 - smoothstep(0.42, 0.92, length(centred * vec2<f32>(1.05, 1.25)));
+    color *= mix(0.72, 1.0, vignette);
+
+    // Slight filmic contrast for the darker, moodier look.
+    color = clamp((color - vec3<f32>(0.5)) * 1.05 + vec3<f32>(0.5), vec3<f32>(0.0), vec3<f32>(1.0));
+
     let dither = fract(sin(dot(input.uv * dimensions, vec2<f32>(12.9898, 78.233))) * 43758.5453);
     color += (dither - 0.5) / 255.0;
-    return vec4<f32>(color, 1.0);
+    return vec4<f32>(clamp(color, vec3<f32>(0.0), vec3<f32>(1.0)), 1.0);
 }

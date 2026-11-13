@@ -46,6 +46,8 @@ fn vs(input: VsIn) -> VsOut {
 @fragment
 fn fs(input: VsOut) -> @location(0) vec4<f32> {
     let noise = fract(sin(dot(input.world.xz, vec2<f32>(12.9898, 78.233))) * 43758.5453);
+    // Black with the coverage in alpha: the pipeline multiplies the scene by
+    // (1 - alpha), so unseen ground reads as shadow rather than a blue tint.
     let alpha = clamp(input.color.a * (0.94 + noise * 0.06), 0.0, 1.0);
-    return vec4<f32>(input.color.rgb, alpha);
+    return vec4<f32>(0.0, 0.0, 0.0, alpha);
 }

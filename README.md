@@ -4,26 +4,33 @@ A 5v5 MOBA built on a custom Rust engine, using modern Old School RuneScape
 cache assets for its visual identity. Server-authoritative, data-driven, and
 designed for fast-paced low-team-count matches.
 
-> Status: **M5.1 Shadows + contact AO**. The cache reader, terrain/location/model/
-> sequence decoders, animated NPCs, a 3x3 Karamja block, A* pathfinding with
-> collision, hold-to-steer, a bitmap-font HUD, auto-attacks, a Q/W/E/R kit
-> with mana/cooldowns/XP/gold, three data-driven champions, a six-item shop
-> with tooltips and six inventory slots, passive gold and fountain healing,
-> three lanes with towers/inhibitors/shielded nexus, inhibitor respawn and
-> super minions, minion waves, jungle camps with team buffs, brush/fog of war,
-> a fogged minimap with click-to-pan, and a win condition are working.
-> **117HD Core** adds sRGB-correct sun/ambient lighting, per-face model
-> normals, smooth terrain lighting, a sky with clouds, height fog, static and
-> unit blob shadows, and dynamic ability/fountain point lights. **M5.1** adds a
-> 1024px sun shadow map with PCF, dynamic player/structure/camp casters,
-> alternating shadow updates, and baked contact AO. The **UI pass** adds an
-> OSRS-style Fountain Shop window with categories, item cards, detail/buy/sell
-> panes, real item icons and tab sprites, plus HUD objectives, team, resource,
-> event-log, inventory, and shop-button panels. **M5.3/M5.4 partial** adds
-> seamless terrain color smoothing, procedural ground detail, and an offscreen
-> post pass with FXAA, cheap bloom, color grading, and dithering. Cache-native
-> ground textures, HD water, MSAA, full SSAO, and draw-distance streaming are
-> next. See [docs/STATUS.md](docs/STATUS.md) and
+> Status: **M5.6 Biome map + Dota style presentation**. The cache reader,
+> terrain/location/model/sequence decoders, animated NPCs, a 5x5 Karamja block,
+> A* pathfinding with collision, hold-to-steer, a bitmap-font HUD, auto-attacks,
+> a Q/W/E/R kit with mana/cooldowns/XP/gold, three data-driven champions, a
+> six-item shop with tooltips and six inventory slots, passive gold and
+> fountain healing, three lanes with towers/inhibitors/shielded nexus,
+> inhibitor respawn and super minions, minion waves, jungle camps with team
+> buffs, brush/fog of war, a fogged minimap with click-to-pan, and a win
+> condition are working. **117HD Core** adds sRGB-correct sun/ambient
+> lighting, per-face model normals, smooth terrain lighting, a sky with
+> clouds, height fog, static and unit blob shadows, and dynamic
+> ability/fountain point lights. **M5.1** adds a 1024px sun shadow map with
+> PCF, dynamic player/structure/camp casters, alternating shadow updates, and
+> baked contact AO. The **UI pass** adds an OSRS-style Fountain Shop window
+> with categories, item cards, detail/buy/sell panes, real item icons and tab
+> sprites, plus HUD objectives, team, resource, event-log, inventory, and
+> shop-button panels. **M5.3/M5.4** adds seamless terrain color smoothing,
+> procedural ground detail, and an offscreen post pass with FXAA, color
+> grading, and dithering. **M5.5** replaces the cheap glow with a full HDR
+> bloom chain (Rgba16Float scene target, bright pass, separable Gaussian,
+> ACES tonemap) and samples real OSRS ground sprites from a mipmapped texture
+> array. **M5.6** rebuilds the map as a two-sided rift: eight regional biome
+> pockets cut from real OSRS regions (dark magic, vampires, ogres, goblins on
+> the dire side; human cities, elven lands, gnome stronghold on the radiant
+> side), a diagonal river with a centre bridge, tree lines down every lane, a
+> shadow (not tinted) fog of war, and a Dota style scoreboard, unit tooltip,
+> minimap viewport and biome label. See [docs/STATUS.md](docs/STATUS.md) and
 > [docs/UI_ASSETS.md](docs/UI_ASSETS.md).
 
 ## What exists
@@ -36,11 +43,14 @@ designed for fast-paced low-team-count matches.
   - sequences, frames, framemaps, and interpolated vertex animation
 - `crates/sim` — deterministic tile grid, collision, and A* pathfinding
 - `crates/tools` — `rift-tools` CLI for cache inspection and OBJ export
-- `crates/client` — native wgpu client: 3x3 Karamja, animated NPCs, three lanes,
-  towers/inhibitors/nexus, minion waves, jungle camps/buffs, brush/fog of war,
-  item shop/inventory, bitmap-font HUD, 117HD Core lighting/atmosphere,
-  fogged minimap, click-to-move + hold-to-steer, auto-attacks, Q
-- `data/maps/karamja_rift/map.json` — lanes, structures, camps, wave timing
+- `crates/client` — native wgpu client: 5x5 Karamja with regional biome
+  pockets and a river, animated NPCs, three lanes, towers/inhibitors/nexus,
+  minion waves, jungle camps/buffs with aggro and leash, brush/fog of war,
+  item shop/inventory, bitmap-font HUD, 117HD Core lighting/atmosphere, HDR
+  bloom, cache-native ground textures, fogged minimap, click-to-move +
+  hold-to-steer, auto-attacks, Q
+- `data/maps/karamja_rift/map.json` — lanes, structures, camps, biome pockets,
+  river and wave timing
 - `docs/reference` — archived Java-era experiments (not built)
 
 ## Requirements
@@ -65,7 +75,7 @@ cargo run -p rift-tools -- sequence 222
 cargo run -p rift-tools -- animate 7744 222
 cargo run -p rift-tools -- model 1715
 
-# Render the 3x3 block and play
+# Render the 5x5 block and play (radius 2 is the default)
 cargo run -p rift-client
 
 # Deterministic combat check: target a dummy and fire Q
@@ -83,6 +93,9 @@ cargo run -p rift-client -- --demo-kit --timescale 4
 # Play a different champion
 cargo run -p rift-client -- --champion jad
 cargo run -p rift-client -- --champion kree
+
+# Zoom the camera in on the hero (the default distance is 2750 world units)
+cargo run -p rift-client -- --distance 1800
 
 # 117HD Core lighting (default) or the flat classic baseline
 cargo run -p rift-client -- --graphics 117hd

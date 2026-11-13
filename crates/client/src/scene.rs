@@ -258,6 +258,60 @@ struct StructureJson {
     scale: f32,
 }
 
+/// A biome pocket: a rectangle of a real OSRS region transplanted into the
+/// map so each side of the rift has its own scenery and ground palette.
+#[derive(Debug, Clone, Deserialize)]
+struct BiomeJson {
+    id: String,
+    #[serde(default)]
+    side: String,
+    #[serde(default)]
+    label: String,
+    /// OSRS region (region_x, region_y) the pocket is cut from.
+    region: [u32; 2],
+    /// Source rectangle inside the region: x, y, width, height (tiles).
+    #[serde(default)]
+    rect: Option<[u32; 4]>,
+    /// Map tile where the source rectangle is placed.
+    origin: [f32; 2],
+    /// Ground tint multiplier applied to the pocket terrain.
+    #[serde(default)]
+    tint: Option<[f32; 3]>,
+    /// Scenery budget for the pocket.
+    #[serde(default = "default_budget")]
+    budget: usize,
+}
+
+fn default_budget() -> usize {
+    90
+}
+
+/// The river that splits the map between the radiant and dire halves.
+#[derive(Debug, Clone, Deserialize)]
+struct RiverJson {
+    points: Vec<[f32; 2]>,
+    /// Half width of the river in tiles.
+    #[serde(default = "default_river_width")]
+    width: f32,
+    /// How far the bed is cut below the banks, in world units.
+    #[serde(default = "default_river_depth")]
+    depth: f32,
+    /// Tiles where a lane crosses the river and stays walkable.
+    #[serde(default)]
+    bridges: Vec<[f32; 2]>,
+    /// Water surface height at the first and last point (world units).
+    #[serde(default)]
+    levels: Option<[f32; 2]>,
+}
+
+fn default_river_width() -> f32 {
+    3.5
+}
+
+fn default_river_depth() -> f32 {
+    30.0
+}
+
 #[derive(Debug, Clone, Deserialize)]
 struct LaneJson {
     id: String,
@@ -310,6 +364,10 @@ struct MapJson {
     #[serde(default)]
     brush: Vec<[f32; 4]>,
     #[serde(default)]
+    biomes: Vec<BiomeJson>,
+    #[serde(default)]
+    river: Option<RiverJson>,
+    #[serde(default)]
     atmosphere: Atmosphere,
 }
 
@@ -330,6 +388,18 @@ struct CampJson {
     respawn: f32,
     buff: String,
     scale: f32,
+    #[serde(default)]
+    damage: f32,
+    #[serde(default)]
+    range: f32,
+    #[serde(default)]
+    interval: f32,
+    #[serde(default)]
+    speed: f32,
+    #[serde(default)]
+    aggro: f32,
+    #[serde(default)]
+    leash: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -343,6 +413,33 @@ pub struct CampSpawn {
     pub respawn: f32,
     pub buff: CampBuff,
     pub scale: f32,
+    pub damage: f32,
+    pub range: f32,
+    pub interval: f32,
+    pub speed: f32,
+    pub aggro: f32,
+    pub leash: f32,
+}
+
+#[derive(Debug, Clone)]
+pub struct BiomePocket {
+    pub id: String,
+    pub side: String,
+    pub label: String,
+    pub region: (u32, u32),
+    pub rect: (u32, u32, u32, u32),
+    pub origin: (i32, i32),
+    pub tint: [f32; 3],
+    pub budget: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct RiverSpec {
+    pub points: Vec<(f32, f32)>,
+    pub width: f32,
+    pub depth: f32,
+    pub bridges: Vec<(f32, f32)>,
+    pub levels: Option<(f32, f32)>,
 }
 
 #[derive(Debug, Clone)]
@@ -358,6 +455,8 @@ pub struct MapLayout {
     pub structures: Vec<StructureSpawn>,
     pub camps: Vec<CampSpawn>,
     pub brush: Vec<(f32, f32, f32, f32)>,
+    pub biomes: Vec<BiomePocket>,
+    pub river: Option<RiverSpec>,
     pub wave_interval: f32,
     pub atmosphere: Atmosphere,
 }
@@ -432,6 +531,12 @@ impl MapLayout {
                     CampBuff::Might
                 },
                 scale: camp.scale,
+                damage: camp.damage,
+                range: camp.range,
+                interval: camp.interval,
+                speed: camp.speed,
+                aggro: camp.aggro,
+                leash: camp.leash,
             })
             .collect();
 
@@ -448,15 +553,72 @@ impl MapLayout {
             })
             .collect();
 
+        let biomes = map
+            .biomes
+            .iter()
+            .map(|biome| {
+                let rect = biome.rect.unwrap_or([0, 0, 64, 64]);
+                BiomePocket {
+                    id: biome.id.clone(),
+                    side: biome.side.clone(),
+                    label: biome.label.clone(),
+                    region: (biome.region[0], biome.region[1]),
+                    rect: (rect[0], rect[1], rect[2], rect[3]),
+                    origin: (
+                        biome.origin[0].round() as i32,
+                        biome.origin[1].round() as i32,
+                    ),
+                    tint: biome.tint.unwrap_or([1.0, 1.0, 1.0]),
+                    budget: biome.budget,
+                }
+            })
+            .collect();
+
+        let river = map.river.as_ref().map(|river| RiverSpec {
+            points: river.points.iter().map(|p| (p[0], p[1])).collect(),
+            width: river.width,
+            depth: river.depth,
+            bridges: river.bridges.iter().map(|p| (p[0], p[1])).collect(),
+            levels: river.levels.map(|l| (l[0], l[1])),
+        });
+
         Ok(Self {
             name: map.name,
             lanes,
             structures,
             camps,
             brush,
+            biomes,
+            river,
             wave_interval: map.wave_interval,
             atmosphere: map.atmosphere,
         })
+    }
+
+    /// True when a map tile falls inside one of the biome pockets.
+    pub fn in_biome(&self, tile_x: i32, tile_y: i32) -> bool {
+        self.biomes.iter().any(|biome| {
+            tile_x >= biome.origin.0
+                && tile_y >= biome.origin.1
+                && tile_x < biome.origin.0 + biome.rect.2 as i32
+                && tile_y < biome.origin.1 + biome.rect.3 as i32
+        })
+    }
+
+    /// Which side of the river a tile sits on: negative is the dire half,
+    /// positive is the radiant half.
+    pub fn river_side(&self, tile_x: f32, tile_y: f32) -> f32 {
+        let Some(river) = &self.river else {
+            return 1.0;
+        };
+        if river.points.len() < 2 {
+            return 1.0;
+        }
+        let (_, segment, _) = nearest_on_polyline(&river.points, tile_x, tile_y);
+        let (ax, ay) = river.points[segment];
+        let (bx, by) = river.points[segment + 1];
+        let cross = (bx - ax) * (tile_y - ay) - (by - ay) * (tile_x - ax);
+        if cross < 0.0 { -1.0 } else { 1.0 }
     }
 
     pub fn distance_to_lane(&self, x: f32, z: f32) -> f32 {
@@ -521,7 +683,7 @@ impl MapLayout {
                 let steps = ((len / 64.0).ceil() as usize).max(1);
                 let dir = (b - a) / len;
                 let perp = Vec2::new(-dir.y, dir.x) * (width * 0.5);
-                let color = [96, 91, 80];
+                let color = [146, 116, 78];
 
                 for i in 0..steps {
                     let t0 = i as f32 / steps as f32;
@@ -539,16 +701,15 @@ impl MapLayout {
                     let v1 = Vec3::new(corners[1].x, ys[1], corners[1].y);
                     let v2 = Vec3::new(corners[2].x, ys[2], corners[2].y);
                     let v3 = Vec3::new(corners[3].x, ys[3], corners[3].y);
-                    mesh.push_triangle(
-                        SceneVertex::new(v0, Vec3::Y, color),
-                        SceneVertex::new(v1, Vec3::Y, color),
-                        SceneVertex::new(v2, Vec3::Y, color),
-                    );
-                    mesh.push_triangle(
-                        SceneVertex::new(v2, Vec3::Y, color),
-                        SceneVertex::new(v1, Vec3::Y, color),
-                        SceneVertex::new(v3, Vec3::Y, color),
-                    );
+                    let mut a = SceneVertex::new(v0, Vec3::Y, color);
+                    let mut b = SceneVertex::new(v1, Vec3::Y, color);
+                    let mut c = SceneVertex::new(v2, Vec3::Y, color);
+                    let mut d = SceneVertex::new(v3, Vec3::Y, color);
+                    for vertex in [&mut a, &mut b, &mut c, &mut d] {
+                        vertex.material = 4;
+                    }
+                    mesh.push_triangle(a, b, c);
+                    mesh.push_triangle(c, b, d);
                 }
             }
         }
@@ -675,6 +836,170 @@ pub fn build(
         }
     }
 
+    // The map layout defines the biome pockets and the river, so it has to
+    // be read before the terrain is finalised.
+    let provisional_height = HeightGrid {
+        origin_tile_x,
+        origin_tile_y,
+        size,
+        heights: heights.clone(),
+    };
+    let mut map = MapLayout::load(map_path, &provisional_height)?;
+
+    // ------------------------------------------------------------------
+    // Biome pockets: rectangles of real OSRS regions transplanted into the
+    // map so the radiant and dire halves carry their own scenery and
+    // ground palette. The dire pockets hold dark magic, vampires, ogres
+    // and goblins; the radiant pockets hold human cities, elven woods and
+    // the gnome stronghold.
+    // ------------------------------------------------------------------
+    let mut pocket_data: HashMap<String, (Terrain, Locations)> = HashMap::new();
+    for biome in &map.biomes {
+        let Some(locations_group) = keys.find_locations_group(biome.region.0, biome.region.1)
+        else {
+            tracing::warn!(
+                "biome {}: region {:?} missing from cache",
+                biome.id,
+                biome.region
+            );
+            continue;
+        };
+        let terrain_group = locations_group.saturating_sub(1);
+        let terrain = Terrain::load(
+            biome.region.0,
+            biome.region.1,
+            &cache.group(5, terrain_group)?.data,
+        )?;
+        let locations = Locations::load(
+            biome.region.0,
+            biome.region.1,
+            &cache.group(5, locations_group)?.data,
+        )?;
+        pocket_data.insert(biome.id.clone(), (terrain, locations));
+    }
+
+    let mut pocket_water: Vec<(i32, i32)> = Vec::new();
+    for biome in &map.biomes {
+        let Some((terrain, _)) = pocket_data.get(&biome.id) else {
+            continue;
+        };
+        let (rx, ry, pw, ph) = biome.rect;
+        for ly in 0..ph {
+            for lx in 0..pw {
+                let sx = rx + lx;
+                let sy = ry + ly;
+                if sx >= 64 || sy >= 64 {
+                    continue;
+                }
+                let map_tx = biome.origin.0 + lx as i32;
+                let map_ty = biome.origin.1 + ly as i32;
+                let gx = map_tx - origin_tile_x;
+                let gy = map_ty - origin_tile_y;
+                if gx < 0 || gy < 0 || gx >= size as i32 - 1 || gy >= size as i32 - 1 {
+                    continue;
+                }
+                let idx = gy as usize * size + gx as usize;
+                let tile = terrain.tile(0, sx as usize, sy as usize);
+                // Blend the pocket into the surrounding ground over the
+                // outer seven tiles so the seam is hidden.
+                let edge = lx
+                    .min(ly)
+                    .min(pw.saturating_sub(1).saturating_sub(lx))
+                    .min(ph.saturating_sub(1).saturating_sub(ly)) as f32;
+                let blend = (edge / 7.0).clamp(0.0, 1.0);
+                let blend = blend * blend * (3.0 - 2.0 * blend);
+                let pocket_h = tile.height as f32 * 8.0;
+                heights[idx] = heights[idx] * (1.0 - blend) + pocket_h * blend;
+                let c = tile_color(terrain, &underlays, &overlays, sx as usize, sy as usize);
+                let tinted = [
+                    (c[0] as f32 * biome.tint[0]).clamp(0.0, 255.0) as u8,
+                    (c[1] as f32 * biome.tint[1]).clamp(0.0, 255.0) as u8,
+                    (c[2] as f32 * biome.tint[2]).clamp(0.0, 255.0) as u8,
+                ];
+                for k in 0..3 {
+                    colors[idx][k] = (colors[idx][k] as f32 * (1.0 - blend)
+                        + tinted[k] as f32 * blend)
+                        .clamp(0.0, 255.0) as u8;
+                }
+                if tile.underlay_id == 0 {
+                    pocket_water.push((gx, gy));
+                }
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // The river: a diagonal waterway that splits the rift into a radiant
+    // half and a dire half, with a walkable crossing in the centre.
+    // ------------------------------------------------------------------
+    let mut river_blocked: Vec<(i32, i32)> = Vec::new();
+    if let Some(river) = &map.river {
+        let points = &river.points;
+        if points.len() >= 2 {
+            let mut levels: Vec<f32> = Vec::with_capacity(points.len());
+            for (index, point) in points.iter().enumerate() {
+                let gx = point.0.round() as i32 - origin_tile_x;
+                let gy = point.1.round() as i32 - origin_tile_y;
+                let sampled = if gx >= 0 && gy >= 0 && (gx as usize) < size && (gy as usize) < size
+                {
+                    heights[gy as usize * size + gx as usize]
+                } else {
+                    0.0
+                };
+                let level = match river.levels {
+                    Some((start, end)) => {
+                        let t = index as f32 / (points.len() - 1).max(1) as f32;
+                        start + (end - start) * t
+                    }
+                    None => sampled,
+                };
+                levels.push(level);
+            }
+            // Water always runs downhill.
+            for index in 1..levels.len() {
+                if levels[index] > levels[index - 1] - 0.5 {
+                    levels[index] = levels[index - 1] - 0.5;
+                }
+            }
+
+            for gy in 0..size - 1 {
+                for gx in 0..size - 1 {
+                    let tx = (origin_tile_x + gx as i32) as f32;
+                    let ty = (origin_tile_y + gy as i32) as f32;
+                    let (dist, segment, along) = nearest_on_polyline(points, tx, ty);
+                    if dist > river.width * 2.2 {
+                        continue;
+                    }
+                    let level = levels[segment] + (levels[segment + 1] - levels[segment]) * along;
+                    let k = 1.0 - smoothstep(river.width * 0.45, river.width * 1.9, dist);
+                    if k <= 0.001 {
+                        continue;
+                    }
+                    let bridge = river
+                        .bridges
+                        .iter()
+                        .any(|b| (b.0 - tx) * (b.0 - tx) + (b.1 - ty) * (b.1 - ty) < 30.0);
+                    let depth = if bridge {
+                        river.depth * 0.2
+                    } else {
+                        river.depth
+                    };
+                    let idx = gy * size + gx;
+                    let bed = (level - depth).min(heights[idx]);
+                    heights[idx] = heights[idx] * (1.0 - k) + bed * k;
+                    let water = [40u8, 84, 126];
+                    for c in 0..3 {
+                        colors[idx][c] = (colors[idx][c] as f32 * (1.0 - k) + water[c] as f32 * k)
+                            .clamp(0.0, 255.0) as u8;
+                    }
+                    if !bridge && k > 0.55 {
+                        river_blocked.push((gx as i32, gy as i32));
+                    }
+                }
+            }
+        }
+    }
+
     // Smooth the per-tile color field before triangulating. Two box-blur
     // passes remove the hard square boundaries between adjacent tiles; the
     // resulting per-corner colors interpolate across the terrain mesh.
@@ -753,6 +1078,20 @@ pub fn build(
         heights,
     };
 
+    // Re-seat map features on the final terrain: pockets and the river can
+    // shift the ground under a lane or a camp.
+    for structure in &mut map.structures {
+        structure.pos.y = height.height_at(structure.pos.x, structure.pos.z);
+    }
+    for camp in &mut map.camps {
+        camp.pos.y = height.height_at(camp.pos.x, camp.pos.z);
+    }
+    for lane in &mut map.lanes {
+        for waypoint in &mut lane.waypoints {
+            waypoint.y = height.height_at(waypoint.x, waypoint.z);
+        }
+    }
+
     // Collision: water and blocking scenery footprints. This is deliberately
     // conservative; the editor will replace it with authored collision later.
     let tiles_x = ((max_x - min_x + 1) * 64) as usize;
@@ -770,6 +1109,13 @@ pub fn build(
                 }
             }
         }
+    }
+
+    for (gx, gy) in &pocket_water {
+        collision_grid.set_blocked(*gx, *gy, true);
+    }
+    for (gx, gy) in &river_blocked {
+        collision_grid.set_blocked(*gx, *gy, true);
     }
 
     let mut def_cache: HashMap<u32, ObjectDefinition> = HashMap::new();
@@ -799,11 +1145,6 @@ pub fn build(
             sight_grid.block_rect(gx, gy, w, h);
         }
     }
-    let map = MapLayout::load(map_path, &height)?;
-    map.clear_collision(&mut collision_grid, origin_tile_x, origin_tile_y, 4.5);
-    map.block_structures(&mut collision_grid, origin_tile_x, origin_tile_y);
-    map.block_structures(&mut sight_grid, origin_tile_x, origin_tile_y);
-    let collision = WorldCollision::new(collision_grid, sight_grid, origin_tile_x, origin_tile_y);
 
     let center = Vec3::new(
         (center_x as f32 * 64.0 + 32.0) * 128.0,
@@ -871,11 +1212,207 @@ pub fn build(
             ((ry as f32 * 64.0) + loc.y as f32 + 0.5) * 128.0,
         );
         let angle = loc.rotation as f32 * std::f32::consts::FRAC_PI_2;
-        append_model(&mut model_mesh, model, base, angle);
+        append_model_foliage(&mut model_mesh, model, base, angle, is_plant_object(&def));
         let shadow_size = (def.size_x.max(def.size_y) as f32 * 128.0 * 0.55).clamp(55.0, 360.0);
         push_blob_quad(&mut shadow_mesh, base, shadow_size, 0.24);
         placements += 1;
     }
+
+    // ------------------------------------------------------------------
+    // Biome pocket scenery: real OSRS objects taken from each pocket's
+    // source region and transplanted into the map.
+    // ------------------------------------------------------------------
+    for biome in &map.biomes {
+        let Some((_, locations)) = pocket_data.get(&biome.id) else {
+            continue;
+        };
+        let (rx, ry, pw, ph) = biome.rect;
+        let center_x = biome.origin.0 as f32 + pw as f32 * 0.5;
+        let center_y = biome.origin.1 as f32 + ph as f32 * 0.5;
+        let mut candidates: Vec<(u8, f32, u32, u32, u32, u32, u8)> = Vec::new();
+        for loc in &locations.locations {
+            let loc_x = loc.x as u32;
+            let loc_y = loc.y as u32;
+            if loc_x < rx || loc_y < ry || loc_x >= rx + pw || loc_y >= ry + ph {
+                continue;
+            }
+            if let std::collections::hash_map::Entry::Vacant(entry) = def_cache.entry(loc.id) {
+                if let Some(data) = object_files.get(&loc.id) {
+                    if let Ok(def) = ObjectDefinition::parse(loc.id, data) {
+                        entry.insert(def);
+                    }
+                }
+            }
+            let Some(def) = def_cache.get(&loc.id) else {
+                continue;
+            };
+            if !is_pocket_scenery(def) {
+                continue;
+            }
+            let Some(model_id) = def.first_model() else {
+                continue;
+            };
+            let dx = loc.x as f32 + 0.5 - center_x;
+            let dy = loc.y as f32 + 0.5 - center_y;
+            candidates.push((
+                scenery_priority(def),
+                dx * dx + dy * dy,
+                loc.id,
+                loc_x,
+                loc_y,
+                model_id,
+                loc.rotation,
+            ));
+        }
+        candidates.sort_by(|a, b| {
+            a.0.cmp(&b.0)
+                .then(a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+        });
+
+        let mut placed = 0usize;
+        for (_, _, object_id, sx, sy, model_id, rotation) in candidates {
+            if placed >= biome.budget {
+                break;
+            }
+            let Some(def) = def_cache.get(&object_id) else {
+                continue;
+            };
+            let model = if let Some(model) = model_cache.get(&model_id) {
+                model
+            } else {
+                let group = cache.group(7, model_id)?;
+                let model = Model::load(model_id, &group.data)?;
+                model_cache.insert(model_id, model);
+                model_cache.get(&model_id).unwrap()
+            };
+            let map_tx = biome.origin.0 + sx as i32 - rx as i32;
+            let map_ty = biome.origin.1 + sy as i32 - ry as i32;
+            let wx = (map_tx as f32 + 0.5) * 128.0;
+            let wz = (map_ty as f32 + 0.5) * 128.0;
+            if !height.contains(wx, wz) {
+                continue;
+            }
+            let base = Vec3::new(wx, height.height_at(wx, wz), wz);
+            let angle = rotation as f32 * std::f32::consts::FRAC_PI_2;
+            append_model_scaled_tinted(
+                &mut model_mesh,
+                model,
+                base,
+                angle,
+                1.0,
+                biome.tint,
+                is_plant_object(def),
+            );
+            let shadow_size = (def.size_x.max(def.size_y) as f32 * 128.0 * 0.55).clamp(55.0, 360.0);
+            push_blob_quad(&mut shadow_mesh, base, shadow_size, 0.24);
+
+            let mut w = def.size_x.max(1) as i32;
+            let mut h = def.size_y.max(1) as i32;
+            if rotation % 2 == 1 {
+                std::mem::swap(&mut w, &mut h);
+            }
+            collision_grid.block_rect(map_tx - origin_tile_x, map_ty - origin_tile_y, w, h);
+            sight_grid.block_rect(map_tx - origin_tile_x, map_ty - origin_tile_y, w, h);
+            placed += 1;
+        }
+        placements += placed;
+        tracing::info!(
+            "biome {} ({}): {} models from region {:?}",
+            biome.id,
+            biome.side,
+            placed,
+            biome.region
+        );
+    }
+
+    // Lanes stay walkable even where a biome pocket overlaps them, and the
+    // river is only fordable where a lane crosses it.
+    map.clear_collision(&mut collision_grid, origin_tile_x, origin_tile_y, 4.5);
+    map.block_structures(&mut collision_grid, origin_tile_x, origin_tile_y);
+    map.block_structures(&mut sight_grid, origin_tile_x, origin_tile_y);
+    tracing::info!(
+        "river tiles blocked: {}, pocket tiles: {}",
+        river_blocked.len(),
+        pocket_water.len()
+    );
+
+    // ------------------------------------------------------------------
+    // Tree lines: OSRS tree models form a natural barrier along both sides
+    // of every lane, with a sparser second row behind them.
+    // ------------------------------------------------------------------
+    // OSRS tree models: green canopy trees, tropical palms, and bare dead
+    // trees for the dire side.
+    const TREE_MODELS: &[u32] = &[
+        1570, 1637, 1681, 1683, 1611, 1611, 1611, 1611, 1676, 1687, 1605, 1715, 1716, 1621,
+    ];
+    let structure_positions: Vec<Vec3> = map.structures.iter().map(|s| s.pos).collect();
+    let tree_context = TreeContext {
+        cache,
+        map: &map,
+        height: &height,
+        structures: &structure_positions,
+        river_blocked: &river_blocked,
+        origin: (origin_tile_x, origin_tile_y),
+        models: TREE_MODELS,
+    };
+    let mut tree_count = 0usize;
+    let mut tree_seed = 1u32;
+    {
+        let mut sink = ScenerySink {
+            model_cache: &mut model_cache,
+            model_mesh: &mut model_mesh,
+            shadow_mesh: &mut shadow_mesh,
+            collision_grid: &mut collision_grid,
+        };
+        for lane in &map.lanes {
+            for pair in lane.waypoints.windows(2) {
+                let a = pair[0];
+                let b = pair[1];
+                let delta = b - a;
+                let length = delta.length();
+                if length < 1.0 {
+                    continue;
+                }
+                let dir = delta / length;
+                let perp = Vec3::new(-dir.z, 0.0, dir.x);
+                let steps = (length / (128.0 * 2.4)).ceil().max(1.0) as usize;
+                for step in 0..=steps {
+                    let t = step as f32 / steps as f32;
+                    let point = a + delta * t;
+                    for side in [-1.0f32, 1.0f32] {
+                        tree_seed = tree_seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                        let jitter = (hash01(tree_seed) - 0.5) * 1.8;
+                        let offset = (4.4 + jitter) * 128.0;
+                        place_tree(
+                            &tree_context,
+                            &mut sink,
+                            point + perp * (offset * side),
+                            tree_seed,
+                            &mut tree_count,
+                        );
+                    }
+                    // Sparser outer row for depth.
+                    if step % 3 == 0 {
+                        for side in [-1.0f32, 1.0f32] {
+                            tree_seed = tree_seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                            let jitter = (hash01(tree_seed) - 0.5) * 2.6;
+                            let offset = (7.2 + jitter) * 128.0;
+                            place_tree(
+                                &tree_context,
+                                &mut sink,
+                                point + perp * (offset * side),
+                                tree_seed,
+                                &mut tree_count,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+    tracing::info!("tree lines: {} trees", tree_count);
+
+    let collision = WorldCollision::new(collision_grid, sight_grid, origin_tile_x, origin_tile_y);
 
     map.build_mesh(&mut model_mesh, &height, 3.0 * 128.0);
 
@@ -1211,6 +1748,162 @@ fn tile_color(
     }
 }
 
+/// Deterministic 0..1 hash used for scenery jitter.
+fn hash01(seed: u32) -> f32 {
+    let mut h = seed ^ 0x9E37_79B9;
+    h = h.wrapping_mul(0x85EB_CA6B);
+    h ^= h >> 13;
+    h = h.wrapping_mul(0xC2B2_AE35);
+    h ^= h >> 16;
+    (h & 0x00FF_FFFF) as f32 / 0x0100_0000 as f32
+}
+
+fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
+    let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// Distance to a polyline plus the index of the closest segment and how far
+/// along that segment the closest point sits.
+fn nearest_on_polyline(points: &[(f32, f32)], x: f32, y: f32) -> (f32, usize, f32) {
+    let mut best = (f32::MAX, 0usize, 0.0f32);
+    for (index, pair) in points.windows(2).enumerate() {
+        let (ax, ay) = pair[0];
+        let (bx, by) = pair[1];
+        let abx = bx - ax;
+        let aby = by - ay;
+        let len2 = abx * abx + aby * aby;
+        if len2 <= 1e-6 {
+            continue;
+        }
+        let t = (((x - ax) * abx + (y - ay) * aby) / len2).clamp(0.0, 1.0);
+        let px = ax + abx * t;
+        let py = ay + aby * t;
+        let d = ((x - px) * (x - px) + (y - py) * (y - py)).sqrt();
+        if d < best.0 {
+            best = (d, index, t);
+        }
+    }
+    best
+}
+
+/// True for the OSRS objects that are plants, so their flat coloured faces
+/// can be replaced with foliage green.
+fn is_plant_object(def: &ObjectDefinition) -> bool {
+    let name = def.name.to_lowercase();
+    [
+        "tree", "palm", "jungle", "bush", "plant", "leaves", "sapling",
+    ]
+    .iter()
+    .any(|needle| name.contains(needle))
+}
+
+/// Scenery that is worth the draw call inside a biome pocket.
+fn is_pocket_scenery(def: &ObjectDefinition) -> bool {
+    let name = def.name.to_lowercase();
+    if name.is_empty() {
+        return false;
+    }
+    ![
+        "flower", "daisies", "grass", "fern", "plant", "weed", "herb", "sapling", "mushroom",
+    ]
+    .iter()
+    .any(|needle| name.contains(needle))
+}
+
+/// Order pocket scenery so landmark objects are placed before clutter.
+fn scenery_priority(def: &ObjectDefinition) -> u8 {
+    let name = def.name.to_lowercase();
+    if name.contains("tree") || name.contains("palm") || name.contains("jungle") {
+        return 0;
+    }
+    if [
+        "pillar", "statue", "ruin", "castle", "bank", "shop", "door", "wall", "fence", "grave",
+        "tent", "altar", "monument", "cauldron", "fountain", "banner", "hut", "village", "tower",
+    ]
+    .iter()
+    .any(|needle| name.contains(needle))
+    {
+        return 1;
+    }
+    2
+}
+
+struct ScenerySink<'a> {
+    model_cache: &'a mut HashMap<u32, Model>,
+    model_mesh: &'a mut MeshData,
+    shadow_mesh: &'a mut MeshData,
+    collision_grid: &'a mut Grid,
+}
+
+struct TreeContext<'a> {
+    cache: &'a Cache,
+    map: &'a MapLayout,
+    height: &'a HeightGrid,
+    structures: &'a [Vec3],
+    river_blocked: &'a [(i32, i32)],
+    origin: (i32, i32),
+    models: &'a [u32],
+}
+
+/// Plant one OSRS tree model. Trees skirt the lanes, avoid structures and
+/// pockets, and tint themselves by the side of the river they stand on.
+fn place_tree(
+    ctx: &TreeContext<'_>,
+    sink: &mut ScenerySink<'_>,
+    pos: Vec3,
+    seed: u32,
+    count: &mut usize,
+) {
+    let tile_x = (pos.x / 128.0).floor() as i32;
+    let tile_y = (pos.z / 128.0).floor() as i32;
+    if !ctx.height.contains(pos.x, pos.z) {
+        return;
+    }
+    if ctx.structures.iter().any(|s| s.distance(pos) < 9.0 * 128.0) {
+        return;
+    }
+    if ctx.map.distance_to_lane(pos.x, pos.z) < 3.4 * 128.0 {
+        return;
+    }
+    if ctx.map.in_biome(tile_x, tile_y) {
+        return;
+    }
+    let gx = tile_x - ctx.origin.0;
+    let gy = tile_y - ctx.origin.1;
+    if ctx.river_blocked.contains(&(gx, gy)) {
+        return;
+    }
+
+    let model_id = ctx.models[(seed as usize) % ctx.models.len()];
+    let model = if let Some(model) = sink.model_cache.get(&model_id) {
+        model
+    } else {
+        let Ok(group) = ctx.cache.group(7, model_id) else {
+            return;
+        };
+        let Ok(model) = Model::load(model_id, &group.data) else {
+            return;
+        };
+        sink.model_cache.insert(model_id, model);
+        sink.model_cache.get(&model_id).unwrap()
+    };
+
+    let base = Vec3::new(pos.x, ctx.height.height_at(pos.x, pos.z), pos.z);
+    let angle = hash01(seed ^ 0x5bf0_3635) * std::f32::consts::TAU;
+    let scale = 0.78 + hash01(seed.wrapping_add(7)) * 0.26;
+    let side = ctx.map.river_side(tile_x as f32, tile_y as f32);
+    let tint = if side < 0.0 {
+        [0.86f32, 0.90, 0.80]
+    } else {
+        [1.0, 1.06, 0.92]
+    };
+    append_model_scaled_tinted(sink.model_mesh, model, base, angle, scale, tint, true);
+    push_blob_quad(sink.shadow_mesh, base, 150.0, 0.22);
+    sink.collision_grid.block_rect(gx, gy, 2, 2);
+    *count += 1;
+}
+
 fn push_blob_quad(mesh: &mut MeshData, center: Vec3, size: f32, alpha: f32) {
     let y = center.y + 4.0;
     let base = mesh.vertices.len() as u32;
@@ -1238,11 +1931,66 @@ fn push_blob_quad(mesh: &mut MeshData, center: Vec3, size: f32, alpha: f32) {
         .extend_from_slice(&[base, base + 1, base + 2, base + 2, base + 1, base + 3]);
 }
 
-fn append_model(mesh: &mut MeshData, model: &Model, base: Vec3, angle: f32) {
-    append_model_scaled(mesh, model, base, angle, 1.0);
+fn append_model_foliage(mesh: &mut MeshData, model: &Model, base: Vec3, angle: f32, foliage: bool) {
+    append_model_scaled_tinted(mesh, model, base, angle, 1.0, [1.0, 1.0, 1.0], foliage);
 }
 
-fn append_model_scaled(mesh: &mut MeshData, model: &Model, base: Vec3, angle: f32, scale: f32) {
+/// OSRS tree models are often plain grey or white. When the object is a
+/// plant, swap those faces for the foliage green so the tree reads as a
+/// tree instead of a white cone.
+fn foliage_tint(rgb: [u8; 3], foliage: bool) -> [u8; 3] {
+    if !foliage {
+        return rgb;
+    }
+    let max = rgb[0].max(rgb[1]).max(rgb[2]) as f32;
+    let min = rgb[0].min(rgb[1]).min(rgb[2]) as f32;
+    if max - min < 40.0 && max > 70.0 {
+        return [70, 128, 58];
+    }
+    rgb
+}
+
+/// True when most of a model's faces are textured, which means it is a
+/// canopy model whose plain faces are inner geometry.
+fn model_is_textured(model: &Model) -> bool {
+    let mut textured = 0usize;
+    for (index, colour) in model.face_colors.iter().enumerate() {
+        let is_textured = model
+            .face_textures
+            .as_ref()
+            .and_then(|t| t.get(index))
+            .is_some_and(|&t| t >= 0);
+        if is_textured || *colour == 127 {
+            textured += 1;
+        }
+    }
+    textured * 2 > model.faces.len()
+}
+
+/// Scale a colour up until its brightest channel reaches `min`, so dark
+/// OSRS vertex colours stay readable in shadow.
+fn lift_brightness(rgb: [u8; 3], min: f32) -> [u8; 3] {
+    let peak = rgb[0].max(rgb[1]).max(rgb[2]) as f32;
+    if peak >= min || peak <= 1.0 {
+        return rgb;
+    }
+    let scale = min / peak;
+    [
+        (rgb[0] as f32 * scale).clamp(0.0, 255.0) as u8,
+        (rgb[1] as f32 * scale).clamp(0.0, 255.0) as u8,
+        (rgb[2] as f32 * scale).clamp(0.0, 255.0) as u8,
+    ]
+}
+
+fn append_model_scaled_tinted(
+    mesh: &mut MeshData,
+    model: &Model,
+    base: Vec3,
+    angle: f32,
+    scale: f32,
+    tint: [f32; 3],
+    foliage: bool,
+) {
     let rot = Mat3::from_rotation_y(angle);
 
     for (face_idx, &[a, b, c]) in model.faces.iter().enumerate() {
@@ -1267,16 +2015,35 @@ fn append_model_scaled(mesh: &mut MeshData, model: &Model, base: Vec3, angle: f3
             .as_ref()
             .and_then(|t| t.get(face_idx))
             .is_some_and(|&t| t >= 0);
+        // Several OSRS tree models mix textured canopy faces with plain white
+        // inner faces. Cap the plain faces so the tree reads as foliage
+        // instead of a white cone.
         let rgb = if textured || model.face_colors[face_idx] == 127 {
             let n = model
                 .face_normals
                 .get(face_idx)
                 .copied()
                 .unwrap_or([0.0, 1.0, 0.0]);
-            [(38.0 + n[1] * 16.0) as u8, (82.0 + n[1] * 22.0) as u8, 34]
+            [(84.0 + n[1] * 26.0) as u8, (142.0 + n[1] * 30.0) as u8, 62]
         } else {
             hsl_to_rgb(model.face_colors[face_idx], 1.0)
         };
+        let rgb = foliage_tint(rgb, foliage);
+        let rgb = if textured {
+            rgb
+        } else if model_is_textured(model) {
+            [rgb[0].min(120), rgb[1].min(96), rgb[2].min(74)]
+        } else {
+            rgb
+        };
+        let rgb = [
+            (rgb[0] as f32 * tint[0]).clamp(0.0, 255.0) as u8,
+            (rgb[1] as f32 * tint[1]).clamp(0.0, 255.0) as u8,
+            (rgb[2] as f32 * tint[2]).clamp(0.0, 255.0) as u8,
+        ];
+        // OSRS models carry very dark vertex colours; lift them so the
+        // scenery never reads as a black blob.
+        let rgb = lift_brightness(rgb, 62.0);
 
         let ao_at = |p: Vec3| {
             (0.78 + 0.22 * ((p.y - base.y).max(0.0) / 400.0).clamp(0.0, 1.0)).clamp(0.70, 1.0)

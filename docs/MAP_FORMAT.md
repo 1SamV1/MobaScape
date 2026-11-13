@@ -19,7 +19,7 @@ data/maps/karamja_rift/
 the cache and are **not committed**. `map.json` is committed because it is our
 design data; it references cache IDs, not assets.
 
-## Current `map.json` (v1.5)
+## Current `map.json` (v1.6)
 
 The playable map is `data/maps/karamja_rift/map.json`:
 
@@ -28,9 +28,30 @@ The playable map is `data/maps/karamja_rift/map.json`:
   `towers` (two per team), and two `inhibitors` (one per team).
 - `wave_interval`: 25 s. Each lane spawns two melee skeletons and one skeleton
   mage per team per wave.
-- `camps`: four neutral jungle camps. Each camp has a tile, model, optional
-  idle/walk sequence, health, respawn time, buff (`might` or `swift`), and
-  scale. Camps grant a 60 s team buff when killed.
+- `camps`: eight neutral jungle camps. Each camp has a tile, model, optional
+  idle/walk sequence, health, respawn time, buff (`might` or `swift`), scale,
+  and its AI numbers: `damage`, `range`, `interval`, `speed`, `aggro` and
+  `leash`. Camps aggro when a hero enters `aggro` or when they take damage,
+  chase the hero, leash back to `home` when pulled past `leash`, heal to full
+  on arrival and respawn after `respawn` seconds. Camps grant a 60 s team buff
+  when killed.
+- `biomes`: regional biome pockets. Each pocket transplants a rectangle of a
+  real OSRS region into the map:
+  - `region`: `[region_x, region_y]` of the source OSRS region.
+  - `rect`: `[x, y, width, height]` tile rectangle inside that region.
+  - `origin`: map tile where the rectangle is placed.
+  - `tint`: ground colour multiplier for the pocket.
+  - `side`: `radiant` or `dire`, `label`: the name shown in the HUD.
+  The dire half holds dark magic (Wilderness dead-tree graveyard), vampires
+  (Morytania swamp), ogre ruins (ceremonial pillars) and a goblin camp; the
+  radiant half holds a human city (Varrock), a human keep, the elven lands
+  (Tirannwn) and the gnome stronghold. Pocket terrain, colours and scenery all
+  come from the cache.
+- `river`: the waterway that splits the rift. `points` is a polyline in map
+  tiles running from the upper left third through the centre to the lower
+  right third, `width` is the half width in tiles, `depth` how far the bed is
+  cut, `bridges` lists the tiles that stay walkable (the centre crossing) and
+  `levels` sets the water height at the first and last point.
 - `brush`: rectangles `[x0, y0, x1, y1]` in world tiles. Units inside brush are
   hidden from the enemy unless the player is within 500 units.
 - `atmosphere`: optional lighting/atmosphere block:
@@ -43,10 +64,15 @@ The playable map is `data/maps/karamja_rift/map.json`:
   fall before the nexus can be damaged.
 - Nexus: model 1747, 1500 HP. Destroying it ends the match.
 
-The scene clears collision in a ~4.5-tile corridor around every lane, blocks
-3×3 footprints under structures, skips scenery within 5 tiles of any lane, and
-draws a stone-path ribbon per lane. Positions are absolute world tiles (e.g.
-2800, 3040), not region-local coordinates.
+The scene clears collision in a ~4.5-tile corridor around every lane (after
+biome pockets are placed, so a pocket never seals a lane), blocks footprints
+under structures, skips scenery within 5 tiles of any lane, and draws a dirt
+path ribbon per lane. Positions are absolute world tiles (e.g. 2800, 3040),
+not region-local coordinates.
+
+Lane sides are lined with OSRS tree models: a dense row 4.4 tiles from the
+lane centre and a sparser row 7.2 tiles out, tinted by which side of the
+river they stand on.
 
 ## Future schema
 

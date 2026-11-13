@@ -5,6 +5,7 @@ mod hud;
 mod items;
 mod renderer;
 mod scene;
+mod terrain_textures;
 mod ui_assets;
 
 use std::collections::HashSet;
@@ -24,7 +25,7 @@ use winit::window::{Window, WindowId};
 
 use crate::animated::AnimatedScene;
 use crate::champion::ChampionConfig;
-use crate::hud::{Hud, PlayerHud, minimap_world_at};
+use crate::hud::{HoverInfo, Hud, PlayerHud, minimap_world_at};
 use crate::items::{
     ItemShop, point_in_rect, shop_button_at, shop_buy_at, shop_card_at, shop_card_rect,
     shop_category_at, shop_close_at, shop_sell_at, shop_window_rect,
@@ -41,11 +42,11 @@ struct Cli {
     region_x: u32,
     #[arg(long, default_value_t = 47)]
     region_y: u32,
-    /// Radius in 64-tile regions (1 = 3x3 block).
-    #[arg(long, default_value_t = 1)]
+    /// Radius in 64-tile regions (2 = 5x5 block, required by the full map).
+    #[arg(long, default_value_t = 2)]
     radius: u32,
     /// Initial camera distance in world units.
-    #[arg(long, default_value_t = 4400.0)]
+    #[arg(long, default_value_t = 2750.0)]
     distance: f32,
     /// Optional initial camera pitch in radians (dev screenshots).
     #[arg(long)]
@@ -463,7 +464,7 @@ impl ApplicationHandler for App {
                     MouseScrollDelta::PixelDelta(pos) => pos.y as f32 / 120.0,
                 };
                 renderer.camera.distance =
-                    (renderer.camera.distance * (1.0 - amount * 0.12)).clamp(1200.0, 24_000.0);
+                    (renderer.camera.distance * (1.0 - amount * 0.12)).clamp(900.0, 12_000.0);
                 renderer.update_camera();
                 print_camera(renderer);
             }
@@ -697,6 +698,7 @@ impl App {
                         if let Some(camp_pos) = animated.unit_pos(index) {
                             let spawn = camp_pos + Vec3::new(200.0, 0.0, 0.0);
                             animated.teleport_player(spawn);
+                            animated.refresh_visibility(1.0, collision);
                             let ok = animated.set_attack_target(index, collision, height);
                             tracing::info!("demo camp: target {index}, attack={ok}");
                             self.demo_camp_target = Some(index);
@@ -716,7 +718,14 @@ impl App {
                     if let Some(index) = self.demo_camp_target {
                         let health = animated.unit_health(index).unwrap_or(-1.0);
                         let buff = animated.team_buff(0);
-                        tracing::info!("demo camp: health {health:.0}, buff {buff:?}");
+                        let camp_pos = animated.unit_pos(index).unwrap_or(Vec3::ZERO);
+                        let home = animated.unit_home(index).unwrap_or(Vec3::ZERO);
+                        let aggro = animated.unit_camp_aggro(index).unwrap_or(false);
+                        let player_health = animated.player_stats().health;
+                        tracing::info!(
+                            "demo camp: health {health:.0}, player {player_health:.0}, aggro {aggro}, camp {camp_pos:?}, home {home:?}, drift {:.0}, buff {buff:?}",
+                            camp_pos.distance(home)
+                        );
                     }
                     self.demo_camp_done = true;
                 }
@@ -866,6 +875,28 @@ impl App {
                 let alive = healths.iter().filter(|(hp, _)| *hp > 0.0).count();
                 (alive, healths.len())
             };
+            let scores = animated.team_scores();
+            let hover = {
+                let mut hover = None;
+                if let Some((origin, dir)) = renderer.screen_ray(self.mouse_pos.0, self.mouse_pos.1)
+                {
+                    if let Some(index) = animated.pick_unit(origin, dir) {
+                        if let Some((name, level, description)) = animated.unit_info(index) {
+                            let (health, max_health, team, kind) = animated.unit_status(index);
+                            hover = Some(HoverInfo {
+                                name,
+                                level,
+                                health,
+                                max_health,
+                                team,
+                                kind,
+                                description,
+                            });
+                        }
+                    }
+                }
+                hover
+            };
             let player_hud = PlayerHud {
                 health: stats.health,
                 max_health: stats.max_health,
@@ -891,6 +922,11 @@ impl App {
                 inhibitors: animated.inhibitor_count(0),
                 items_owned: self.shop.item_count(),
                 events: self.event_log.clone(),
+                kills: (scores.0.0, scores.1.0),
+                deaths: (scores.0.1, scores.1.1),
+                match_time: self.app_time,
+                hover,
+                biome: animated.current_biome(),
             };
             self.hud.build(
                 renderer.size.0 as f32,
@@ -905,8 +941,12 @@ impl App {
                 self.mouse_pos,
             );
             self.hud.build_shop(hud_w, hud_h, &player_hud, &self.shop);
-            self.hud
-                .build_minimap(renderer.size.0 as f32, renderer.size.1 as f32, animated);
+            self.hud.build_minimap(
+                renderer.size.0 as f32,
+                renderer.size.1 as f32,
+                animated,
+                (renderer.camera.target.x, renderer.camera.target.z),
+            );
             renderer.set_hud_mesh(&self.hud.vertices, &self.hud.indices);
             if self.follow {
                 renderer.camera.target = animated.player_pos() + Vec3::Y * 140.0;
@@ -1296,8 +1336,8 @@ fn rebuild_fog(
     let height_tiles = collision.height();
     let stride = (width + 1) as usize;
     let mut smooth = vec![0.0f32; stride * (height_tiles + 1) as usize];
-    let color = [24u8, 32, 44];
-    let max_alpha = 0.55;
+    let color = [0u8, 0, 0];
+    let max_alpha = 0.62;
 
     // Smoothed visibility at grid corners. A single continuous mesh shares
     // these corners, so the fog has no per-tile height/alpha seams.

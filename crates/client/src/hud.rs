@@ -11,6 +11,28 @@ use crate::items::{
 use crate::scene::srgb_to_linear;
 use crate::ui_assets::UiAtlas;
 
+/// OSRS interface colours. The RuneScape client draws all of its text with a
+/// crisp pixel font and a one pixel black shadow in these palette colours.
+pub const OSRS_WHITE: [u8; 3] = [255, 255, 255];
+pub const OSRS_YELLOW: [u8; 3] = [255, 255, 0];
+pub const OSRS_GOLD: [u8; 3] = [255, 196, 0];
+
+/// The HUD text is drawn at this multiple of the authored sizes so it stays
+/// readable on a 720p window.
+const TEXT_SCALE: f32 = 1.32;
+
+/// Information about the unit under the cursor, shown as a Dota style
+/// tooltip next to the mouse.
+pub struct HoverInfo {
+    pub name: String,
+    pub level: u32,
+    pub health: f32,
+    pub max_health: f32,
+    pub team: u8,
+    pub kind: UnitKind,
+    pub description: &'static str,
+}
+
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct UiVertex {
@@ -44,12 +66,27 @@ pub struct PlayerHud {
     pub inhibitors: (usize, usize),
     pub items_owned: usize,
     pub events: Vec<String>,
+    /// Team scoreboard: kills and deaths per team.
+    pub kills: (u32, u32),
+    pub deaths: (u32, u32),
+    /// Seconds since the match started.
+    pub match_time: f32,
+    /// Unit under the cursor.
+    pub hover: Option<HoverInfo>,
+    /// Name of the biome pocket the hero is standing in.
+    pub biome: Option<String>,
 }
 
 pub struct Hud {
     pub vertices: Vec<UiVertex>,
     pub indices: Vec<u32>,
     pub atlas: Arc<UiAtlas>,
+}
+
+/// Format seconds as `M:SS`, like the match clock in the scoreboard.
+pub fn format_clock(seconds: f32) -> String {
+    let total = seconds.max(0.0) as u32;
+    format!("{}:{:02}", total / 60, total % 60)
 }
 
 /// Screen-space rectangle of the minimap: `(x, y, width, height)`.
@@ -117,6 +154,7 @@ impl Hud {
         text: &str,
         color: [u8; 3],
     ) {
+        let scale = scale * TEXT_SCALE;
         let mut cx = x;
         for ch in text.chars() {
             let rows = font::glyph(ch);
@@ -169,7 +207,13 @@ impl Hud {
         );
     }
 
-    pub fn build_minimap(&mut self, width: f32, height: f32, scene: &AnimatedScene) {
+    pub fn build_minimap(
+        &mut self,
+        width: f32,
+        height: f32,
+        scene: &AnimatedScene,
+        camera_pos: (f32, f32),
+    ) {
         let (x, y, size, _) = minimap_rect(width, height);
         self.quad(
             width,
@@ -246,6 +290,29 @@ impl Hud {
                 bx += block;
             }
             by += block;
+        }
+
+        // Camera viewport rectangle, Dota minimap style.
+        {
+            let half = 900.0;
+            let corners = [
+                glam::Vec3::new(camera_pos.0 - half, 0.0, camera_pos.1 - half),
+                glam::Vec3::new(camera_pos.0 + half, 0.0, camera_pos.1 + half),
+            ];
+            let (cx0, cy0) = to_map(corners[0]);
+            let (cx1, cy1) = to_map(corners[1]);
+            let rx = (cx1 - cx0).abs();
+            let ry = (cy1 - cy0).abs();
+            let px = cx0.min(cx1);
+            let py = cy0.min(cy1);
+            for (ox, oy, w, h) in [
+                (px, py, rx, 1.0),
+                (px, py + ry, rx, 1.0),
+                (px, py, 1.0, ry),
+                (px + rx, py, 1.0, ry),
+            ] {
+                self.quad(width, height, ox, oy, w, h, [235, 235, 235]);
+            }
         }
 
         for unit in &scene.units {
@@ -334,8 +401,8 @@ impl Hud {
             height,
             22.0,
             22.0,
-            280.0,
-            22.0,
+            300.0,
+            26.0,
             player.health / player.max_health,
             [70, 190, 95],
         );
@@ -343,9 +410,9 @@ impl Hud {
             width,
             height,
             22.0,
-            50.0,
-            280.0,
-            14.0,
+            52.0,
+            300.0,
+            20.0,
             player.mana / player.max_mana.max(1.0),
             [70, 120, 235],
         );
@@ -353,9 +420,9 @@ impl Hud {
             width,
             height,
             22.0,
-            70.0,
-            280.0,
-            6.0,
+            76.0,
+            300.0,
+            9.0,
             (player.xp / player.xp_next.max(1.0)).clamp(0.0, 1.0),
             [170, 90, 230],
         );
@@ -364,9 +431,9 @@ impl Hud {
                 width,
                 height,
                 22.0,
-                45.0,
-                280.0,
-                3.0,
+                47.0,
+                300.0,
+                4.0,
                 (player.shield / 120.0).clamp(0.0, 1.0),
                 [90, 255, 140],
             );
@@ -374,42 +441,41 @@ impl Hud {
         self.text(
             width,
             height,
-            28.0,
-            25.0,
-            1.4,
+            30.0,
+            27.0,
+            1.25,
             &format!("HP {:.0}/{:.0}", player.health, player.max_health),
-            [240, 245, 240],
+            OSRS_WHITE,
         );
         self.text(
             width,
             height,
-            28.0,
-            51.5,
-            1.0,
+            30.0,
+            58.0,
+            1.05,
             &format!("MP {:.0}/{:.0}", player.mana, player.max_mana),
-            [225, 235, 255],
+            [150, 210, 255],
         );
         self.text(
             width,
             height,
             22.0,
-            78.0,
-            0.9,
+            88.0,
+            0.95,
             &format!(
                 "LV {}  XP {:.0}/{:.0}",
                 player.level, player.xp, player.xp_next
             ),
-            [205, 180, 240],
+            OSRS_YELLOW,
         );
-        self.text(width, height, 310.0, 24.0, 1.3, "GOLD", [215, 190, 110]);
         self.text(
             width,
             height,
-            310.0,
-            40.0,
-            1.3,
-            &format!("{}G", player.gold),
-            [245, 205, 70],
+            196.0,
+            88.0,
+            1.05,
+            &format!("GOLD {}G", player.gold),
+            OSRS_GOLD,
         );
         if let Some((remaining, duration, color)) = player.buff {
             let fill = (remaining / duration.max(0.1)).clamp(0.0, 1.0);
@@ -426,6 +492,92 @@ impl Hud {
                 );
             }
         }
+
+        // Dota style scoreboard strip across the top of the screen.
+        let strip_w = 700.0;
+        let strip_x = (width - strip_w) * 0.5;
+        self.quad(
+            width,
+            height,
+            strip_x - 2.0,
+            0.0,
+            strip_w + 4.0,
+            32.0,
+            [74, 68, 48],
+        );
+        self.quad(width, height, strip_x, 2.0, strip_w, 28.0, [18, 18, 22]);
+        self.text(
+            width,
+            height,
+            strip_x + 12.0,
+            9.0,
+            1.1,
+            &format!("GOLD {}", player.gold),
+            OSRS_GOLD,
+        );
+        self.text(
+            width,
+            height,
+            strip_x + 96.0,
+            9.0,
+            1.1,
+            &format!("WAVE {:.0}S", wave_timer),
+            OSRS_WHITE,
+        );
+        self.text(
+            width,
+            height,
+            strip_x + 186.0,
+            9.0,
+            1.1,
+            &format!("MINIONS {}", player.minions),
+            OSRS_WHITE,
+        );
+        self.text(
+            width,
+            height,
+            strip_x + 278.0,
+            9.0,
+            1.1,
+            &format!("ITEMS {}/6", player.items_owned),
+            OSRS_WHITE,
+        );
+        self.text(
+            width,
+            height,
+            strip_x + 366.0,
+            9.0,
+            1.1,
+            &format!("VIS {}", player.visible_enemies),
+            OSRS_WHITE,
+        );
+        self.text(
+            width,
+            height,
+            strip_x + 428.0,
+            9.0,
+            1.05,
+            &format!("K/D {}/{}", player.kills.0, player.deaths.0),
+            OSRS_WHITE,
+        );
+        self.text(
+            width,
+            height,
+            strip_x + 500.0,
+            9.0,
+            1.25,
+            &format!("BLUE {}", player.kills.0),
+            [110, 175, 255],
+        );
+        self.text_centered(
+            width,
+            height,
+            strip_x + 588.0,
+            9.0,
+            1.25,
+            &format_clock(player.match_time),
+            [245, 225, 120],
+        );
 
         // Nexus health bars, top-centre.
         let bar_w = 220.0;
@@ -493,6 +645,63 @@ impl Hud {
             &format!("WAVE {:.0}S", wave_timer),
             [230, 210, 120],
         );
+
+        // Dota style unit tooltip that follows the cursor.
+        if let Some(hover) = &player.hover {
+            let title = if hover.kind == UnitKind::Player {
+                hover.name.clone()
+            } else {
+                format!("{} LV{}", hover.name, hover.level)
+            };
+            let lines: [&str; 2] = [
+                &format!(
+                    "HP {:.0} / {:.0}   {}",
+                    hover.health,
+                    hover.max_health,
+                    if hover.team == 0 {
+                        "ALLIED"
+                    } else if hover.team == 1 {
+                        "ENEMY"
+                    } else {
+                        "NEUTRAL"
+                    }
+                ),
+                hover.description,
+            ];
+            let box_w = 268.0;
+            let box_h = 58.0;
+            let bx = (mouse.0 as f32 + 20.0).min(width - box_w - 10.0).max(6.0);
+            let by = (mouse.1 as f32 + 20.0).min(height - box_h - 10.0).max(6.0);
+            self.quad(
+                width,
+                height,
+                bx - 2.0,
+                by - 2.0,
+                box_w + 4.0,
+                box_h + 4.0,
+                [92, 82, 46],
+            );
+            self.quad(width, height, bx, by, box_w, box_h, [22, 20, 16]);
+            self.text(width, height, bx + 8.0, by + 6.0, 1.35, &title, OSRS_YELLOW);
+            self.text(
+                width,
+                height,
+                bx + 8.0,
+                by + 22.0,
+                1.05,
+                &lines[0].to_uppercase(),
+                OSRS_WHITE,
+            );
+            self.text(
+                width,
+                height,
+                bx + 8.0,
+                by + 36.0,
+                1.0,
+                &lines[1].to_uppercase(),
+                [220, 215, 190],
+            );
+        }
 
         if let Some(winner) = match_over {
             let color = if winner == 0 {
@@ -578,69 +787,11 @@ impl Hud {
             }
         }
 
-        // Top resource bar.
-        let bar_x = width * 0.5 - 240.0;
-        self.quad(width, height, bar_x - 1.0, 3.0, 482.0, 28.0, [82, 76, 58]);
-        self.quad(width, height, bar_x, 4.0, 480.0, 26.0, [20, 20, 24]);
-        self.text(
-            width,
-            height,
-            bar_x + 12.0,
-            9.0,
-            1.0,
-            &format!("GOLD {}", player.gold),
-            [245, 205, 70],
-        );
-        self.text(
-            width,
-            height,
-            bar_x + 108.0,
-            9.0,
-            1.0,
-            &format!("WAVE {:.0}S", wave_timer),
-            [225, 225, 225],
-        );
-        self.text(
-            width,
-            height,
-            bar_x + 202.0,
-            9.0,
-            1.0,
-            &format!("MINIONS {}", player.minions),
-            [225, 225, 225],
-        );
-        self.text(
-            width,
-            height,
-            bar_x + 306.0,
-            9.0,
-            1.0,
-            &format!("ITEMS {}/6", player.items_owned),
-            [225, 225, 225],
-        );
-        self.text(
-            width,
-            height,
-            bar_x + 404.0,
-            9.0,
-            1.0,
-            &format!("VIS {}", player.visible_enemies),
-            [225, 225, 225],
-        );
-
         // Team panel, top-right.
         let tx = width - 238.0;
         self.quad(width, height, tx - 1.0, 3.0, 222.0, 82.0, [82, 76, 58]);
         self.quad(width, height, tx, 4.0, 220.0, 80.0, [20, 20, 24]);
-        self.text(
-            width,
-            height,
-            tx + 8.0,
-            10.0,
-            1.0,
-            "YOUR TEAM",
-            [220, 200, 150],
-        );
+        self.text(width, height, tx + 8.0, 10.0, 1.0, "YOUR TEAM", OSRS_YELLOW);
         self.text(
             width,
             height,
@@ -678,9 +829,14 @@ impl Hud {
             [245, 205, 70],
         );
 
+        // Current biome pocket label.
+        if let Some(label) = player.biome.as_deref() {
+            self.text_centered(width, height, width * 0.5, 96.0, 1.3, label, OSRS_YELLOW);
+        }
+
         // Objectives panel, left.
         let ox = 22.0;
-        let oy = 104.0;
+        let oy = 112.0;
         self.quad(
             width,
             height,
@@ -698,7 +854,7 @@ impl Hud {
             oy + 6.0,
             1.0,
             "OBJECTIVES",
-            [220, 200, 150],
+            OSRS_YELLOW,
         );
         self.text(
             width,
@@ -812,24 +968,24 @@ impl Hud {
             }
         }
 
-        // Compact health/mana bars above the ability row.
-        let cx = width * 0.5 - 120.0;
+        // Health/mana bars above the ability row.
+        let cx = width * 0.5 - 130.0;
         self.panel(
             width,
             height,
             cx,
-            height - 138.0,
-            240.0,
-            10.0,
+            height - 148.0,
+            260.0,
+            14.0,
             (player.health / player.max_health.max(1.0)).clamp(0.0, 1.0),
             [70, 190, 95],
         );
         self.text(
             width,
             height,
-            cx + 4.0,
-            height - 137.0,
-            0.75,
+            cx + 6.0,
+            height - 147.0,
+            0.85,
             &format!("HP {:.0}/{:.0}", player.health, player.max_health),
             [245, 245, 245],
         );
@@ -837,18 +993,18 @@ impl Hud {
             width,
             height,
             cx,
-            height - 124.0,
-            240.0,
-            8.0,
+            height - 130.0,
+            260.0,
+            12.0,
             (player.mana / player.max_mana.max(1.0)).clamp(0.0, 1.0),
             [70, 120, 235],
         );
         self.text(
             width,
             height,
-            cx + 4.0,
-            height - 123.0,
-            0.7,
+            cx + 6.0,
+            height - 129.0,
+            0.8,
             &format!("MP {:.0}/{:.0}", player.mana, player.max_mana),
             [230, 235, 255],
         );

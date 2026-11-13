@@ -26,6 +26,8 @@ struct SceneGlobals {
 @group(0) @binding(0) var<uniform> scene: SceneGlobals;
 @group(0) @binding(1) var shadow_map: texture_depth_2d;
 @group(0) @binding(2) var shadow_sampler: sampler_comparison;
+@group(0) @binding(3) var terrain_textures: texture_2d_array<f32>;
+@group(0) @binding(4) var terrain_sampler: sampler;
 
 struct VsIn {
     @location(0) position: vec3<f32>,
@@ -92,7 +94,14 @@ fn shadow_factor(input: VsOut) -> f32 {
 }
 
 fn lighting(input: VsOut) -> vec3<f32> {
-    let N = normalize(input.normal);
+    let V = normalize(scene.camera_pos.xyz - input.world);
+    var N = normalize(input.normal);
+    // OSRS models are single sided and a few ship with inverted normals.
+    // Flipping the normal towards the camera keeps the face the player can
+    // actually see lit instead of black.
+    if (dot(N, V) < 0.0) {
+        N = -N;
+    }
     let L = normalize(scene.sun_dir.xyz);
 
     var ndotl = max(dot(N, L), 0.0);
@@ -107,9 +116,11 @@ fn lighting(input: VsOut) -> vec3<f32> {
     );
 
     let sun = scene.sun_color.rgb * 0.82 * shadow_factor(input);
-    let unit_fill = select(0.10, 0.45, input.material == 3u);
-    let fill = max(dot(N, normalize(scene.camera_pos.xyz - input.world)), 0.0) * unit_fill;
-    let ambient = select(0.86, 1.10, input.material == 3u);
+    // Camera facing fill keeps the fronts of models readable even when the
+    // sun is behind them, which a top down MOBA camera hits constantly.
+    let unit_fill = select(0.26, 0.48, input.material == 3u);
+    let fill = max(dot(N, V), 0.0) * unit_fill;
+    let ambient = select(1.22, 1.30, input.material == 3u);
     var lit = albedo(input) * (hemi * ambient + sun * ndotl + fill) * input.ao * 1.04;
 
     lit += input.color.rgb * dynamic_lighting(input);
@@ -145,10 +156,33 @@ fn noise2(p: vec2<f32>) -> f32 {
 fn albedo(input: VsOut) -> vec3<f32> {
     var c = input.color.rgb;
     if (input.material == 4u) {
+        let uv = input.world.xz / 384.0;
+        let grass = textureSample(terrain_textures, terrain_sampler, uv, 0).rgb;
+        let dirt = textureSample(terrain_textures, terrain_sampler, uv, 1).rgb;
+        let stone = textureSample(terrain_textures, terrain_sampler, uv, 2).rgb;
+        let sand = textureSample(terrain_textures, terrain_sampler, uv, 3).rgb;
+        let water = textureSample(terrain_textures, terrain_sampler, uv, 4).rgb;
+
+        // Classify in display space: linear values compress saturation and
+        // make grass look like stone.
+        let d = pow(max(c, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.2));
+        let green = max(d.g - d.r, 0.0) + max(d.g - d.b, 0.0);
+        let brown = max(d.r - d.g, 0.0) * 2.0 + max(d.g - d.b, 0.0) * 0.15;
+        let blue = max(d.b - d.g, 0.0) * 2.0 + max(d.b - d.r, 0.0);
+        let sat = max(max(d.r, d.g), d.b) - min(min(d.r, d.g), d.b);
+        let gray = (1.0 - smoothstep(0.05, 0.25, sat))
+            * (1.0 - smoothstep(0.12, 0.30, d.r - d.b));
+        let sandy = max(d.r - d.b, 0.0) * max(d.g - d.b, 0.0) * 4.0;
+        let total = max(green + brown + blue + gray + sandy, 0.0001);
+        let tex = grass * (green / total)
+            + dirt * (brown / total)
+            + stone * (gray / total)
+            + sand * (sandy / total)
+            + water * (blue / total);
+        let tint = 1.0 + c * 1.6;
         let p = input.world.xz / 128.0;
         let fine = noise2(p * 7.0) * 0.55 + noise2(p * 19.0) * 0.30;
-        let large = noise2(p * 0.7) * 0.5 + 0.5;
-        c *= 0.84 + fine * 0.22 + large * 0.12;
+        c = tex * tint * (0.90 + fine * 0.16);
     }
     return c;
 }

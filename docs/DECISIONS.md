@@ -310,3 +310,59 @@ dithering. The HUD renders in a separate pass after post so text and icons stay
 crisp. The full-screen UV uses `p * vec2(0.5, -0.5) + 0.5` to match wgpu NDC
 orientation. MSAA, full HDR bloom, full SSAO, and draw-distance streaming remain
 future work.
+
+
+## ADR-028 — Full HDR bloom chain and cache-native ground textures
+
+**Status:** accepted for M5.5.
+
+The scene renders into an `Rgba16Float` target, so highlights survive the
+frame. A bright pass (`bloom_bright.wgsl`) extracts pixels above 1.0, a
+separable 9-tap Gaussian (`bloom_blur.wgsl`) blurs them horizontally and
+vertically at half resolution, and `post.wgsl` composites the bloom over the
+scene before the ACES-style tonemap, FXAA, vignette and grade. The HUD is
+drawn after the post pass so text stays crisp.
+
+Ground detail uses real OSRS 128×128 sprites from `assets/osrs-ground`
+(gitignored). They are packed into a mipmapped `texture_2d_array` with one
+layer per material (grass, dirt, stone, sand, water, path) and sampled with
+world-space UVs. The terrain shader classifies each fragment in display space
+and blends the matching layers, which keeps the OSRS palette without visible
+tiling.
+
+## ADR-029 — Regional biome pockets, a river and lane tree lines
+
+**Status:** accepted for M5.6.
+
+A single contiguous OSRS region cannot express a Dota style two-sided map, so
+the scene builder now loads extra regions on demand: each `biomes` entry
+copies a rectangle of a real OSRS region (Wilderness, Morytania, Camdozaal,
+Lands End, Varrock, Falador, Tirannwn, the gnome stronghold) into the map,
+tints its ground and plants its scenery. The pockets blend into the base
+terrain over a seven tile border so the seams disappear.
+
+A `river` polyline cuts a waterway diagonally across the map, separating the
+radiant half from the dire half. The bed is carved below the banks, the water
+is blocked for movement except at the listed bridge tiles, and the lane
+corridor is cleared after the carve so the centre crossing stays walkable.
+
+Every lane is flanked by two rows of OSRS tree models, tinted by the side of
+the river they stand on, which turns the lanes into natural barriers.
+
+## ADR-030 — Dota style presentation: shadowed fog of war and readable HUD
+
+**Status:** accepted for M5.6.
+
+The fog of war used to be a blue-grey overlay, which tinted unseen ground.
+It now multiplies the scene by `(1 - coverage)`, so unexplored areas read as
+shadow while the area around the hero stays at full brightness and no longer
+looks overexposed. Lighting flips normals towards the camera, so single sided
+OSRS models are lit on the face the player can actually see, and a camera
+facing fill light keeps tree fronts readable.
+
+The HUD draws at 1.32x the authored size with the OSRS palette (white body
+text, yellow labels, gold currency), a Dota style scoreboard strip with kills,
+deaths and a match clock, a unit tooltip that follows the cursor, a minimap
+viewport rectangle and a biome label for the pocket the hero is standing in.
+The true OSRS font lives in the client jar rather than the cache, so the HUD
+keeps the crisp 5x7 pixel font with a one pixel black shadow.

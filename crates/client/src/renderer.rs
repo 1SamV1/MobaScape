@@ -8,6 +8,7 @@ use winit::window::Window;
 use crate::animated::SceneLight;
 use crate::hud::UiVertex;
 use crate::scene::{Atmosphere, HeightGrid, MeshData, SceneData, SceneVertex, srgb_to_linear};
+use crate::terrain_textures::TerrainTextures;
 use crate::ui_assets::UiAtlas;
 
 #[repr(C)]
@@ -16,6 +17,13 @@ struct GpuLight {
     position: [f32; 4],
     color: [f32; 4],
     params: [f32; 4],
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct BloomUniform {
+    direction: [f32; 2],
+    texel: [f32; 2],
 }
 
 #[repr(C)]
@@ -156,12 +164,29 @@ pub struct Renderer {
     hud_bind_group: wgpu::BindGroup,
     _ui_texture: wgpu::Texture,
     _ui_sampler: wgpu::Sampler,
+    _terrain_texture: wgpu::Texture,
+    _terrain_sampler: wgpu::Sampler,
     post_pipeline: wgpu::RenderPipeline,
     post_bind_group: wgpu::BindGroup,
     post_bind_group_layout: wgpu::BindGroupLayout,
     _post_sampler: wgpu::Sampler,
     scene_color_view: wgpu::TextureView,
     _scene_color_texture: wgpu::Texture,
+    bloom_bright_pipeline: wgpu::RenderPipeline,
+    bloom_blur_pipeline: wgpu::RenderPipeline,
+    bloom_bright_bind_group_layout: wgpu::BindGroupLayout,
+    bloom_bright_bind_group: wgpu::BindGroup,
+    bloom_h_bind_group: wgpu::BindGroup,
+    bloom_v_bind_group: wgpu::BindGroup,
+    _bloom_sampler: wgpu::Sampler,
+    _bloom_half_texture: wgpu::Texture,
+    bloom_half_view: wgpu::TextureView,
+    _bloom_temp_texture: wgpu::Texture,
+    bloom_temp_view: wgpu::TextureView,
+    _bloom_final_texture: wgpu::Texture,
+    bloom_final_view: wgpu::TextureView,
+    _bloom_h_uniform: wgpu::Buffer,
+    _bloom_v_uniform: wgpu::Buffer,
     sky_pipeline: wgpu::RenderPipeline,
     blob_pipeline: wgpu::RenderPipeline,
     fog_pipeline: wgpu::RenderPipeline,
@@ -252,6 +277,8 @@ impl Renderer {
             .find(|f| f.is_srgb())
             .unwrap_or(caps.formats[0]);
 
+        let scene_format = wgpu::TextureFormat::Rgba16Float;
+
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format,
@@ -277,6 +304,14 @@ impl Renderer {
             label: Some("rift post shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("post.wgsl").into()),
         });
+        let bloom_bright_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("rift bloom bright shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("bloom_bright.wgsl").into()),
+        });
+        let bloom_blur_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("rift bloom blur shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("bloom_blur.wgsl").into()),
+        });
         let sky_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("rift sky shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("sky.wgsl").into()),
@@ -292,6 +327,41 @@ impl Renderer {
         let fog_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("rift fog of war shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("fog.wgsl").into()),
+        });
+
+        let terrain_textures = TerrainTextures::load()?;
+        let terrain_texture = device.create_texture_with_data(
+            &queue,
+            &wgpu::TextureDescriptor {
+                label: Some("terrain texture array"),
+                size: wgpu::Extent3d {
+                    width: terrain_textures.width,
+                    height: terrain_textures.height,
+                    depth_or_array_layers: terrain_textures.layers,
+                },
+                mip_level_count: terrain_textures.mip_levels,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            },
+            wgpu::util::TextureDataOrder::LayerMajor,
+            &terrain_textures.pixels,
+        );
+        let terrain_view = terrain_texture.create_view(&wgpu::TextureViewDescriptor {
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            ..Default::default()
+        });
+        let terrain_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("terrain sampler"),
+            address_mode_u: wgpu::AddressMode::Repeat,
+            address_mode_v: wgpu::AddressMode::Repeat,
+            address_mode_w: wgpu::AddressMode::Repeat,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
+            ..Default::default()
         });
 
         let scene_globals = SceneGlobals::from_atmosphere(&scene.atmosphere);
@@ -360,6 +430,22 @@ impl Renderer {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2Array,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
             ],
         });
 
@@ -378,6 +464,14 @@ impl Renderer {
                 wgpu::BindGroupEntry {
                     binding: 2,
                     resource: wgpu::BindingResource::Sampler(&shadow_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&terrain_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::Sampler(&terrain_sampler),
                 },
             ],
         });
@@ -518,7 +612,7 @@ impl Renderer {
                 entry_point: Some("fs"),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format,
+                    format: scene_format,
                     blend: Some(wgpu::BlendState::REPLACE),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -562,8 +656,21 @@ impl Renderer {
                 entry_point: Some("fs"),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    format: scene_format,
+                    // Fog of war darkens the world without tinting it, the way
+                    // Dota shades the areas a hero has not lit up yet.
+                    blend: Some(wgpu::BlendState {
+                        color: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::Zero,
+                            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                        alpha: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::Zero,
+                            dst_factor: wgpu::BlendFactor::One,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                    }),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
             }),
@@ -685,7 +792,7 @@ impl Renderer {
                 entry_point: Some("fs"),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format,
+                    format: scene_format,
                     blend: Some(wgpu::BlendState::REPLACE),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -729,7 +836,7 @@ impl Renderer {
                 entry_point: Some("fs"),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format,
+                    format: scene_format,
                     blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -776,6 +883,16 @@ impl Renderer {
                     wgpu::BindGroupLayoutEntry {
                         binding: 1,
                         visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
                         ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                         count: None,
                     },
@@ -786,46 +903,178 @@ impl Renderer {
             bind_group_layouts: &[Some(&post_bind_group_layout)],
             immediate_size: 0,
         });
-        let post_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("post pipeline"),
-            layout: Some(&post_pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &post_shader,
-                entry_point: Some("vs"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                buffers: &[],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &post_shader,
-                entry_point: Some("fs"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: Some(wgpu::BlendState::REPLACE),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: None,
-                polygon_mode: wgpu::PolygonMode::Fill,
-                unclipped_depth: false,
-                conservative: false,
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
-        });
+        let post_pipeline = create_fullscreen_pipeline(
+            &device,
+            &post_shader,
+            &post_pipeline_layout,
+            format,
+            "post pipeline",
+        );
+
+        let bloom_bright_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("bloom bright layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            });
+        let bloom_blur_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("bloom blur layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
+            });
+        let bloom_bright_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("bloom bright pipeline layout"),
+                bind_group_layouts: &[Some(&bloom_bright_bind_group_layout)],
+                immediate_size: 0,
+            });
+        let bloom_blur_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("bloom blur pipeline layout"),
+                bind_group_layouts: &[Some(&bloom_blur_bind_group_layout)],
+                immediate_size: 0,
+            });
+        let bloom_bright_pipeline = create_fullscreen_pipeline(
+            &device,
+            &bloom_bright_shader,
+            &bloom_bright_pipeline_layout,
+            wgpu::TextureFormat::Rgba16Float,
+            "bloom bright pipeline",
+        );
+        let bloom_blur_pipeline = create_fullscreen_pipeline(
+            &device,
+            &bloom_blur_shader,
+            &bloom_blur_pipeline_layout,
+            wgpu::TextureFormat::Rgba16Float,
+            "bloom blur pipeline",
+        );
+
         let post_sampler = create_post_sampler(&device);
+        let bloom_sampler = create_post_sampler(&device);
         let (scene_color_texture, scene_color_view) =
-            create_scene_color(&device, width, height, format);
+            create_hdr_target(&device, width, height, "hdr scene");
+        let (bloom_half_texture, bloom_half_view) =
+            create_hdr_target(&device, 640, 360, "bloom half");
+        let (bloom_temp_texture, bloom_temp_view) =
+            create_hdr_target(&device, 640, 360, "bloom temp");
+        let (bloom_final_texture, bloom_final_view) =
+            create_hdr_target(&device, 640, 360, "bloom final");
+
+        let bloom_h_uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("bloom horizontal uniform"),
+            contents: bytemuck::bytes_of(&BloomUniform {
+                direction: [1.0, 0.0],
+                texel: [1.0 / 640.0, 1.0 / 360.0],
+            }),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+        let bloom_v_uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("bloom vertical uniform"),
+            contents: bytemuck::bytes_of(&BloomUniform {
+                direction: [0.0, 1.0],
+                texel: [1.0 / 640.0, 1.0 / 360.0],
+            }),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+
+        let bloom_bright_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("bloom bright bind group"),
+            layout: &bloom_bright_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&scene_color_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&bloom_sampler),
+                },
+            ],
+        });
+        let bloom_h_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("bloom horizontal bind group"),
+            layout: &bloom_blur_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&bloom_half_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&bloom_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: bloom_h_uniform.as_entire_binding(),
+                },
+            ],
+        });
+        let bloom_v_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("bloom vertical bind group"),
+            layout: &bloom_blur_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&bloom_temp_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&bloom_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: bloom_v_uniform.as_entire_binding(),
+                },
+            ],
+        });
         let post_bind_group = create_post_bind_group(
             &device,
             &post_bind_group_layout,
             &scene_color_view,
+            &bloom_final_view,
             &post_sampler,
         );
 
@@ -919,12 +1168,29 @@ impl Renderer {
             hud_bind_group,
             _ui_texture: ui_texture,
             _ui_sampler: ui_sampler,
+            _terrain_texture: terrain_texture,
+            _terrain_sampler: terrain_sampler,
             post_pipeline,
             post_bind_group,
             post_bind_group_layout,
             _post_sampler: post_sampler,
             scene_color_view,
             _scene_color_texture: scene_color_texture,
+            bloom_bright_pipeline,
+            bloom_blur_pipeline,
+            bloom_bright_bind_group_layout,
+            bloom_bright_bind_group,
+            bloom_h_bind_group,
+            bloom_v_bind_group,
+            _bloom_sampler: bloom_sampler,
+            _bloom_half_texture: bloom_half_texture,
+            bloom_half_view,
+            _bloom_temp_texture: bloom_temp_texture,
+            bloom_temp_view,
+            _bloom_final_texture: bloom_final_texture,
+            bloom_final_view,
+            _bloom_h_uniform: bloom_h_uniform,
+            _bloom_v_uniform: bloom_v_uniform,
             sky_pipeline,
             blob_pipeline,
             fog_pipeline,
@@ -983,13 +1249,28 @@ impl Renderer {
         self.config.height = height;
         self.surface.configure(&self.device, &self.config);
         self.depth_view = create_depth_view(&self.device, width, height);
-        let (texture, view) = create_scene_color(&self.device, width, height, self.config.format);
+        let (texture, view) = create_hdr_target(&self.device, width, height, "hdr scene");
         self._scene_color_texture = texture;
         self.scene_color_view = view;
+        self.bloom_bright_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("bloom bright bind group"),
+            layout: &self.bloom_bright_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&self.scene_color_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self._bloom_sampler),
+                },
+            ],
+        });
         self.post_bind_group = create_post_bind_group(
             &self.device,
             &self.post_bind_group_layout,
             &self.scene_color_view,
+            &self.bloom_final_view,
             &self._post_sampler,
         );
     }
@@ -1303,8 +1584,11 @@ impl Renderer {
         let output = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(texture) => texture,
             wgpu::CurrentSurfaceTexture::Suboptimal(texture) => {
+                // The surface texture must be released before the surface can
+                // be reconfigured, otherwise wgpu rejects the call.
+                drop(texture);
                 self.surface.configure(&self.device, &self.config);
-                texture
+                return Ok(());
             }
             wgpu::CurrentSurfaceTexture::Outdated => {
                 self.surface.configure(&self.device, &self.config);
@@ -1445,6 +1729,72 @@ impl Renderer {
         }
 
         {
+            let mut bright_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("bloom bright pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &self.bloom_half_view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            bright_pass.set_pipeline(&self.bloom_bright_pipeline);
+            bright_pass.set_bind_group(0, &self.bloom_bright_bind_group, &[]);
+            bright_pass.draw(0..3, 0..1);
+        }
+
+        {
+            let mut blur_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("bloom horizontal pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &self.bloom_temp_view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            blur_pass.set_pipeline(&self.bloom_blur_pipeline);
+            blur_pass.set_bind_group(0, &self.bloom_h_bind_group, &[]);
+            blur_pass.draw(0..3, 0..1);
+        }
+
+        {
+            let mut blur_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("bloom vertical pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &self.bloom_final_view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            blur_pass.set_pipeline(&self.bloom_blur_pipeline);
+            blur_pass.set_bind_group(0, &self.bloom_v_bind_group, &[]);
+            blur_pass.draw(0..3, 0..1);
+        }
+
+        {
             let mut post_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("post pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -1520,14 +1870,14 @@ fn create_dynamic_buffer(
     })
 }
 
-fn create_scene_color(
+fn create_hdr_target(
     device: &wgpu::Device,
     width: u32,
     height: u32,
-    format: wgpu::TextureFormat,
+    label: &str,
 ) -> (wgpu::Texture, wgpu::TextureView) {
     let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("scene color"),
+        label: Some(label),
         size: wgpu::Extent3d {
             width,
             height,
@@ -1536,12 +1886,54 @@ fn create_scene_color(
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format,
+        format: wgpu::TextureFormat::Rgba16Float,
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
         view_formats: &[],
     });
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
     (texture, view)
+}
+
+fn create_fullscreen_pipeline(
+    device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
+    layout: &wgpu::PipelineLayout,
+    format: wgpu::TextureFormat,
+    label: &str,
+) -> wgpu::RenderPipeline {
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some(label),
+        layout: Some(layout),
+        vertex: wgpu::VertexState {
+            module: shader,
+            entry_point: Some("vs"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            buffers: &[],
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: shader,
+            entry_point: Some("fs"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: Some(wgpu::BlendState::REPLACE),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            strip_index_format: None,
+            front_face: wgpu::FrontFace::Ccw,
+            cull_mode: None,
+            polygon_mode: wgpu::PolygonMode::Fill,
+            unclipped_depth: false,
+            conservative: false,
+        },
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview_mask: None,
+        cache: None,
+    })
 }
 
 fn create_post_sampler(device: &wgpu::Device) -> wgpu::Sampler {
@@ -1560,7 +1952,8 @@ fn create_post_sampler(device: &wgpu::Device) -> wgpu::Sampler {
 fn create_post_bind_group(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
-    view: &wgpu::TextureView,
+    scene_view: &wgpu::TextureView,
+    bloom_view: &wgpu::TextureView,
     sampler: &wgpu::Sampler,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -1569,10 +1962,14 @@ fn create_post_bind_group(
         entries: &[
             wgpu::BindGroupEntry {
                 binding: 0,
-                resource: wgpu::BindingResource::TextureView(view),
+                resource: wgpu::BindingResource::TextureView(scene_view),
             },
             wgpu::BindGroupEntry {
                 binding: 1,
+                resource: wgpu::BindingResource::TextureView(bloom_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
                 resource: wgpu::BindingResource::Sampler(sampler),
             },
         ],

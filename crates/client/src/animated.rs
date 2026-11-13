@@ -85,6 +85,11 @@ pub struct AnimatedUnit {
     pub ability_power: f32,
     pub structure_lane: Option<usize>,
     pub super_minion: bool,
+    pub home: Vec3,
+    pub aggro_range: f32,
+    pub leash_range: f32,
+    pub camp_aggro: bool,
+    pub camp_wander_timer: f32,
 }
 
 #[derive(Clone, Copy)]
@@ -180,6 +185,9 @@ pub struct AnimatedScene {
     pub projectiles: Vec<Projectile>,
     pub effects: Vec<Effect>,
     pub wave_timer: f32,
+    /// Team scoreboard counters.
+    pub kills: [u32; 2],
+    pub deaths: [u32; 2],
     pub wave_interval: f32,
     pub gold_income: f32,
     pub lanes: Vec<Vec<Vec3>>,
@@ -191,6 +199,8 @@ pub struct AnimatedScene {
     pub visibility_timer: f32,
     pub visibility_dirty: bool,
     pub brush: Vec<(f32, f32, f32, f32)>,
+    /// Biome pockets the map is built from, used for the HUD label.
+    pub biomes: Vec<crate::scene::BiomePocket>,
     pub vision_origin: (i32, i32),
     pub team_buffs: [Option<TeamBuff>; 2],
     pub champion_name: String,
@@ -341,16 +351,19 @@ impl AnimatedScene {
                 UnitKind::Camp,
                 2,
                 camp.health,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
+                camp.range,
+                camp.damage,
+                camp.interval,
+                camp.speed,
                 180.0,
                 350.0,
                 Vec::new(),
             )?;
             unit.respawn_time = camp.respawn;
             unit.camp_buff = Some(camp.buff);
+            unit.home = camp.pos;
+            unit.aggro_range = camp.aggro;
+            unit.leash_range = camp.leash;
             units.push(unit);
         }
 
@@ -419,6 +432,8 @@ impl AnimatedScene {
             projectiles: Vec::new(),
             effects: Vec::new(),
             wave_timer: 0.0,
+            kills: [0, 0],
+            deaths: [0, 0],
             wave_interval: scene.map.wave_interval,
             gold_income: 0.0,
             lanes: scene
@@ -435,6 +450,7 @@ impl AnimatedScene {
             visibility_timer: 0.0,
             visibility_dirty: true,
             brush: scene.map.brush.clone(),
+            biomes: scene.map.biomes.clone(),
             vision_origin: (vision_origin_x, vision_origin_y),
             team_buffs: [None, None],
             champion_name: champion.name.clone(),
@@ -899,8 +915,108 @@ impl AnimatedScene {
         unit.moving = false;
     }
 
+    /// Name of the biome pocket the hero is standing in.
+    pub fn current_biome(&self) -> Option<String> {
+        let pos = self.player_pos();
+        let tile_x = (pos.x / 128.0).floor() as i32;
+        let tile_y = (pos.z / 128.0).floor() as i32;
+        self.biomes
+            .iter()
+            .find(|biome| {
+                tile_x >= biome.origin.0
+                    && tile_y >= biome.origin.1
+                    && tile_x < biome.origin.0 + biome.rect.2 as i32
+                    && tile_y < biome.origin.1 + biome.rect.3 as i32
+            })
+            .map(|biome| biome.label.clone())
+    }
+
+    /// Team scoreboard: (kills, deaths) per team.
+    pub fn team_scores(&self) -> ((u32, u32), (u32, u32)) {
+        (
+            (self.kills[0], self.deaths[0]),
+            (self.kills[1], self.deaths[1]),
+        )
+    }
+
+    /// Display name, level and a Dota style flavour line for a unit, used by
+    /// the hover tooltip.
+    pub fn unit_info(&self, index: usize) -> Option<(String, u32, &'static str)> {
+        let unit = self.units.get(index)?;
+        let name = match unit.kind {
+            UnitKind::Player => self.champion_name.clone(),
+            UnitKind::Camp => {
+                let buff = match unit.camp_buff {
+                    Some(CampBuff::Might) => "MIGHT",
+                    Some(CampBuff::Swift) => "SWIFT",
+                    None => "NEUTRAL",
+                };
+                format!("{buff} JUNGLE CREATURE")
+            }
+            UnitKind::Tower => {
+                if unit.team == 0 {
+                    "BLUE TOWER".to_string()
+                } else {
+                    "RED TOWER".to_string()
+                }
+            }
+            UnitKind::Inhibitor => {
+                if unit.team == 0 {
+                    "BLUE INHIBITOR".to_string()
+                } else {
+                    "RED INHIBITOR".to_string()
+                }
+            }
+            UnitKind::Nexus => {
+                if unit.team == 0 {
+                    "BLUE NEXUS".to_string()
+                } else {
+                    "RED NEXUS".to_string()
+                }
+            }
+            UnitKind::MeleeMinion => "MELEE MINION".to_string(),
+            UnitKind::RangedMinion => "RANGED MINION".to_string(),
+            UnitKind::Dummy => "TRAINING DUMMY".to_string(),
+            UnitKind::Ambient => "AMBIENT NPC".to_string(),
+        };
+        let level = match unit.kind {
+            UnitKind::Player => unit.level,
+            UnitKind::Camp => 2,
+            _ => 1,
+        };
+        let description = match unit.kind {
+            UnitKind::Player => "YOUR CHAMPION. CLICK TO TARGET, HOLD TO STEER.",
+            UnitKind::Camp => "CLEAR IT FOR GOLD, XP AND A TEAM BUFF.",
+            UnitKind::Tower => "STANDS IN THE LANE. FALLS BEFORE THE NEXUS.",
+            UnitKind::Inhibitor => "THE NEXUS SHIELD FALLS WHILE IT LIVES.",
+            UnitKind::Nexus => "DESTROY IT TO END THE MATCH.",
+            UnitKind::MeleeMinion | UnitKind::RangedMinion => {
+                "LANE MINION. KILL IT FOR GOLD AND EXPERIENCE."
+            }
+            UnitKind::Dummy => "TRAINING DUMMY. PRACTISE YOUR COMBOS HERE.",
+            UnitKind::Ambient => "A PASSER BY OF THE RIFT.",
+        };
+        Some((name, level, description))
+    }
+
+    /// Health, max health, team and kind of a unit for the hover tooltip.
+    pub fn unit_status(&self, index: usize) -> (f32, f32, u8, UnitKind) {
+        match self.units.get(index) {
+            Some(unit) => (unit.health, unit.max_health, unit.team, unit.kind),
+            None => (0.0, 1.0, 2, UnitKind::Ambient),
+        }
+    }
+
     pub fn unit_pos(&self, index: usize) -> Option<Vec3> {
         self.units.get(index).map(|u| u.pos)
+    }
+
+    pub fn unit_home(&self, index: usize) -> Option<Vec3> {
+        self.units.get(index).map(|u| u.home)
+    }
+
+    pub fn unit_camp_aggro(&self, index: usize) -> Option<bool> {
+        self.units.get(index).map(|u| u.camp_aggro)
     }
 
     pub fn unit_health(&self, index: usize) -> Option<f32> {
@@ -986,6 +1102,12 @@ impl AnimatedScene {
                     unit.attack_target = None;
                     unit.path.clear();
                     unit.path_index = 0;
+                    if unit.kind == UnitKind::Camp {
+                        unit.pos = unit.home;
+                        unit.camp_aggro = false;
+                        unit.target = None;
+                        unit.camp_wander_timer = 2.0;
+                    }
                 }
             }
         }
@@ -1002,6 +1124,8 @@ impl AnimatedScene {
                 self.update_minion(i, dt, height);
             } else if kind == UnitKind::Tower {
                 self.update_tower(i);
+            } else if kind == UnitKind::Camp {
+                self.update_camp(i, dt, height);
             }
         }
 
@@ -1138,6 +1262,125 @@ impl AnimatedScene {
         }
     }
 
+    fn update_camp(&mut self, index: usize, dt: f32, height: &HeightGrid) {
+        let home = self.units[index].home;
+        let leash = self.units[index].leash_range.max(1.0);
+
+        if self.units[index].camp_aggro {
+            let target = self.units[index]
+                .attack_target
+                .filter(|&ti| {
+                    self.units
+                        .get(ti)
+                        .is_some_and(|u| u.kind == UnitKind::Player && u.health > 0.0)
+                })
+                .or_else(|| self.find_camp_target(index));
+            let Some(ti) = target else {
+                self.units[index].camp_aggro = false;
+                self.units[index].attack_target = None;
+                self.units[index].target = Some(home);
+                return;
+            };
+
+            let target_pos = self.units[ti].pos;
+            if self.units[index].pos.distance(home) > leash {
+                // Pulled too far: drop the hero and walk home to reset.
+                self.units[index].camp_aggro = false;
+                self.units[index].attack_target = None;
+                self.units[index].target = Some(home);
+                return;
+            }
+
+            let distance = self.units[index].pos.distance(target_pos);
+            if distance <= self.units[index].attack_range {
+                self.units[index].attack_target = Some(ti);
+                self.units[index].moving = false;
+                let dir = target_pos - self.units[index].pos;
+                if dir.length_squared() > 1e-6 {
+                    self.units[index].yaw = dir.x.atan2(dir.z);
+                }
+                if self.units[index].attack_cooldown <= 0.0 {
+                    self.units[index].attack_cooldown = self.units[index].attack_interval;
+                    let damage = self.units[index].attack_damage;
+                    if self.units[index].attack_range > 300.0 {
+                        let dir = (target_pos - self.units[index].pos).normalize_or_zero();
+                        self.projectiles.push(Projectile {
+                            pos: self.units[index].pos + Vec3::Y * 140.0 + dir * 20.0,
+                            dir,
+                            speed: 620.0,
+                            life: 1.6,
+                            damage,
+                            team: 2,
+                        });
+                    } else {
+                        self.damage_unit(ti, damage, 2);
+                    }
+                }
+            } else {
+                self.units[index].attack_target = Some(ti);
+                self.move_unit_toward(index, target_pos, dt, height, 1.0);
+            }
+            return;
+        }
+
+        // Return to the spawn area after a leash reset, then heal to full.
+        if self.units[index].pos.distance(home) > 10.0 {
+            self.move_unit_toward(index, home, dt, height, 1.0);
+            if self.units[index].pos.distance(home) <= 10.0 {
+                let unit = &mut self.units[index];
+                unit.pos = home;
+                unit.health = unit.max_health;
+                unit.target = None;
+                unit.moving = false;
+                unit.camp_wander_timer = 2.0;
+            }
+            return;
+        }
+
+        // Heroes walking into the camp's aggro radius pull it.
+        if let Some(ti) = self.find_camp_target(index) {
+            self.units[index].camp_aggro = true;
+            self.units[index].attack_target = Some(ti);
+            self.units[index].target = None;
+            return;
+        }
+
+        // Small idle wander inside the spawn area, Dota-style.
+        if self.units[index].camp_wander_timer > 0.0 {
+            self.units[index].camp_wander_timer -= dt;
+        }
+        let wander = self.units[index].target;
+        if let Some(target) = wander {
+            if self.units[index].pos.distance(target) > 6.0 {
+                self.move_unit_toward(index, target, dt, height, 1.0);
+            } else {
+                self.units[index].target = None;
+                self.units[index].moving = false;
+                self.units[index].camp_wander_timer = 2.0;
+            }
+        } else if self.units[index].camp_wander_timer <= 0.0 {
+            let phase = self.units[index].anim_time_ms * 0.001 + index as f32 * 1.7;
+            let offset = Vec3::new(phase.sin() * 72.0, 0.0, phase.cos() * 72.0);
+            self.units[index].target = Some(home + offset);
+            self.units[index].camp_wander_timer = 2.5;
+        }
+    }
+
+    fn find_camp_target(&self, index: usize) -> Option<usize> {
+        let camp = &self.units[index];
+        let mut best: Option<(usize, f32)> = None;
+        for (i, unit) in self.units.iter().enumerate() {
+            if unit.kind != UnitKind::Player || unit.health <= 0.0 {
+                continue;
+            }
+            let d = camp.pos.distance_squared(unit.pos);
+            if d <= camp.aggro_range * camp.aggro_range && best.is_none_or(|(_, bd)| d < bd) {
+                best = Some((i, d));
+            }
+        }
+        best.map(|(i, _)| i)
+    }
+
     fn update_tower(&mut self, index: usize) {
         let team = self.units[index].team;
         let pos = self.units[index].pos;
@@ -1263,10 +1506,25 @@ impl AnimatedScene {
             )
         };
         if !killed {
+            if target_kind == UnitKind::Camp && attacker_team < 2 {
+                let pi = self.player_index;
+                if self.units[pi].health > 0.0 {
+                    self.units[index].camp_aggro = true;
+                    self.units[index].attack_target = Some(pi);
+                    self.units[index].target = None;
+                }
+            }
             return;
         }
         if attacker_team == 0 {
             self.grant_reward(target_kind);
+        }
+        if attacker_team < 2 {
+            self.kills[attacker_team as usize] += 1;
+            let victim_team = self.units[index].team;
+            if victim_team < 2 {
+                self.deaths[victim_team as usize] += 1;
+            }
         }
         match target_kind {
             UnitKind::Nexus => {
@@ -1289,7 +1547,13 @@ impl AnimatedScene {
                 self.units[index].dead_timer = 4.0;
             }
             UnitKind::Camp => {
-                self.units[index].dead_timer = respawn_time;
+                let unit = &mut self.units[index];
+                unit.dead_timer = respawn_time;
+                unit.camp_aggro = false;
+                unit.attack_target = None;
+                unit.target = None;
+                unit.path.clear();
+                unit.path_index = 0;
                 if let Some(kind) = camp_buff {
                     let (damage_mult, speed_mult) = match kind {
                         CampBuff::Might => (1.25, 1.0),
@@ -1626,6 +1890,11 @@ impl AnimatedScene {
                 ability_power: 0.0,
                 structure_lane: None,
                 super_minion,
+                home: pos,
+                aggro_range: 0.0,
+                leash_range: 0.0,
+                camp_aggro: false,
+                camp_wander_timer: 0.0,
             };
             self.units.push(unit);
         }
@@ -1697,6 +1966,12 @@ impl AnimatedScene {
     fn rebuild_mesh(&mut self, camera_right: Vec3, camera_up: Vec3, camera_forward: Vec3) {
         self.vertices.clear();
         self.indices.clear();
+        // The sun-shadow caster mesh is rebuilt every frame as well. Without
+        // this reset the shadow map kept every previous position of every
+        // unit, which stacked shadows into a trail and grew the draw call
+        // without bound.
+        self.caster_vertices.clear();
+        self.caster_indices.clear();
 
         let units = std::mem::take(&mut self.units);
         for unit in &units {
@@ -1728,11 +2003,11 @@ impl AnimatedScene {
                     width,
                     (unit.health / unit.max_health).clamp(0.0, 1.0),
                     if unit.team == 0 {
-                        [80u8, 150, 255]
+                        [95u8, 225, 120]
                     } else if unit.team == 2 {
-                        [220u8, 180, 70]
+                        [235u8, 185, 65]
                     } else {
-                        [220u8, 65, 60]
+                        [235u8, 70, 60]
                     },
                 )
             })
@@ -1956,6 +2231,11 @@ fn load_unit(
         ability_power: 0.0,
         structure_lane: None,
         super_minion: false,
+        home: pos,
+        aggro_range: 0.0,
+        leash_range: 0.0,
+        camp_aggro: false,
+        camp_wander_timer: 0.0,
     })
 }
 
@@ -2015,10 +2295,14 @@ fn append_unit(scene: &mut AnimatedScene, unit: &AnimatedUnit, positions: &[[f32
             .as_ref()
             .and_then(|t| t.get(face_idx))
             .is_some_and(|&t| t >= 0);
+        let plain_face = !textured && unit.model.face_colors[face_idx] != 127;
         let mut rgb = if unit.kind == UnitKind::Tower {
             [125, 117, 102]
         } else if textured || unit.model.face_colors[face_idx] == 127 {
-            [48, 95, 42]
+            [84, 142, 58]
+        } else if plain_face {
+            let raw = hsl_to_rgb(unit.model.face_colors[face_idx], 1.0);
+            [raw[0].min(150), raw[1].min(120), raw[2].min(95)]
         } else {
             hsl_to_rgb(unit.model.face_colors[face_idx], 1.0)
         };

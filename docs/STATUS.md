@@ -1,6 +1,6 @@
 # Status
 
-Last updated: M5.3a/M5.4a ground smoothing + post pass, 2026-11-13.
+Last updated: M5.6 biome map, Dota style presentation, 2026-11-13.
 
 ## Working
 
@@ -13,10 +13,26 @@ Last updated: M5.3a/M5.4a ground smoothing + post pass, 2026-11-13.
 - Sequence/frame/framemap decoding and interpolated CPU vertex animation.
 - `crates/sim`: deterministic 192×192 tile grid, A* with octile heuristic,
   no corner cutting, nearest-walkable fallback, path simplification, LOS.
-- Scene: 3×3 Karamja block, 221k terrain verts, 900 scenery placements,
-  8 ambient animated NPCs, three stone lane ribbons, distant backdrop plane.
-- Map: top/mid/bottom lanes, two towers + one inhibitor per lane per team, one
-  nexus per team, four jungle camps, four brush rectangles, atmosphere block.
+- Scene: 5×5 Karamja block (radius 2), 614k terrain verts, ~1500 scenery
+  placements, 8 ambient animated NPCs, three dirt lane ribbons, distant
+  backdrop plane.
+- Biome pockets: eight real OSRS regions transplanted into the map (Wilderness
+  dead trees, Morytania swamp, ogre ruins, goblin camp on the dire side;
+  Varrock, human keep, Tirannwn elven woods, gnome stronghold on the radiant
+  side), each with its own ground tint and scenery.
+- River: a diagonal waterway from the upper left third through the centre to
+  the lower right third, carved into the terrain, blocked for movement except
+  at the centre bridge.
+- Lane tree lines: two rows of OSRS tree models flank every lane, tinted by
+  the side of the river they stand on.
+- Jungle: eight neutral camps with proximity aggro, chase, leash reset and
+  respawn; Might (+25% damage) or Swift (+20% speed) team buffs for 60 s.
+- Presentation: HDR `Rgba16Float` scene target with a real bloom chain
+  (bright pass, separable Gaussian, ACES tonemap), cache-native ground
+  texture array with world-space UVs, two-sided lighting with a camera fill,
+  and a fog of war that shadows unexplored ground instead of tinting it.
+- HUD: OSRS palette text at 1.32x, Dota scoreboard strip (kills, deaths,
+  clock), cursor tooltip for units, minimap viewport box, biome label.
 - Movement: click-to-move A* path following; hold-to-steer with collision
   sliding; camera follow/pan; selection and click rings; minimap click-to-pan.
 - Lane: three-minion waves per lane every 25 s; minion AI, tower targeting,
@@ -24,8 +40,6 @@ Last updated: M5.3a/M5.4a ground smoothing + post pass, 2026-11-13.
 - Inhibitors: destroyed inhibitors respawn after 120 s. While an enemy
   inhibitor is down, that lane's waves include a super minion (2.5x health,
   2x damage, 1.6x scale, gold minimap marker). Respawn re-shields the nexus.
-- Jungle: four neutral camps with respawn; Might (+25% damage) or Swift (+20%
-  speed) team buffs for 60 s.
 - Champion roster: three data-driven configs in `data/champions/`:
   - **Monkey** — balanced, 500 HP / 200 mana.
   - **JalRek-Jad** — tank/mage, 700 HP / 260 mana, higher damage.
