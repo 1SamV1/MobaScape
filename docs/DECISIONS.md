@@ -503,12 +503,17 @@ and one landed on the camp tile.
 **Status:** accepted for M5.16.
 
 Ground sprites were sampled with plain XZ world UVs, so a 45 degree hill
-stretched the sprite to 1.41x its intended length and cliffs smeared into
-vertical bands. The terrain shader now divides the UV by the surface normal's
-Y (clamped to 0.30) which keeps texel density constant on slopes, and blends a
-rotated stone sample over steep ground (normal Y below 0.86) so cliffs read as
-rock instead of stretched grass or path. The lane road UV gets the same slope
-correction.
+stretched the sprite and cliffs smeared into vertical bands. Dividing the UV by
+the fragment normal's Y fixed the density but warped the sprite into ripples
+wherever the normal varied, so that approach was replaced:
+
+- Ground UVs are plain, stable `world.xz / 384` again, which keeps every
+  texture pattern identifiable.
+- The mesh bakes `1 - normal.y` into the terrain vertex `uv.x`. The shader
+  uses that smooth per-corner slope to blend a **vertical stone projection**
+  (`vec2(x + z, y) / 260`) over cliffs, which is uniform and cannot ripple.
+- The lane road mask fades out on steep ground so paths never stretch up a
+  cliff face.
 
 
 ## ADR-039 — Scattered critters are weak camps

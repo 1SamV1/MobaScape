@@ -1093,6 +1093,12 @@ pub fn build(
             v10.color[3] = lane_mask[idx + 1];
             v01.color[3] = lane_mask[idx + size];
             v11.color[3] = lane_mask[idx + size + 1];
+            // uv.x carries the baked slope so the shader can add cliff
+            // detail without warping UVs from the per-fragment normal.
+            v00.uv[0] = (1.0 - n00.y).clamp(0.0, 1.0);
+            v10.uv[0] = (1.0 - n10.y).clamp(0.0, 1.0);
+            v01.uv[0] = (1.0 - n01.y).clamp(0.0, 1.0);
+            v11.uv[0] = (1.0 - n11.y).clamp(0.0, 1.0);
             v00.ao = ao00;
             v10.ao = ao10;
             v01.ao = ao01;

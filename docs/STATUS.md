@@ -1,6 +1,6 @@
 # Status
 
-Last updated: M5.17 scattered critters aggro, 2026-11-13.
+Last updated: M5.18 stable ground UVs + cliff projection, 2026-11-13.
 
 ## Working
 
@@ -32,8 +32,9 @@ Last updated: M5.17 scattered critters aggro, 2026-11-13.
   scattered critters are weak camps too (220 HP, 14 damage, 420 aggro). The two
   camps that accidentally used a table prop model now use creature models
   (General Graardor Jr. 27660 and Zilyana Jr. 27989).
-- Ground textures: slope-corrected planar UVs (divide by normal Y) keep
-  texel density constant on hills, and a rotated stone pass breaks up cliffs.
+- Ground textures: stable world-space planar UVs keep patterns identifiable;
+  a per-vertex baked slope blends a vertical stone projection over cliffs and
+  fades the lane road on steep ground, with no normal-warped UV ripples.
 - Presentation: HDR `Rgba16Float` scene target with a real bloom chain
   (bright pass, separable Gaussian, ACES tonemap), cache-native ground
   texture array with world-space UVs, two-sided lighting with a camera fill,
