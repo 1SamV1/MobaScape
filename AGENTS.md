@@ -191,8 +191,9 @@ Cache location: `.cache/osrs-235/cache` by default. Pass `--cache` and
   `ui.wgsl` samples it with nearest filtering. Missing assets fall back to
   procedural icons. See `docs/UI_ASSETS.md`; never commit `assets/`.
 - Three data-driven champions (`monkey`, `jad`, `kree`) with distinct models,
-  stats, and ability numbers. They share the Q/W/E/R shape; Kree has ranged
-  auto-attacks. No champion-select UI or passive.
+  stats, and ability numbers. A hero-select screen chooses among them and
+  bakes cache-model portraits. They share the Q/W/E/R shape; Kree has ranged
+  auto-attacks. No passives yet.
 - Six data-driven items in `data/items/items.json`, six inventory slots, gold
   spending, hover tooltips, and a fountain-range shop (`B`, then `1`–`6`).
   Passive gold is 8/s and the fountain heals 6% max HP/MP per second within

@@ -75,8 +75,11 @@ cargo run -p rift-tools -- sequence 222
 cargo run -p rift-tools -- animate 7744 222
 cargo run -p rift-tools -- model 1715
 
-# Render the 5x5 block and play (radius 2 is the default)
+# Render the 5x5 block and open the hero-select screen
 cargo run -p rift-client
+
+# Skip hero select with an explicit champion
+cargo run -p rift-client -- --champion monkey
 
 # Deterministic combat check: target a dummy and fire Q
 cargo run -p rift-client -- --demo-combat
@@ -134,6 +137,7 @@ Put `keys.json` next to `main_file_cache.dat2`, or pass `--keys`.
 
 ## Controls (viewer)
 
+- **Hero select**: click a card or press **1-3**; **Enter**/click **Play** to lock in
 - **LMB ground tap**: pathfind to the point
 - **LMB hold**: steer directly toward the cursor with collision sliding
 - **LMB on an enemy**: auto-attack it

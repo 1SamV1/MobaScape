@@ -1,6 +1,6 @@
 # Status
 
-Last updated: M5.18 stable ground UVs + cliff projection, 2026-11-13.
+Last updated: M5.19 hero select + ground decor, 2026-11-13.
 
 ## Working
 
@@ -14,8 +14,9 @@ Last updated: M5.18 stable ground UVs + cliff projection, 2026-11-13.
 - `crates/sim`: deterministic 192×192 tile grid, A* with octile heuristic,
   no corner cutting, nearest-walkable fallback, path simplification, LOS.
 - Scene: 5×5 Karamja block (radius 2), 614k terrain verts, ~1500 scenery
-  placements, 8 ambient animated NPCs, three dirt lane ribbons, distant
-  backdrop plane.
+  placements, 1200 cache-native ground decorations (flowers, ferns, grass,
+  mushrooms, rocks, twigs, roots and stumps), 8 ambient animated NPCs, three
+  dirt lane ribbons, distant backdrop plane.
 - Biome pockets: eight real OSRS regions transplanted into the map (Wilderness
   dead trees, Morytania swamp, ogre ruins, goblin camp on the dire side;
   Varrock, human keep, Tirannwn elven woods, gnome stronghold on the radiant
@@ -33,8 +34,10 @@ Last updated: M5.18 stable ground UVs + cliff projection, 2026-11-13.
   camps that accidentally used a table prop model now use creature models
   (General Graardor Jr. 27660 and Zilyana Jr. 27989).
 - Ground textures: stable world-space planar UVs keep patterns identifiable;
-  a per-vertex baked slope blends a vertical stone projection over cliffs and
-  fades the lane road on steep ground, with no normal-warped UV ripples.
+  steep ground keeps its natural grass/dirt texture with contact darkening
+  instead of a vertically projected stone overlay, and two noise scales add
+  broad dirt patches and fine break-up over the tiling. Lane roads fade on
+  steep ground.
 - Presentation: HDR `Rgba16Float` scene target with a real bloom chain
   (bright pass, separable Gaussian, ACES tonemap), cache-native ground
   texture array with world-space UVs, two-sided lighting with a camera fill,
@@ -58,9 +61,11 @@ Last updated: M5.18 stable ground UVs + cliff projection, 2026-11-13.
   the lock range.
 - Castle wall ruins: broken OSRS walls and ruin clusters line the outside of
   every lane.
-- Scattering: trees and ruins are placed by a fixed-seed xorshift RNG with
-  variable spacing, offsets, scales, species and clearings, so the world is
-  varied but identical every match. Dire species are dead and dark, radiant
+- Scattering: trees, ruins and ground decor are placed by a fixed-seed
+  xorshift RNG with variable spacing, offsets, scales, species and clearings,
+  so the world is varied but identical every match. Ground decorations are
+  selected from real OSRS object locations and sorted by lane proximity so
+  the detail follows the play area. Dire species are dead and dark, radiant
   species stay green. Pocket props are kept 6.5 tiles clear of every lane.
 - Visibility: structures (towers, inhibitors, nexus, watchtowers) are always
   visible; projectiles are only drawn inside the team's line of sight.
@@ -79,8 +84,9 @@ Last updated: M5.18 stable ground UVs + cliff projection, 2026-11-13.
 - Delivery: chest model 1249 with a gold ring while loaded; guard model 28019
   (Kree'arra Jr., the closest Armadylean model in this cache) at 1100 u/s.
   `--demo-delivery` verifies buy-away-from-base -> dispatch -> handover.
-- Lane: three-minion waves per lane every 25 s; minion AI, tower targeting,
-  inhibitor-gated nexus, victory/defeat.
+- Lane: three-minion waves per lane every 25 s, spawned in a lane-relative
+  wedge (melee front, ranged behind, staggered super minion); minion AI,
+  tower targeting, inhibitor-gated nexus, victory/defeat.
 - Inhibitors: destroyed inhibitors respawn after 120 s. While an enemy
   inhibitor is down, that lane's waves include a super minion (2.5x health,
   2x damage, 1.6x scale, gold minimap marker). Respawn re-shields the nexus.
@@ -88,7 +94,16 @@ Last updated: M5.18 stable ground UVs + cliff projection, 2026-11-13.
   - **Monkey** — balanced, 500 HP / 200 mana.
   - **JalRek-Jad** — tank/mage, 700 HP / 260 mana, higher damage.
   - **Kree'arra Jr.** — ranged skirmisher, 420 HP / 240 mana, ranged auto-attacks.
-  Load with `--champion monkey|jad|kree`.
+  Load with `--champion monkey|jad|kree`. A normal launch opens the hero-select
+  screen; `--champion` skips it for demos and direct matches.
+- **Hero select (M5.19)**: full-screen OSRS-style champion picker with baked
+  cache-model portraits (CPU rasteriser, idle pose), role/tagline cards, stat
+  bars, click/keyboard selection, and a gold lock-in button. Selecting a hero
+  rebuilds a fresh match scene so skills, stats and cooldowns start clean.
+- **Nexus/inhibitor assets**: the painted blue crystal is replaced by real
+  cache models — Portal Nexus (36053) for both nexuses, Crystal of Power
+  (12953) for radiant inhibitors, and Crystal Outcrop (9721) for dire
+  inhibitors, with team tinting.
 - Kit: Q projectile, W blink, E heal+shield, R meteor; mana, cooldowns, shield
   absorption, expanding rings; ability power from items scales Q/R/E.
 - Progression: levels 1–11, XP, gold; level-ups raise health, mana, damage.
@@ -135,7 +150,7 @@ Last updated: M5.18 stable ground UVs + cliff projection, 2026-11-13.
 
 ## Verified
 
-- `cargo test --workspace`: 28 tests pass (6 cache, 15 client, 7 sim).
+- `cargo test --workspace`: 35 tests pass (6 cache, 22 client, 7 sim).
 - `cargo clippy --workspace --all-targets`: no warnings.
 - 117HD Core runs at **60–68 fps at 1280×720** on the dev machine at timescale 1;
   shadow modes measured **67 fps (off)**, **68 fps (blob)**, **66 fps (map)**.
@@ -181,6 +196,9 @@ Last updated: M5.18 stable ground UVs + cliff projection, 2026-11-13.
   detail render because the plain inventory icon file was unavailable under the
   expected wiki name. Faint baked tab numbers/icons can show through overlays.
 - Kree'arra/Jad models are large; scale tuning is ongoing.
+- Ground decorations use flat fallback colours on textured faces until cache
+  texture sampling lands; they read as flowers/foliage, not sprite-accurate
+  OSRS billboards.
 - Fog/brush is client-side only; server-authoritative fog is required.
 - No lobby, netcode, audio, or map editor.
 
@@ -202,7 +220,8 @@ Last updated: M5.18 stable ground UVs + cliff projection, 2026-11-13.
   walkable, no corner cutting, simplification, bounds, LOS).
 - `cargo test -p rift-cache`: 6 tests (smart reads, chained smart, XTEA, HSL,
   group rejection, framemap/frame parse).
-- `cargo test -p rift-client`: 15 tests (5 items/layout, 2 font, 2 minimap,
+- `cargo test -p rift-client`: 22 tests (5 items/layout, 2 font, 2 minimap,
+  3 hero-select layout/cycling, 2 portrait raster, 2 wave formation,
   4 scene/lighting, 2 shadow matrix/defaults).
 - Shop demo: 6/6 items, dmg 45, HP 730/730, MP 260/260, speed 460, AP 45%,
   gold 300.
@@ -216,6 +235,12 @@ Last updated: M5.18 stable ground UVs + cliff projection, 2026-11-13.
   per-tile grid lines.
 - Post: FXAA/grade/bloom at 59–60 fps; HUD crisp after post.
 - Champion runs: Jad 700 HP / 260 mana; Kree 420 HP / 240 mana; W/E/R true.
+- Hero select: three cache-model portraits baked; mouse/keyboard lock-in
+  starts a fresh match with the chosen champion; `--champion` skips the screen.
+- Scene scatter: 1511 scenery placements plus 1200 ground decorations; tree
+  lines scaled 1.35–2.05× and cache props 1.35–1.5× over the old sizes.
+- Wave formation: initial waves spawn in lane-relative wedges; the formation
+  unit test verifies all base minions start at least 80 units apart.
 - Fog run: visible enemies 7–13; dark fog mesh over unseen tiles.
 - Three-lane 20× run: victory states, towers/inhibitors/nexus live.
 - Jungle demo: camp killed, buff Might 58s.
