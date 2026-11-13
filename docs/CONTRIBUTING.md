@@ -72,6 +72,20 @@ Include:
 
 Keep commits logical and scoped. Do not mix refactors with behavior changes.
 
+## Task completion
+
+Every task ends with a clean, pushed repository:
+
+```sh
+git status                 # must be clean
+git log --oneline -1       # the task's commit
+git push origin main       # if not already pushed
+git ls-remote --heads origin main  # must match local HEAD
+```
+
+Do not leave uncommitted work at the end of a task unless the user explicitly
+asks you to stop before committing.
+
 ## Adding a decoder
 
 1. Port the reference loader from RuneLite/OpenRS2 (BSD-2-Clause), keeping field

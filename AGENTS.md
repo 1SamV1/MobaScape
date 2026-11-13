@@ -175,6 +175,11 @@ Cache location: `.cache/osrs-235/cache` by default. Pass `--cache` and
 - PR description: what changed, how it was verified, known gaps, and any asset
   IDs used for manual checks.
 - Do not mix refactors with behavior changes.
+- **End every task with a commit and push.** Before reporting completion, run
+  `git status`. If there are changes, commit them with a scoped message and run
+  `git push origin main`. Never leave a task with uncommitted work unless the
+  user explicitly asks you to. Verify with `git status` (clean) and
+  `git ls-remote --heads origin main` (matches local `HEAD`).
 
 ## 10. Escalation
 
