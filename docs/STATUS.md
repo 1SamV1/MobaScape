@@ -1,6 +1,6 @@
 # Status
 
-Last updated: M5.6 biome map, Dota style presentation, 2026-11-13.
+Last updated: M5.7 baked lanes, watchtowers and full minimap, 2026-11-13.
 
 ## Working
 
@@ -33,6 +33,21 @@ Last updated: M5.6 biome map, Dota style presentation, 2026-11-13.
   and a fog of war that shadows unexplored ground instead of tinting it.
 - HUD: OSRS palette text at 1.32x, Dota scoreboard strip (kills, deaths,
   clock), cursor tooltip for units, minimap viewport box, biome label.
+- Minimap: a baked 256x256 terrain map (biomes, river and lanes) uploaded to
+  the UI atlas, team hero markers with a hero profile card (portrait, name,
+  level, HP/MP), structure dots for both teams, and a camera viewport box.
+  Enemy heroes are never shown; enemy mobs only while inside team LOS.
+- Lanes: baked into the terrain as a mask in the vertex alpha; the shader
+  blends the OSRS dirt/path sprites over the ground, so there is no ribbon
+  overlay, no z-fighting and the road edges wobble naturally.
+- Watchtowers: six OSRS "Battle tower" structures (three per team) with a
+  620 unit acquire radius and a 1200 unit lock range, firing slow 280 u/s
+  bolts at heroes, minions and jungle camps until the target dies or leaves
+  the lock range.
+- Castle wall ruins: broken OSRS walls and ruin clusters line the outside of
+  every lane.
+- Visibility: structures (towers, inhibitors, nexus, watchtowers) are always
+  visible; projectiles are only drawn inside the team's line of sight.
 - Movement: click-to-move A* path following; hold-to-steer with collision
   sliding; camera follow/pan; selection and click rings; minimap click-to-pan.
 - Lane: three-minion waves per lane every 25 s; minion AI, tower targeting,

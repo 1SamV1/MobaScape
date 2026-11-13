@@ -3,6 +3,7 @@ mod champion;
 mod font;
 mod hud;
 mod items;
+mod minimap;
 mod renderer;
 mod scene;
 mod terrain_textures;
@@ -23,9 +24,9 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
-use crate::animated::AnimatedScene;
+use crate::animated::{AnimatedScene, UnitKind};
 use crate::champion::ChampionConfig;
-use crate::hud::{HoverInfo, Hud, PlayerHud, minimap_world_at};
+use crate::hud::{HeroMarker, HoverInfo, Hud, PlayerHud, minimap_world_at};
 use crate::items::{
     ItemShop, point_in_rect, shop_button_at, shop_buy_at, shop_card_at, shop_card_rect,
     shop_category_at, shop_close_at, shop_sell_at, shop_window_rect,
@@ -60,12 +61,18 @@ struct Cli {
     /// Demo: walk to this tile coordinate after one second (x y).
     #[arg(long, num_args = 2, value_names = ["X", "Y"])]
     demo_target: Option<Vec<f32>>,
+    /// Debug: spawn the hero at this tile coordinate (x y).
+    #[arg(long, num_args = 2, value_names = ["X", "Y"])]
+    spawn: Option<Vec<f32>>,
     /// Demo: auto-target a dummy and fire Q to verify combat.
     #[arg(long)]
     demo_combat: bool,
     /// Demo: teleport to a jungle camp, attack it, and verify the buff.
     #[arg(long)]
     demo_camp: bool,
+    /// Demo: verify watchtower aggro, lock range and target reset.
+    #[arg(long)]
+    demo_watchtower: bool,
     /// Demo: cast W/E/R and print the resulting player stats.
     #[arg(long)]
     demo_kit: bool,
@@ -116,6 +123,14 @@ fn main() -> Result<()> {
     let animated = AnimatedScene::new(&cache, &scene, &champion)?;
     let height = scene.height.clone();
     let collision = scene.collision.clone();
+    let mut animated = animated;
+    if let Some(spawn) = cli.spawn.as_ref().filter(|v| v.len() == 2) {
+        let x = (spawn[0] + 0.5) * 128.0;
+        let z = (spawn[1] + 0.5) * 128.0;
+        let point = Vec3::new(x, height.height_at(x, z), z);
+        animated.teleport_player(point);
+        tracing::info!("spawned hero at tile {},{}", spawn[0], spawn[1]);
+    }
     tracing::info!(
         "scene ready: {} placements, {} animated units",
         scene.placements,
@@ -133,7 +148,11 @@ fn main() -> Result<()> {
         }
     });
 
-    let ui_atlas = Arc::new(ui_assets::UiAtlas::load()?);
+    let mut ui_atlas = ui_assets::UiAtlas::load()?;
+    // Bake a real terrain map for the minimap from the scene colours.
+    let minimap_image = minimap::render(&scene, animated.minimap_bounds, minimap::MINIMAP_SIZE);
+    ui_atlas.add_minimap(&minimap_image);
+    let ui_atlas = Arc::new(ui_atlas);
     let mut app = App {
         scene: Some(scene),
         animated: Some(animated),
@@ -153,6 +172,10 @@ fn main() -> Result<()> {
         demo_timer: 0.0,
         demo_combat: cli.demo_combat,
         demo_camp: cli.demo_camp,
+        demo_watchtower: cli.demo_watchtower,
+        demo_watchtower_timer: 0.0,
+        demo_watchtower_stage: 0,
+        demo_watchtower_target: None,
         demo_kit: cli.demo_kit,
         demo_kit_timer: 0.0,
         demo_kit_stage: 0,
@@ -218,6 +241,10 @@ struct App {
     demo_timer: f32,
     demo_combat: bool,
     demo_camp: bool,
+    demo_watchtower: bool,
+    demo_watchtower_timer: f32,
+    demo_watchtower_stage: u8,
+    demo_watchtower_target: Option<usize>,
     demo_kit: bool,
     demo_kit_timer: f32,
     demo_kit_stage: u8,
@@ -730,6 +757,65 @@ impl App {
                     self.demo_camp_done = true;
                 }
             }
+            if self.demo_watchtower {
+                self.demo_watchtower_timer += dt;
+                if self.demo_watchtower_stage == 0 && self.demo_watchtower_timer >= 1.0 {
+                    if let Some(index) = animated.nearest_watchtower(1, animated.player_pos()) {
+                        if let Some(pos) = animated.unit_pos(index) {
+                            let spawn = pos + Vec3::new(0.0, 0.0, 4.0 * 128.0);
+                            animated.teleport_player(spawn);
+                            self.demo_watchtower_target = Some(index);
+                            tracing::info!(
+                                "demo watchtower: target {index}, player inside aggro at 4 tiles"
+                            );
+                        }
+                    }
+                    self.demo_watchtower_stage = 1;
+                }
+                if self.demo_watchtower_stage == 1 && self.demo_watchtower_timer >= 4.0 {
+                    let hp = animated.player_stats().health;
+                    let target = self
+                        .demo_watchtower_target
+                        .and_then(|i| animated.unit_attack_target(i));
+                    tracing::info!(
+                        "demo watchtower: after aggro, player hp {hp:.0}, tower target {target:?}"
+                    );
+                    if let Some(index) = self.demo_watchtower_target {
+                        if let Some(pos) = animated.unit_pos(index) {
+                            // 8 tiles away: outside the 620 aggro radius but
+                            // inside the 1200 lock range.
+                            animated.teleport_player(pos + Vec3::new(0.0, 0.0, 8.0 * 128.0));
+                        }
+                    }
+                    self.demo_watchtower_stage = 2;
+                }
+                if self.demo_watchtower_stage == 2 && self.demo_watchtower_timer >= 8.0 {
+                    let hp = animated.player_stats().health;
+                    let target = self
+                        .demo_watchtower_target
+                        .and_then(|i| animated.unit_attack_target(i));
+                    tracing::info!(
+                        "demo watchtower: at 8 tiles (outside aggro, inside lock) hp {hp:.0}, tower target {target:?}"
+                    );
+                    if let Some(index) = self.demo_watchtower_target {
+                        if let Some(pos) = animated.unit_pos(index) {
+                            // 24 tiles away: outside the lock range.
+                            animated.teleport_player(pos + Vec3::new(0.0, 0.0, 24.0 * 128.0));
+                        }
+                    }
+                    self.demo_watchtower_stage = 3;
+                }
+                if self.demo_watchtower_stage == 3 && self.demo_watchtower_timer >= 12.0 {
+                    let hp = animated.player_stats().health;
+                    let target = self
+                        .demo_watchtower_target
+                        .and_then(|i| animated.unit_attack_target(i));
+                    tracing::info!(
+                        "demo watchtower: at 24 tiles (outside lock) hp {hp:.0}, tower target {target:?}"
+                    );
+                    self.demo_watchtower = false;
+                }
+            }
             if self.demo_kit {
                 self.demo_kit_timer += dt;
                 if self.demo_kit_stage == 0 && self.demo_kit_timer >= 1.0 {
@@ -876,6 +962,22 @@ impl App {
                 (alive, healths.len())
             };
             let scores = animated.team_scores();
+            let heroes: Vec<HeroMarker> = animated
+                .units
+                .iter()
+                .filter(|unit| unit.kind == UnitKind::Player && unit.team == 0)
+                .map(|unit| HeroMarker {
+                    name: animated.champion_name().to_string(),
+                    team: unit.team,
+                    pos: (unit.pos.x, unit.pos.z),
+                    alive: unit.health > 0.0,
+                    health: unit.health,
+                    max_health: unit.max_health,
+                    mana: unit.mana,
+                    max_mana: unit.max_mana,
+                    level: unit.level,
+                })
+                .collect();
             let hover = {
                 let mut hover = None;
                 if let Some((origin, dir)) = renderer.screen_ray(self.mouse_pos.0, self.mouse_pos.1)
@@ -927,6 +1029,7 @@ impl App {
                 match_time: self.app_time,
                 hover,
                 biome: animated.current_biome(),
+                heroes: heroes.clone(),
             };
             self.hud.build(
                 renderer.size.0 as f32,
@@ -946,6 +1049,7 @@ impl App {
                 renderer.size.1 as f32,
                 animated,
                 (renderer.camera.target.x, renderer.camera.target.z),
+                &heroes,
             );
             renderer.set_hud_mesh(&self.hud.vertices, &self.hud.indices);
             if self.follow {

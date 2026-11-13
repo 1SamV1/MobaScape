@@ -25,6 +25,7 @@ pub enum UnitKind {
     Inhibitor,
     Nexus,
     Camp,
+    Watchtower,
 }
 
 impl UnitKind {
@@ -90,6 +91,8 @@ pub struct AnimatedUnit {
     pub leash_range: f32,
     pub camp_aggro: bool,
     pub camp_wander_timer: f32,
+    /// Range at which a watchtower acquires its first target.
+    pub lock_range: f32,
 }
 
 #[derive(Clone, Copy)]
@@ -158,6 +161,9 @@ pub struct Projectile {
     pub life: f32,
     pub damage: f32,
     pub team: u8,
+    /// The unit that fired the projectile, so kills and camp aggro can be
+    /// attributed correctly.
+    pub attacker: Option<usize>,
 }
 
 struct MinionTemplate {
@@ -305,11 +311,13 @@ impl AnimatedScene {
                 StructureKind::Tower => UnitKind::Tower,
                 StructureKind::Inhibitor => UnitKind::Inhibitor,
                 StructureKind::Nexus => UnitKind::Nexus,
+                StructureKind::Watchtower => UnitKind::Watchtower,
             };
             let (hit_radius, bar_height) = match kind {
                 UnitKind::Tower => (230.0, 500.0),
                 UnitKind::Inhibitor => (230.0, 430.0),
                 UnitKind::Nexus => (300.0, 400.0),
+                UnitKind::Watchtower => (210.0, 720.0),
                 _ => (150.0, 200.0),
             };
             let mut unit = load_unit(
@@ -331,6 +339,11 @@ impl AnimatedScene {
                 Vec::new(),
             )?;
             unit.structure_lane = structure.lane_index;
+            if kind == UnitKind::Watchtower {
+                // The lock range is the long one, the aggro radius is where
+                // the tower first picks a target up.
+                unit.lock_range = structure.aggro.max(1.0);
+            }
             units.push(unit);
         }
 
@@ -745,6 +758,7 @@ impl AnimatedScene {
             life: 1.4,
             damage,
             team,
+            attacker: None,
         });
         self.effects.push(Effect {
             pos,
@@ -893,6 +907,25 @@ impl AnimatedScene {
         best.map(|(i, _)| i)
     }
 
+    /// Closest watchtower of the given team, used by the verification demo.
+    pub fn nearest_watchtower(&self, team: u8, pos: Vec3) -> Option<usize> {
+        let mut best: Option<(usize, f32)> = None;
+        for (i, unit) in self.units.iter().enumerate() {
+            if unit.kind != UnitKind::Watchtower || unit.team != team || unit.health <= 0.0 {
+                continue;
+            }
+            let d = unit.pos.distance_squared(pos);
+            if best.is_none_or(|(_, bd)| d < bd) {
+                best = Some((i, d));
+            }
+        }
+        best.map(|(i, _)| i)
+    }
+
+    pub fn unit_attack_target(&self, index: usize) -> Option<usize> {
+        self.units.get(index).and_then(|unit| unit.attack_target)
+    }
+
     pub fn nearest_camp(&self, pos: Vec3) -> Option<usize> {
         let mut best: Option<(usize, f32)> = None;
         for (i, unit) in self.units.iter().enumerate() {
@@ -978,6 +1011,13 @@ impl AnimatedScene {
             UnitKind::RangedMinion => "RANGED MINION".to_string(),
             UnitKind::Dummy => "TRAINING DUMMY".to_string(),
             UnitKind::Ambient => "AMBIENT NPC".to_string(),
+            UnitKind::Watchtower => {
+                if unit.team == 0 {
+                    "BLUE WATCHTOWER".to_string()
+                } else {
+                    "RED WATCHTOWER".to_string()
+                }
+            }
         };
         let level = match unit.kind {
             UnitKind::Player => unit.level,
@@ -995,6 +1035,9 @@ impl AnimatedScene {
             }
             UnitKind::Dummy => "TRAINING DUMMY. PRACTISE YOUR COMBOS HERE.",
             UnitKind::Ambient => "A PASSER BY OF THE RIFT.",
+            UnitKind::Watchtower => {
+                "FIRES A SLOW BOLT AT THE FIRST ENEMY IN RANGE AND KEEPS FIRING UNTIL IT LEAVES."
+            }
         };
         Some((name, level, description))
     }
@@ -1126,6 +1169,8 @@ impl AnimatedScene {
                 self.update_tower(i);
             } else if kind == UnitKind::Camp {
                 self.update_camp(i, dt, height);
+            } else if kind == UnitKind::Watchtower {
+                self.update_watchtower(i);
             }
         }
 
@@ -1196,6 +1241,7 @@ impl AnimatedScene {
                                 life: 1.4,
                                 damage,
                                 team,
+                                attacker: None,
                             });
                         } else {
                             self.damage_unit(ti, damage, 0);
@@ -1247,6 +1293,7 @@ impl AnimatedScene {
                             life: 1.4,
                             damage,
                             team: unit.team,
+                            attacker: None,
                         });
                     } else {
                         self.damage_unit(target, damage, team);
@@ -1311,6 +1358,7 @@ impl AnimatedScene {
                             life: 1.6,
                             damage,
                             team: 2,
+                            attacker: None,
                         });
                     } else {
                         self.damage_unit(ti, damage, 2);
@@ -1381,6 +1429,84 @@ impl AnimatedScene {
         best.map(|(i, _)| i)
     }
 
+    /// Watchtower behaviour: it picks up the first enemy inside its short
+    /// aggro radius, then keeps firing slow bolts at that target until the
+    /// target dies or walks out of the longer lock range.
+    fn update_watchtower(&mut self, index: usize) {
+        let team = self.units[index].team;
+        let lock_range = self.units[index].attack_range;
+        let aggro_range = self.units[index].lock_range.max(1.0);
+        let tower_pos = self.units[index].pos;
+
+        let mut target = self.units[index].attack_target.filter(|&ti| {
+            let unit = &self.units[ti];
+            unit.health > 0.0 && unit.team != team && unit.pos.distance(tower_pos) <= lock_range
+        });
+        if target.is_none() {
+            target = self.find_watchtower_target(index, aggro_range);
+        }
+
+        let Some(ti) = target else {
+            self.units[index].attack_target = None;
+            return;
+        };
+        self.units[index].attack_target = Some(ti);
+        let target_pos = self.units[ti].pos;
+        let dir = target_pos - tower_pos;
+        if dir.length_squared() > 1e-6 {
+            self.units[index].yaw = dir.x.atan2(dir.z);
+        }
+        if self.units[index].attack_cooldown > 0.0 {
+            return;
+        }
+        self.units[index].attack_cooldown = self.units[index].attack_interval;
+        let damage = self.units[index].attack_damage;
+        let from = tower_pos + Vec3::Y * 240.0;
+        let shot_dir = (target_pos - from).normalize_or_zero();
+        self.projectiles.push(Projectile {
+            pos: from,
+            dir: shot_dir,
+            speed: 280.0,
+            life: 3.5,
+            damage,
+            team,
+            attacker: Some(index),
+        });
+    }
+
+    /// Watchtowers prefer heroes, then lane minions, then jungle camps.
+    fn find_watchtower_target(&self, index: usize, range: f32) -> Option<usize> {
+        let tower = &self.units[index];
+        let mut best: Option<(usize, u8, f32)> = None;
+        for (i, unit) in self.units.iter().enumerate() {
+            if i == index || unit.health <= 0.0 || unit.team == tower.team {
+                continue;
+            }
+            if unit.kind == UnitKind::Nexus || unit.kind == UnitKind::Inhibitor {
+                continue;
+            }
+            let priority = match unit.kind {
+                UnitKind::Player => 0u8,
+                UnitKind::MeleeMinion | UnitKind::RangedMinion => 1,
+                UnitKind::Camp => 2,
+                _ => 3,
+            };
+            if priority == 3 {
+                continue;
+            }
+            let d = tower.pos.distance_squared(unit.pos);
+            if d > range * range {
+                continue;
+            }
+            match best {
+                Some((_, best_priority, best_d))
+                    if best_priority < priority || (best_priority == priority && best_d <= d) => {}
+                _ => best = Some((i, priority, d)),
+            }
+        }
+        best.map(|(i, _, _)| i)
+    }
+
     fn update_tower(&mut self, index: usize) {
         let team = self.units[index].team;
         let pos = self.units[index].pos;
@@ -1399,6 +1525,7 @@ impl AnimatedScene {
                     life: 1.6,
                     damage,
                     team,
+                    attacker: None,
                 });
             }
         }
@@ -1476,6 +1603,19 @@ impl AnimatedScene {
     }
 
     fn damage_unit(&mut self, index: usize, amount: f32, attacker_team: u8) {
+        self.damage_unit_by(index, amount, attacker_team, None);
+    }
+
+    /// Apply damage and attribute it to a specific attacker. The aggressor
+    /// matters for jungle camps: only a hero pulls a camp, a watchtower
+    /// bolt just hurts it.
+    fn damage_unit_by(
+        &mut self,
+        index: usize,
+        amount: f32,
+        attacker_team: u8,
+        aggressor: Option<usize>,
+    ) {
         if index >= self.units.len() {
             return;
         }
@@ -1505,8 +1645,12 @@ impl AnimatedScene {
                 unit.health <= 0.0,
             )
         };
+        let hero_aggressor = match aggressor {
+            Some(aggressor) => self.units[aggressor].kind == UnitKind::Player,
+            None => attacker_team == 0,
+        };
         if !killed {
-            if target_kind == UnitKind::Camp && attacker_team < 2 {
+            if target_kind == UnitKind::Camp && attacker_team < 2 && hero_aggressor {
                 let pi = self.player_index;
                 if self.units[pi].health > 0.0 {
                     self.units[index].camp_aggro = true;
@@ -1516,10 +1660,10 @@ impl AnimatedScene {
             }
             return;
         }
-        if attacker_team == 0 {
+        if attacker_team == 0 && hero_aggressor {
             self.grant_reward(target_kind);
         }
-        if attacker_team < 2 {
+        if attacker_team < 2 && target_kind != UnitKind::Camp {
             self.kills[attacker_team as usize] += 1;
             let victim_team = self.units[index].team;
             if victim_team < 2 {
@@ -1675,6 +1819,14 @@ impl AnimatedScene {
             }
             unit.visible = true;
         }
+        // Structures are permanent map features: the player always knows
+        // where the towers, inhibitors, nexus and watchtowers stand, even
+        // when they sit outside the current line of sight.
+        for unit in &mut self.units {
+            if unit.kind.is_structure() || unit.kind == UnitKind::Watchtower {
+                unit.visible = true;
+            }
+        }
         // The training dummy is a dev-only target; keep it visible so the
         // deterministic combat demo is not blocked by LOS.
         for unit in &mut self.units {
@@ -1695,10 +1847,24 @@ impl AnimatedScene {
         self.rebuild_mesh(camera_right, camera_up, camera_forward);
     }
 
+    /// True when a world position is inside the team's line of sight.
+    pub fn in_team_vision(&self, pos: Vec3) -> bool {
+        let tx = (pos.x / 128.0).floor() as i32 - self.vision_origin.0;
+        let ty = (pos.z / 128.0).floor() as i32 - self.vision_origin.1;
+        self.visibility.is_visible(tx, ty)
+    }
+
     pub fn visible_enemy_count(&self) -> usize {
+        // Structures are always visible, so only count mobile enemies here.
         self.units
             .iter()
-            .filter(|u| u.team != 0 && u.health > 0.0 && u.visible)
+            .filter(|u| {
+                u.team != 0
+                    && u.health > 0.0
+                    && u.visible
+                    && !u.kind.is_structure()
+                    && u.kind != UnitKind::Watchtower
+            })
             .count()
     }
 
@@ -1755,7 +1921,12 @@ impl AnimatedScene {
                 }
             }
             if let Some(index) = hit {
-                self.damage_unit(index, projectile.damage, projectile.team);
+                self.damage_unit_by(
+                    index,
+                    projectile.damage,
+                    projectile.team,
+                    projectile.attacker,
+                );
                 self.effects.push(Effect {
                     pos: projectile.pos,
                     radius: 180.0,
@@ -1895,6 +2066,7 @@ impl AnimatedScene {
                 leash_range: 0.0,
                 camp_aggro: false,
                 camp_wander_timer: 0.0,
+                lock_range: 0.0,
             };
             self.units.push(unit);
         }
@@ -1953,6 +2125,9 @@ impl AnimatedScene {
             });
         }
         for projectile in &self.projectiles {
+            if !self.in_team_vision(projectile.pos) {
+                continue;
+            }
             lights.push(SceneLight {
                 pos: projectile.pos + Vec3::Y * 30.0,
                 color: [1.0, 0.45, 0.12],
@@ -2026,9 +2201,12 @@ impl AnimatedScene {
             );
         }
 
+        // Attacks are only drawn inside the team's line of sight, so enemy
+        // tower bolts do not reveal themselves through the fog of war.
         let projectile_positions = self
             .projectiles
             .iter()
+            .filter(|projectile| self.in_team_vision(projectile.pos))
             .map(|projectile| projectile.pos)
             .collect::<Vec<_>>();
         for pos in projectile_positions {
@@ -2236,6 +2414,7 @@ fn load_unit(
         leash_range: 0.0,
         camp_aggro: false,
         camp_wander_timer: 0.0,
+        lock_range: 0.0,
     })
 }
 

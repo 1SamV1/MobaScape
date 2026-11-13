@@ -18,6 +18,7 @@ pub struct UiAtlas {
     pub white_uv: [f32; 4],
     item_uv: HashMap<String, [f32; 4]>,
     ui_uv: HashMap<String, [f32; 4]>,
+    minimap_uv: Option<[f32; 4]>,
 }
 
 impl UiAtlas {
@@ -29,6 +30,7 @@ impl UiAtlas {
             white_uv: [0.0; 4],
             item_uv: HashMap::new(),
             ui_uv: HashMap::new(),
+            minimap_uv: None,
         };
         // A single opaque white texel at (0,0) lets every untextured HUD quad
         // use the same textured pipeline.
@@ -99,6 +101,16 @@ impl UiAtlas {
             atlas.ui_uv.len()
         );
         Ok(atlas)
+    }
+
+    /// Upload the baked terrain minimap into a reserved atlas slot.
+    pub fn add_minimap(&mut self, image: &image::RgbaImage) {
+        let uv = self.copy(image, 2, 760);
+        self.minimap_uv = Some(uv);
+    }
+
+    pub fn minimap_uv(&self) -> Option<[f32; 4]> {
+        self.minimap_uv
     }
 
     fn copy(&mut self, image: &image::RgbaImage, x: u32, y: u32) -> [f32; 4] {

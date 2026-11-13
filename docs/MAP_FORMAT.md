@@ -47,6 +47,11 @@ The playable map is `data/maps/karamja_rift/map.json`:
   radiant half holds a human city (Varrock), a human keep, the elven lands
   (Tirannwn) and the gnome stronghold. Pocket terrain, colours and scenery all
   come from the cache.
+- `watchtowers`: per-lane structures with `kind: "watchtower"`, team, tile,
+  model, health, `range` (the long lock range), `damage`, `interval`, `scale`
+  and `aggro` (the short acquire radius). A watchtower acquires the first
+  enemy inside `aggro`, then keeps firing slow bolts at that target until it
+  dies or leaves `range`. Its bolts hit heroes, lane minions and jungle camps.
 - `river`: the waterway that splits the rift. `points` is a polyline in map
   tiles running from the upper left third through the centre to the lower
   right third, `width` is the half width in tiles, `depth` how far the bed is
@@ -70,9 +75,17 @@ under structures, skips scenery within 5 tiles of any lane, and draws a dirt
 path ribbon per lane. Positions are absolute world tiles (e.g. 2800, 3040),
 not region-local coordinates.
 
-Lane sides are lined with OSRS tree models: a dense row 4.4 tiles from the
-lane centre and a sparser row 7.2 tiles out, tinted by which side of the
-river they stand on.
+Lane sides are lined with OSRS tree models: a dense row 5.7 tiles from the
+lane centre and a sparser row 8.4 tiles out, tinted by which side of the
+river they stand on. Broken OSRS castle walls and ruin clusters (models
+16918, 9233 and 9625) ring the outside of every lane at ~11.5 tiles.
+
+Lanes are **baked into the terrain**, not drawn as a ribbon. The scene
+computes a smooth lane mask with a noise-wobbled edge, stores it in the
+terrain vertex alpha and tints the ground toward the OSRS path colour.
+`scene.wgsl` blends the OSRS dirt and path sprites into the terrain by that
+mask, so the road is seamless with the world and can never z-fight with the
+ground.
 
 ## Future schema
 

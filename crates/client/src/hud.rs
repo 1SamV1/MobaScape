@@ -75,6 +75,22 @@ pub struct PlayerHud {
     pub hover: Option<HoverInfo>,
     /// Name of the biome pocket the hero is standing in.
     pub biome: Option<String>,
+    /// Team heroes for the minimap and the hero profile card.
+    pub heroes: Vec<HeroMarker>,
+}
+
+/// One team hero shown on the minimap and in the hero profile card.
+#[derive(Clone)]
+pub struct HeroMarker {
+    pub name: String,
+    pub team: u8,
+    pub pos: (f32, f32),
+    pub alive: bool,
+    pub health: f32,
+    pub max_health: f32,
+    pub mana: f32,
+    pub max_mana: f32,
+    pub level: u32,
 }
 
 pub struct Hud {
@@ -213,83 +229,51 @@ impl Hud {
         height: f32,
         scene: &AnimatedScene,
         camera_pos: (f32, f32),
+        heroes: &[HeroMarker],
     ) {
         let (x, y, size, _) = minimap_rect(width, height);
         self.quad(
             width,
             height,
-            x - 2.0,
-            y - 2.0,
-            size + 4.0,
-            size + 4.0,
+            x - 3.0,
+            y - 3.0,
+            size + 6.0,
+            size + 6.0,
             [70, 75, 85],
         );
-        self.quad(width, height, x, y, size, size, [10, 12, 14]);
+        self.quad(
+            width,
+            height,
+            x - 1.0,
+            y - 1.0,
+            size + 2.0,
+            size + 2.0,
+            [16, 16, 20],
+        );
+
+        // The baked terrain map covers the whole rift; enemy positions are
+        // still hidden by only drawing units that are currently visible.
+        if let Some(uv) = self.atlas.minimap_uv() {
+            self.sprite(width, height, x, y, size, size, uv, [255, 255, 255], 1.0);
+        }
 
         let (min, max) = scene.minimap_bounds;
         let to_map = |p: glam::Vec3| {
+            // North (small z) is up, matching the camera's view direction.
             let nx = ((p.x - min.x) / (max.x - min.x)).clamp(0.0, 1.0);
             let nz = ((p.z - min.y) / (max.y - min.y)).clamp(0.0, 1.0);
-            (x + nx * size, y + (1.0 - nz) * size)
+            (x + nx * size, y + nz * size)
         };
 
-        for lane in &scene.lanes {
-            for pair in lane.windows(2) {
-                let (x0, y0) = to_map(pair[0]);
-                let (x1, y1) = to_map(pair[1]);
-                let steps = (((x1 - x0).powi(2) + (y1 - y0).powi(2)).sqrt() / 3.0) as i32;
-                for i in 0..=steps {
-                    let t = i as f32 / steps.max(1) as f32;
-                    self.quad(
-                        width,
-                        height,
-                        x0 + (x1 - x0) * t - 1.5,
-                        y0 + (y1 - y0) * t - 1.5,
-                        3.0,
-                        3.0,
-                        [105, 105, 95],
-                    );
-                }
+        // Team heroes: a white ringed marker so you can see who is where.
+        for hero in heroes {
+            if hero.team != 0 || !hero.alive {
+                continue;
             }
-        }
-
-        // Coarse fog: cover 8x8-tile blocks that are entirely unseen. Larger
-        // blocks keep the HUD mesh cheap while still reading as fog.
-        let (ox, oy) = scene.vision_origin;
-        let block = 8usize;
-        let mut by = 0;
-        while by < scene.visibility.height {
-            let mut bx = 0;
-            while bx < scene.visibility.width {
-                let mut unseen = true;
-                'tiles: for ty in by..(by + block).min(scene.visibility.height) {
-                    for tx in bx..(bx + block).min(scene.visibility.width) {
-                        if scene.visibility.is_visible(tx as i32, ty as i32) {
-                            unseen = false;
-                            break 'tiles;
-                        }
-                    }
-                }
-                if unseen {
-                    let wx0 = (ox as f32 + bx as f32) * 128.0;
-                    let wz0 = (oy as f32 + by as f32) * 128.0;
-                    let wx1 = wx0 + block as f32 * 128.0;
-                    let wz1 = wz0 + block as f32 * 128.0;
-                    let (x0, y0) = to_map(glam::Vec3::new(wx0, 0.0, wz0));
-                    let (x1, y1) = to_map(glam::Vec3::new(wx1, 0.0, wz1));
-                    self.quad(
-                        width,
-                        height,
-                        x0.min(x1),
-                        y0.min(y1),
-                        (x1 - x0).abs().max(1.0),
-                        (y1 - y0).abs().max(1.0),
-                        [4, 6, 10],
-                    );
-                }
-                bx += block;
-            }
-            by += block;
+            let (hx, hy) = to_map(glam::Vec3::new(hero.pos.0, 0.0, hero.pos.1));
+            self.quad(width, height, hx - 5.0, hy - 5.0, 10.0, 10.0, [10, 10, 12]);
+            self.quad(width, height, hx - 4.0, hy - 4.0, 8.0, 8.0, [250, 250, 250]);
+            self.quad(width, height, hx - 2.5, hy - 2.5, 5.0, 5.0, [70, 210, 120]);
         }
 
         // Camera viewport rectangle, Dota minimap style.
@@ -372,6 +356,14 @@ impl Hud {
                 }
                 UnitKind::Dummy => {
                     self.quad(width, height, ux - 1.5, uy - 1.5, 3.0, 3.0, [220, 180, 70]);
+                }
+                UnitKind::Watchtower => {
+                    let color = if unit.team == 0 {
+                        [120, 200, 255]
+                    } else {
+                        [255, 150, 120]
+                    };
+                    self.quad(width, height, ux - 2.0, uy - 2.0, 4.0, 4.0, color);
                 }
                 UnitKind::Ambient => {}
             }
@@ -654,6 +646,96 @@ impl Hud {
             &format!("WAVE {:.0}S", wave_timer),
             [230, 210, 120],
         );
+
+        // Hero profile card above the minimap: portrait, name, level and
+        // health so you can see who the marker on the map is.
+        if let Some(hero) = player.heroes.first() {
+            let (mx, my, msize, _) = minimap_rect(width, height);
+            let card_h = 58.0;
+            let card_y = (my - card_h - 8.0).max(120.0);
+            self.quad(
+                width,
+                height,
+                mx - 1.0,
+                card_y - 1.0,
+                msize + 2.0,
+                card_h + 2.0,
+                [82, 76, 58],
+            );
+            self.quad(width, height, mx, card_y, msize, card_h, [20, 20, 24]);
+            let portrait = 42.0;
+            self.quad(
+                width,
+                height,
+                mx + 8.0,
+                card_y + 8.0,
+                portrait,
+                portrait,
+                [70, 64, 44],
+            );
+            self.quad(
+                width,
+                height,
+                mx + 10.0,
+                card_y + 10.0,
+                portrait - 4.0,
+                portrait - 4.0,
+                [40, 92, 52],
+            );
+            let initial = hero
+                .name
+                .chars()
+                .next()
+                .map(|c| c.to_ascii_uppercase())
+                .unwrap_or('?');
+            self.text_centered(
+                width,
+                height,
+                mx + 8.0 + portrait * 0.5,
+                card_y + 18.0,
+                2.4,
+                &initial.to_string(),
+                OSRS_YELLOW,
+            );
+            self.text(
+                width,
+                height,
+                mx + 58.0,
+                card_y + 7.0,
+                1.15,
+                &hero.name.to_uppercase(),
+                OSRS_WHITE,
+            );
+            self.text(
+                width,
+                height,
+                mx + 58.0,
+                card_y + 20.0,
+                0.95,
+                &format!("LV {}  {}G", hero.level, player.gold),
+                OSRS_YELLOW,
+            );
+            self.panel(
+                width,
+                height,
+                mx + 58.0,
+                card_y + 33.0,
+                124.0,
+                9.0,
+                (hero.health / hero.max_health.max(1.0)).clamp(0.0, 1.0),
+                [70, 190, 95],
+            );
+            self.panel(
+                width,
+                height,
+                mx + 58.0,
+                card_y + 44.0,
+                124.0,
+                7.0,
+                (hero.mana / hero.max_mana.max(1.0)).clamp(0.0, 1.0),
+                [70, 120, 235],
+            );
+        }
 
         // Dota style unit tooltip that follows the cursor.
         if let Some(hover) = &player.hover {

@@ -97,6 +97,12 @@ cargo run -p rift-client -- --champion kree
 # Zoom the camera in on the hero (the default distance is 2750 world units)
 cargo run -p rift-client -- --distance 1800
 
+# Spawn at a specific map tile (handy for inspecting a watchtower)
+cargo run -p rift-client -- --spawn 2911 3032
+
+# Verify watchtower aggro, lock range and target reset
+cargo run -p rift-client -- --demo-watchtower
+
 # 117HD Core lighting (default) or the flat classic baseline
 cargo run -p rift-client -- --graphics 117hd
 cargo run -p rift-client -- --graphics classic

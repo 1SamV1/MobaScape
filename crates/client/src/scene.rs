@@ -228,6 +228,10 @@ pub enum StructureKind {
     Tower,
     Inhibitor,
     Nexus,
+    /// A lane watchtower. It acquires a target inside its short aggro radius
+    /// and then keeps firing until the target dies or leaves the longer
+    /// locked range.
+    Watchtower,
 }
 
 #[derive(Debug, Clone)]
@@ -243,6 +247,7 @@ pub struct StructureSpawn {
     pub damage: f32,
     pub interval: f32,
     pub scale: f32,
+    pub aggro: f32,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -256,6 +261,10 @@ struct StructureJson {
     damage: f32,
     interval: f32,
     scale: f32,
+    /// Range at which a watchtower first acquires a target. Once it has a
+    /// target it keeps firing from `range`, which is the larger lock range.
+    #[serde(default)]
+    aggro: f32,
 }
 
 /// A biome pocket: a rectangle of a real OSRS region transplanted into the
@@ -318,6 +327,8 @@ struct LaneJson {
     waypoints: Vec<[f32; 2]>,
     towers: Vec<StructureJson>,
     inhibitors: Vec<StructureJson>,
+    #[serde(default)]
+    watchtowers: Vec<StructureJson>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -487,6 +498,7 @@ impl MapLayout {
             damage: s.damage,
             interval: s.interval,
             scale: s.scale,
+            aggro: s.aggro,
         };
 
         let mut lanes = Vec::with_capacity(map.lanes.len());
@@ -508,6 +520,11 @@ impl MapLayout {
                 structures.push(spawn);
             }
             for s in &lane.inhibitors {
+                let mut spawn = to_spawn(s);
+                spawn.lane_index = Some(lane_index);
+                structures.push(spawn);
+            }
+            for s in &lane.watchtowers {
                 let mut spawn = to_spawn(s);
                 spawn.lane_index = Some(lane_index);
                 structures.push(spawn);
@@ -621,6 +638,31 @@ impl MapLayout {
         if cross < 0.0 { -1.0 } else { 1.0 }
     }
 
+    /// Closest point on any lane centre line plus the distance to it.
+    pub fn nearest_lane_point(&self, x: f32, z: f32) -> (Vec2, f32) {
+        let p = Vec2::new(x, z);
+        let mut best = (p, f32::MAX);
+        for lane in &self.lanes {
+            for pair in lane.waypoints.windows(2) {
+                let a = Vec2::new(pair[0].x, pair[0].z);
+                let b = Vec2::new(pair[1].x, pair[1].z);
+                let ab = b - a;
+                let len2 = ab.length_squared();
+                let t = if len2 <= 1e-6 {
+                    0.0
+                } else {
+                    ((p - a).dot(ab) / len2).clamp(0.0, 1.0)
+                };
+                let closest = a + ab * t;
+                let d = closest.distance(p);
+                if d < best.1 {
+                    best = (closest, d);
+                }
+            }
+        }
+        best
+    }
+
     pub fn distance_to_lane(&self, x: f32, z: f32) -> f32 {
         let p = Vec2::new(x, z);
         let mut best = f32::MAX;
@@ -668,50 +710,6 @@ impl MapLayout {
             let tx = structure.tile[0].floor() as i32 - origin_tile_x;
             let ty = structure.tile[1].floor() as i32 - origin_tile_y;
             grid.block_rect(tx - 1, ty - 1, 3, 3);
-        }
-    }
-
-    pub fn build_mesh(&self, mesh: &mut MeshData, height: &HeightGrid, width: f32) {
-        for lane in &self.lanes {
-            for pair in lane.waypoints.windows(2) {
-                let a = Vec2::new(pair[0].x, pair[0].z);
-                let b = Vec2::new(pair[1].x, pair[1].z);
-                let len = a.distance(b);
-                if len < 1.0 {
-                    continue;
-                }
-                let steps = ((len / 64.0).ceil() as usize).max(1);
-                let dir = (b - a) / len;
-                let perp = Vec2::new(-dir.y, dir.x) * (width * 0.5);
-                let color = [146, 116, 78];
-
-                for i in 0..steps {
-                    let t0 = i as f32 / steps as f32;
-                    let t1 = (i + 1) as f32 / steps as f32;
-                    let p0 = a.lerp(b, t0);
-                    let p1 = a.lerp(b, t1);
-                    let corners = [
-                        Vec2::new(p0.x + perp.x, p0.y + perp.y),
-                        Vec2::new(p1.x + perp.x, p1.y + perp.y),
-                        Vec2::new(p0.x - perp.x, p0.y - perp.y),
-                        Vec2::new(p1.x - perp.x, p1.y - perp.y),
-                    ];
-                    let ys = corners.map(|p| height.height_at(p.x, p.y) + 40.0);
-                    let v0 = Vec3::new(corners[0].x, ys[0], corners[0].y);
-                    let v1 = Vec3::new(corners[1].x, ys[1], corners[1].y);
-                    let v2 = Vec3::new(corners[2].x, ys[2], corners[2].y);
-                    let v3 = Vec3::new(corners[3].x, ys[3], corners[3].y);
-                    let mut a = SceneVertex::new(v0, Vec3::Y, color);
-                    let mut b = SceneVertex::new(v1, Vec3::Y, color);
-                    let mut c = SceneVertex::new(v2, Vec3::Y, color);
-                    let mut d = SceneVertex::new(v3, Vec3::Y, color);
-                    for vertex in [&mut a, &mut b, &mut c, &mut d] {
-                        vertex.material = 4;
-                    }
-                    mesh.push_triangle(a, b, c);
-                    mesh.push_triangle(c, b, d);
-                }
-            }
         }
     }
 }
@@ -1008,6 +1006,44 @@ pub fn build(
         smooth_colors = box_blur_colors(&smooth_colors, size, 2);
     }
 
+    // ------------------------------------------------------------------
+    // Lanes are baked into the terrain itself instead of being drawn as a
+    // ribbon on top of it: the mask lives in the terrain vertex alpha and
+    // the shader blends the OSRS path textures into the ground. That keeps
+    // the road seamless with the world and stops the overlay from
+    // z-fighting with the terrain.
+    // ------------------------------------------------------------------
+    const LANE_HALF_WIDTH: f32 = 300.0;
+    const LANE_PATH_COLOUR: [u8; 3] = [122, 96, 66];
+    let mut lane_mask = vec![0.0f32; size * size];
+    for gy in 0..size {
+        for gx in 0..size {
+            let wx = (origin_tile_x + gx as i32) as f32 * 128.0;
+            let wz = (origin_tile_y + gy as i32) as f32 * 128.0;
+            let (nearest, distance) = map.nearest_lane_point(wx, wz);
+            // A slow noise keeps the road edge from looking ruler straight.
+            let wobble = (value_noise(wx * 0.0035, wz * 0.0035) - 0.5) * 150.0;
+            let t = ((distance + wobble) / LANE_HALF_WIDTH).clamp(0.0, 2.0);
+            let mask = 1.0 - smoothstep(0.78, 1.22, t);
+            let idx = gy * size + gx;
+            lane_mask[idx] = mask;
+            if mask > 0.001 {
+                for c in 0..3 {
+                    smooth_colors[idx][c] = (smooth_colors[idx][c] as f32 * (1.0 - mask * 0.92)
+                        + LANE_PATH_COLOUR[c] as f32 * mask * 0.92)
+                        .clamp(0.0, 255.0) as u8;
+                }
+                // Level the road along the lane centre line.
+                let centre = heights[(nearest.y / 128.0 - origin_tile_y as f32)
+                    .clamp(0.0, size as f32 - 1.0) as usize
+                    * size
+                    + (nearest.x / 128.0 - origin_tile_x as f32).clamp(0.0, size as f32 - 1.0)
+                        as usize];
+                heights[idx] = heights[idx] * (1.0 - mask * 0.65) + centre * mask * 0.65;
+            }
+        }
+    }
+
     let mut terrain_mesh = MeshData::new();
     for gy in 0..size - 1 {
         for gx in 0..size - 1 {
@@ -1058,6 +1094,11 @@ pub fn build(
             let mut v10 = SceneVertex::new(p10, n10, c10);
             let mut v01 = SceneVertex::new(p01, n01, c01);
             let mut v11 = SceneVertex::new(p11, n11, c11);
+            // The lane mask rides in the vertex alpha for the terrain.
+            v00.color[3] = lane_mask[idx];
+            v10.color[3] = lane_mask[idx + 1];
+            v01.color[3] = lane_mask[idx + size];
+            v11.color[3] = lane_mask[idx + size + 1];
             v00.ao = ao00;
             v10.ao = ao10;
             v01.ao = ao01;
@@ -1382,7 +1423,7 @@ pub fn build(
                     for side in [-1.0f32, 1.0f32] {
                         tree_seed = tree_seed.wrapping_mul(1664525).wrapping_add(1013904223);
                         let jitter = (hash01(tree_seed) - 0.5) * 1.8;
-                        let offset = (4.4 + jitter) * 128.0;
+                        let offset = (5.7 + jitter) * 128.0;
                         place_tree(
                             &tree_context,
                             &mut sink,
@@ -1396,7 +1437,7 @@ pub fn build(
                         for side in [-1.0f32, 1.0f32] {
                             tree_seed = tree_seed.wrapping_mul(1664525).wrapping_add(1013904223);
                             let jitter = (hash01(tree_seed) - 0.5) * 2.6;
-                            let offset = (7.2 + jitter) * 128.0;
+                            let offset = (8.4 + jitter) * 128.0;
                             place_tree(
                                 &tree_context,
                                 &mut sink,
@@ -1412,9 +1453,60 @@ pub fn build(
     }
     tracing::info!("tree lines: {} trees", tree_count);
 
-    let collision = WorldCollision::new(collision_grid, sight_grid, origin_tile_x, origin_tile_y);
+    // ------------------------------------------------------------------
+    // Castle wall ruins: broken OSRS walls and ruin clusters ring the
+    // outside of every lane, behind the tree line.
+    // ------------------------------------------------------------------
+    const RUIN_MODELS: &[(u32, i32)] = &[(16918, 2), (16918, 2), (9233, 2), (9625, 3)];
+    let mut ruin_count = 0usize;
+    {
+        let mut sink = ScenerySink {
+            model_cache: &mut model_cache,
+            model_mesh: &mut model_mesh,
+            shadow_mesh: &mut shadow_mesh,
+            collision_grid: &mut collision_grid,
+        };
+        for (lane_index, lane) in map.lanes.iter().enumerate() {
+            for pair in lane.waypoints.windows(2) {
+                let a = pair[0];
+                let b = pair[1];
+                let delta = b - a;
+                let length = delta.length();
+                if length < 1.0 {
+                    continue;
+                }
+                let dir = delta / length;
+                let perp = Vec3::new(-dir.z, 0.0, dir.x);
+                let steps = (length / (128.0 * 19.0)).ceil().max(1.0) as usize;
+                for step in 0..=steps {
+                    let t = step as f32 / steps as f32;
+                    let point = a + delta * t;
+                    tree_seed = tree_seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                    let side = if (step + lane_index) % 2 == 0 {
+                        -1.0
+                    } else {
+                        1.0
+                    };
+                    let jitter = (hash01(tree_seed) - 0.5) * 3.0;
+                    let offset = (11.5 + jitter) * 128.0;
+                    let (model_id, footprint) =
+                        RUIN_MODELS[(tree_seed as usize) % RUIN_MODELS.len()];
+                    place_ruin(
+                        &tree_context,
+                        &mut sink,
+                        point + perp * (offset * side),
+                        tree_seed,
+                        model_id,
+                        footprint,
+                        &mut ruin_count,
+                    );
+                }
+            }
+        }
+    }
+    tracing::info!("castle ruins: {} pieces", ruin_count);
 
-    map.build_mesh(&mut model_mesh, &height, 3.0 * 128.0);
+    let collision = WorldCollision::new(collision_grid, sight_grid, origin_tile_x, origin_tile_y);
 
     let spawn_hint = map
         .lanes
@@ -1748,6 +1840,30 @@ fn tile_color(
     }
 }
 
+/// Smooth value noise used to wobble the lane edges.
+fn value_noise(x: f32, z: f32) -> f32 {
+    let ix = x.floor();
+    let iz = z.floor();
+    let fx = x - ix;
+    let fz = z - iz;
+    let ux = fx * fx * (3.0 - 2.0 * fx);
+    let uz = fz * fz * (3.0 - 2.0 * fz);
+    let h = |dx: u32, dz: u32| {
+        let mut seed = (ix as i32 as u32).wrapping_mul(73856093);
+        seed ^= (iz as i32 as u32).wrapping_mul(19349663);
+        seed ^= dx << 8;
+        seed ^= dz;
+        hash01(seed)
+    };
+    let a = h(0, 0);
+    let b = h(1, 0);
+    let c = h(0, 1);
+    let d = h(1, 1);
+    let top = a + (b - a) * ux;
+    let bottom = c + (d - c) * ux;
+    top + (bottom - top) * uz
+}
+
 /// Deterministic 0..1 hash used for scenery jitter.
 fn hash01(seed: u32) -> f32 {
     let mut h = seed ^ 0x9E37_79B9;
@@ -1846,6 +1962,73 @@ struct TreeContext<'a> {
     models: &'a [u32],
 }
 
+/// Place one broken castle wall or ruin cluster. Ruins sit behind the tree
+/// line so they never block a lane.
+#[allow(clippy::too_many_arguments)]
+fn place_ruin(
+    ctx: &TreeContext<'_>,
+    sink: &mut ScenerySink<'_>,
+    pos: Vec3,
+    seed: u32,
+    model_id: u32,
+    footprint: i32,
+    count: &mut usize,
+) {
+    let tile_x = (pos.x / 128.0).floor() as i32;
+    let tile_y = (pos.z / 128.0).floor() as i32;
+    if !ctx.height.contains(pos.x, pos.z) {
+        return;
+    }
+    if ctx
+        .structures
+        .iter()
+        .any(|s| s.distance(pos) < 10.0 * 128.0)
+    {
+        return;
+    }
+    if ctx.map.distance_to_lane(pos.x, pos.z) < 8.0 * 128.0 {
+        return;
+    }
+    if ctx.map.in_biome(tile_x, tile_y) {
+        return;
+    }
+    let gx = tile_x - ctx.origin.0;
+    let gy = tile_y - ctx.origin.1;
+    if ctx.river_blocked.contains(&(gx, gy)) {
+        return;
+    }
+
+    let model = if let Some(model) = sink.model_cache.get(&model_id) {
+        model
+    } else {
+        let Ok(group) = ctx.cache.group(7, model_id) else {
+            return;
+        };
+        let Ok(model) = Model::load(model_id, &group.data) else {
+            return;
+        };
+        sink.model_cache.insert(model_id, model);
+        sink.model_cache.get(&model_id).unwrap()
+    };
+
+    let base = Vec3::new(pos.x, ctx.height.height_at(pos.x, pos.z), pos.z);
+    let angle = (hash01(seed ^ 0x1234_5678) * 4.0).floor() * std::f32::consts::FRAC_PI_2;
+    let scale = 0.9 + hash01(seed.wrapping_add(3)) * 0.35;
+    append_model_scaled_tinted(
+        sink.model_mesh,
+        model,
+        base,
+        angle,
+        scale,
+        [0.92, 0.9, 0.86],
+        false,
+    );
+    push_blob_quad(sink.shadow_mesh, base, 150.0, 0.22);
+    sink.collision_grid
+        .block_rect(gx - footprint / 2, gy - footprint / 2, footprint, footprint);
+    *count += 1;
+}
+
 /// Plant one OSRS tree model. Trees skirt the lanes, avoid structures and
 /// pockets, and tint themselves by the side of the river they stand on.
 fn place_tree(
@@ -1863,7 +2046,7 @@ fn place_tree(
     if ctx.structures.iter().any(|s| s.distance(pos) < 9.0 * 128.0) {
         return;
     }
-    if ctx.map.distance_to_lane(pos.x, pos.z) < 3.4 * 128.0 {
+    if ctx.map.distance_to_lane(pos.x, pos.z) < 5.2 * 128.0 {
         return;
     }
     if ctx.map.in_biome(tile_x, tile_y) {
@@ -2024,7 +2207,16 @@ fn append_model_scaled_tinted(
                 .get(face_idx)
                 .copied()
                 .unwrap_or([0.0, 1.0, 0.0]);
-            [(84.0 + n[1] * 26.0) as u8, (142.0 + n[1] * 30.0) as u8, 62]
+            if foliage {
+                [(84.0 + n[1] * 26.0) as u8, (142.0 + n[1] * 30.0) as u8, 62]
+            } else {
+                // Buildings, walls and ruins read as stone rather than grass.
+                [
+                    (116.0 + n[1] * 22.0) as u8,
+                    (112.0 + n[1] * 20.0) as u8,
+                    104,
+                ]
+            }
         } else {
             hsl_to_rgb(model.face_colors[face_idx], 1.0)
         };

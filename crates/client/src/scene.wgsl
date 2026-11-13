@@ -174,12 +174,26 @@ fn albedo(input: VsOut) -> vec3<f32> {
             * (1.0 - smoothstep(0.12, 0.30, d.r - d.b));
         let sandy = max(d.r - d.b, 0.0) * max(d.g - d.b, 0.0) * 4.0;
         let total = max(green + brown + blue + gray + sandy, 0.0001);
-        let tex = grass * (green / total)
+        var tex = grass * (green / total)
             + dirt * (brown / total)
             + stone * (gray / total)
             + sand * (sandy / total)
             + water * (blue / total);
-        let tint = 1.0 + c * 1.6;
+
+        // Lanes are baked into the terrain: the vertex alpha carries the
+        // road mask and the OSRS road sprites are blended into the ground
+        // so there is no ribbon hovering over the terrain.
+        let lane = clamp(input.color.a, 0.0, 1.0);
+        if (lane > 0.002) {
+            let road_uv = input.world.xz / 192.0;
+            let road = textureSample(terrain_textures, terrain_sampler, road_uv, 1).rgb;
+            let gravel = textureSample(terrain_textures, terrain_sampler, road_uv * 0.63, 5).rgb;
+            tex = mix(tex, mix(road, gravel, 0.45), lane * 0.94);
+        }
+
+        // The sprite carries the palette; the vertex colour only nudges it
+        // so the ground never blows out into a flat highlighter band.
+        let tint = 0.86 + c * 1.05;
         let p = input.world.xz / 128.0;
         let fine = noise2(p * 7.0) * 0.55 + noise2(p * 19.0) * 0.30;
         c = tex * tint * (0.90 + fine * 0.16);

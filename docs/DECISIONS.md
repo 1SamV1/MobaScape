@@ -366,3 +366,32 @@ deaths and a match clock, a unit tooltip that follows the cursor, a minimap
 viewport rectangle and a biome label for the pocket the hero is standing in.
 The true OSRS font lives in the client jar rather than the cache, so the HUD
 keeps the crisp 5x7 pixel font with a one pixel black shadow.
+
+
+## ADR-031 — Lanes baked into the terrain, watchtowers with lock range
+
+**Status:** accepted for M5.7.
+
+The old lane ribbon was a flat mesh hovering 40 units above the terrain. It
+read as a highlighter streak and z-fought with the ground textures. Lanes are
+now a mask baked into the terrain: the scene computes the distance to the lane
+polyline, wobbles the edge with smooth value noise, levels the road toward the
+centre line, tints the corner colour toward the OSRS path colour and stores
+the mask in the terrain vertex alpha. `scene.wgsl` blends the OSRS dirt and
+path sprites into the ground with that mask. One mesh, no overlay, no
+z-fighting.
+
+Watchtowers are a new structure kind. Their `aggro` radius is the short range
+at which they first pick up a target; their `range` is the longer lock range
+used while they already have a target. This two radius model is deliberate:
+once a tower has fired at a hero, the hero has to retreat further than the
+distance that pulled the tower in the first place. Bolts travel at 280 u/s and
+carry the shooter's unit index so jungle camps only aggro on heroes, not on
+tower fire.
+
+The minimap bakes a real terrain image from the scene's terrain vertex
+colours (which already contain the biome pockets, the river and the lanes) and
+uploads it into the UI atlas. It shows the whole rift plus both teams'
+structures and the team's heroes; enemy heroes are never drawn and enemy mobs
+only appear while inside team line of sight. Projectiles follow the same rule:
+structures are always visible, attacks are not.
