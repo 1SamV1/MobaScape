@@ -1,7 +1,7 @@
 # MobaScape
 
-A 5v5 MOBA built on a custom Rust engine, using modern Old School RuneScape
-cache assets for its visual identity. Server-authoritative, data-driven, and
+A 5v5 MOBA built on a custom Rust engine, inspired by modern Old School RuneScape
+for its visual identity. Server-authoritative, data-driven, and
 designed for fast-paced low-team-count matches.
 
 > Status: **M5.6 Biome map + Dota style presentation**. The cache reader,
