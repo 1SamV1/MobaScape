@@ -3,7 +3,7 @@ use glam::{Mat3, Vec3};
 use rift_cache::{AnimationClip, Cache, Model, model::hsl_to_rgb};
 
 use crate::scene::{
-    HeightGrid, SceneData, StructureKind, Vertex, WorldCollision, model_vertex_animated,
+    CampBuff, HeightGrid, SceneData, StructureKind, Vertex, WorldCollision, model_vertex_animated,
 };
 
 const PLAYER_SPEED: f32 = 420.0;
@@ -26,11 +26,16 @@ pub enum UnitKind {
     Tower,
     Inhibitor,
     Nexus,
+    Camp,
 }
 
 impl UnitKind {
     fn is_minion(self) -> bool {
         matches!(self, Self::MeleeMinion | Self::RangedMinion)
+    }
+
+    pub fn is_structure(self) -> bool {
+        matches!(self, Self::Tower | Self::Inhibitor | Self::Nexus)
     }
 }
 
@@ -62,6 +67,17 @@ pub struct AnimatedUnit {
     pub bar_height: f32,
     pub lane: Vec<Vec3>,
     pub lane_index: usize,
+    pub respawn_time: f32,
+    pub camp_buff: Option<CampBuff>,
+}
+
+#[derive(Clone, Copy)]
+pub struct TeamBuff {
+    pub remaining: f32,
+    pub duration: f32,
+    pub damage_mult: f32,
+    pub speed_mult: f32,
+    pub kind: CampBuff,
 }
 
 pub struct Projectile {
@@ -99,6 +115,8 @@ pub struct AnimatedScene {
     pub nexus_positions: [Vec3; 2],
     pub player_spawn: Vec3,
     pub match_over: Option<u8>,
+    pub minimap_bounds: (glam::Vec2, glam::Vec2),
+    pub team_buffs: [Option<TeamBuff>; 2],
     melee_template: MinionTemplate,
     ranged_template: MinionTemplate,
 }
@@ -215,6 +233,36 @@ impl AnimatedScene {
             )?);
         }
 
+        for camp in &scene.map.camps {
+            tracing::info!(
+                "camp: {} model {} pos {:?}",
+                camp.id,
+                camp.model_id,
+                camp.pos
+            );
+            let mut unit = load_unit(
+                cache,
+                camp.model_id,
+                camp.idle_sequence,
+                camp.walk_sequence,
+                camp.pos,
+                camp.scale,
+                UnitKind::Camp,
+                2,
+                camp.health,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                180.0,
+                350.0,
+                Vec::new(),
+            )?;
+            unit.respawn_time = camp.respawn;
+            unit.camp_buff = Some(camp.buff);
+            units.push(unit);
+        }
+
         let nexus_positions = [
             find_nexus(&units, 0).unwrap_or(scene.player_spawn),
             find_nexus(&units, 1).unwrap_or(scene.player_spawn),
@@ -243,6 +291,23 @@ impl AnimatedScene {
             scale: 1.15,
         };
 
+        let mut min = glam::Vec2::splat(f32::MAX);
+        let mut max = glam::Vec2::splat(f32::MIN);
+        for lane in &scene.map.lanes {
+            for p in &lane.waypoints {
+                min = min.min(glam::Vec2::new(p.x, p.z));
+                max = max.max(glam::Vec2::new(p.x, p.z));
+            }
+        }
+        for unit in &units {
+            if unit.kind.is_structure() || unit.kind == UnitKind::Camp {
+                min = min.min(glam::Vec2::new(unit.pos.x, unit.pos.z));
+                max = max.max(glam::Vec2::new(unit.pos.x, unit.pos.z));
+            }
+        }
+        let pad = glam::Vec2::splat(3.0 * 128.0);
+        let minimap_bounds = (min - pad, max + pad);
+
         let mut animated = Self {
             units,
             player_index,
@@ -262,6 +327,8 @@ impl AnimatedScene {
             nexus_positions,
             player_spawn: scene.player_spawn,
             match_over: None,
+            minimap_bounds,
+            team_buffs: [None, None],
             melee_template,
             ranged_template,
         };
@@ -348,7 +415,8 @@ impl AnimatedScene {
             return false;
         }
         let target = &self.units[index];
-        if target.team != 1 || target.health <= 0.0 {
+        let targetable = target.team == 1 || (target.team == 2 && target.kind == UnitKind::Camp);
+        if !targetable || target.health <= 0.0 {
             return false;
         }
         if target.kind == UnitKind::Nexus && !self.nexus_vulnerable(target.team) {
@@ -377,6 +445,7 @@ impl AnimatedScene {
         height: &HeightGrid,
         collision: &WorldCollision,
     ) {
+        let speed_mult = self.team_speed_mult(self.units[self.player_index].team);
         let unit = &mut self.units[self.player_index];
         unit.path.clear();
         unit.path_index = 0;
@@ -388,7 +457,7 @@ impl AnimatedScene {
             return;
         }
         let dir = flat.normalize();
-        let next = collision.slide_move(unit.pos, dir * unit.speed * dt, height);
+        let next = collision.slide_move(unit.pos, dir * unit.speed * speed_mult * dt, height);
         let moved = next.distance(unit.pos) > 0.01;
         unit.pos = next;
         unit.yaw = dir.x.atan2(dir.z);
@@ -421,7 +490,9 @@ impl AnimatedScene {
     pub fn pick_unit(&self, origin: Vec3, dir: Vec3) -> Option<usize> {
         let mut best: Option<(usize, f32)> = None;
         for (i, unit) in self.units.iter().enumerate() {
-            if unit.team != 1 || unit.health <= 0.0 {
+            if !(unit.team == 1 || (unit.team == 2 && unit.kind == UnitKind::Camp))
+                || unit.health <= 0.0
+            {
                 continue;
             }
             if unit.kind == UnitKind::Nexus && !self.nexus_vulnerable(unit.team) {
@@ -454,6 +525,28 @@ impl AnimatedScene {
             }
         }
         best.map(|(i, _)| i)
+    }
+
+    pub fn nearest_camp(&self, pos: Vec3) -> Option<usize> {
+        let mut best: Option<(usize, f32)> = None;
+        for (i, unit) in self.units.iter().enumerate() {
+            if unit.kind != UnitKind::Camp || unit.health <= 0.0 {
+                continue;
+            }
+            let d = unit.pos.distance_squared(pos);
+            if best.is_none_or(|(_, bd)| d < bd) {
+                best = Some((i, d));
+            }
+        }
+        best.map(|(i, _)| i)
+    }
+
+    pub fn teleport_player(&mut self, pos: Vec3) {
+        let unit = &mut self.units[self.player_index];
+        unit.pos = pos;
+        unit.path.clear();
+        unit.path_index = 0;
+        unit.moving = false;
     }
 
     pub fn unit_pos(&self, index: usize) -> Option<Vec3> {
@@ -492,11 +585,20 @@ impl AnimatedScene {
             }
         }
 
+        for buff in &mut self.team_buffs {
+            if let Some(b) = buff {
+                b.remaining -= dt;
+                if b.remaining <= 0.0 {
+                    *buff = None;
+                }
+            }
+        }
+
         for unit in &mut self.units {
             unit.hit_flash = (unit.hit_flash - dt).max(0.0);
             unit.attack_cooldown = (unit.attack_cooldown - dt).max(0.0);
             unit.anim_time_ms += dt * 1000.0;
-            if unit.health <= 0.0 && unit.kind == UnitKind::Dummy {
+            if unit.health <= 0.0 && matches!(unit.kind, UnitKind::Dummy | UnitKind::Camp) {
                 unit.dead_timer -= dt;
                 if unit.dead_timer <= 0.0 {
                     unit.health = unit.max_health;
@@ -529,6 +631,7 @@ impl AnimatedScene {
 
     fn update_player(&mut self, dt: f32, height: &HeightGrid, collision: &WorldCollision) {
         let pi = self.player_index;
+        let speed_mult = self.team_speed_mult(0);
         if self.units[pi].health <= 0.0 {
             self.units[pi].dead_timer -= dt;
             if self.units[pi].dead_timer <= 0.0 {
@@ -547,10 +650,9 @@ impl AnimatedScene {
 
         let target_index = self.units[pi].attack_target;
         if let Some(ti) = target_index {
-            let target_alive = self
-                .units
-                .get(ti)
-                .is_some_and(|u| u.health > 0.0 && u.team == 1);
+            let target_alive = self.units.get(ti).is_some_and(|u| {
+                u.health > 0.0 && (u.team == 1 || (u.team == 2 && u.kind == UnitKind::Camp))
+            });
             if target_alive {
                 let target_pos = self.units[ti].pos;
                 let player_pos = self.units[pi].pos;
@@ -566,7 +668,7 @@ impl AnimatedScene {
                         unit.path = collision.path_world(player_pos, target_pos, height);
                         unit.path_index = 0;
                     }
-                    follow_path(unit, dt, height);
+                    follow_path(unit, dt, height, speed_mult);
                 } else {
                     let unit = &mut self.units[pi];
                     unit.path.clear();
@@ -594,12 +696,13 @@ impl AnimatedScene {
         let unit = &mut self.units[pi];
         unit.moving = false;
         if !unit.path.is_empty() {
-            follow_path(unit, dt, height);
+            follow_path(unit, dt, height, speed_mult);
         }
     }
 
     fn update_minion(&mut self, index: usize, dt: f32, height: &HeightGrid) {
         let team = self.units[index].team;
+        let speed_mult = self.team_speed_mult(team);
         let pos = self.units[index].pos;
         let target = self.find_target(index, team, MINION_AGGRO);
 
@@ -633,11 +736,11 @@ impl AnimatedScene {
                 }
             } else {
                 self.units[index].attack_target = Some(target);
-                self.move_unit_toward(index, target_pos, dt, height);
+                self.move_unit_toward(index, target_pos, dt, height, speed_mult);
             }
         } else {
             self.units[index].attack_target = None;
-            self.follow_lane(index, dt, height);
+            self.follow_lane(index, dt, height, speed_mult);
         }
     }
 
@@ -682,7 +785,14 @@ impl AnimatedScene {
         best.map(|(i, _)| i)
     }
 
-    fn move_unit_toward(&mut self, index: usize, target: Vec3, dt: f32, height: &HeightGrid) {
+    fn move_unit_toward(
+        &mut self,
+        index: usize,
+        target: Vec3,
+        dt: f32,
+        height: &HeightGrid,
+        speed_mult: f32,
+    ) {
         let unit = &mut self.units[index];
         let delta = target - unit.pos;
         let distance = delta.length();
@@ -691,14 +801,14 @@ impl AnimatedScene {
             return;
         }
         let dir = delta / distance;
-        let step = (unit.speed * dt).min(distance);
+        let step = (unit.speed * speed_mult * dt).min(distance);
         unit.pos += dir * step;
         unit.pos.y = height.height_at(unit.pos.x, unit.pos.z);
         unit.yaw = dir.x.atan2(dir.z);
         unit.moving = true;
     }
 
-    fn follow_lane(&mut self, index: usize, dt: f32, height: &HeightGrid) {
+    fn follow_lane(&mut self, index: usize, dt: f32, height: &HeightGrid, speed_mult: f32) {
         let unit = &mut self.units[index];
         if unit.lane.is_empty() {
             unit.moving = false;
@@ -721,7 +831,7 @@ impl AnimatedScene {
             return;
         }
         let dir = delta / distance;
-        let step = (unit.speed * dt).min(distance);
+        let step = (unit.speed * speed_mult * dt).min(distance);
         unit.pos += dir * step;
         unit.pos.y = height.height_at(unit.pos.x, unit.pos.z);
         unit.yaw = dir.x.atan2(dir.z);
@@ -737,6 +847,8 @@ impl AnimatedScene {
         {
             return;
         }
+        let amount = amount * self.team_damage_mult(attacker_team);
+        let camp_buff = self.units[index].camp_buff;
         let unit = &mut self.units[index];
         if unit.health <= 0.0 {
             return;
@@ -762,8 +874,49 @@ impl AnimatedScene {
             UnitKind::Dummy => {
                 unit.dead_timer = 4.0;
             }
+            UnitKind::Camp => {
+                unit.dead_timer = unit.respawn_time;
+                if let Some(kind) = camp_buff {
+                    let (damage_mult, speed_mult) = match kind {
+                        CampBuff::Might => (1.25, 1.0),
+                        CampBuff::Swift => (1.0, 1.2),
+                    };
+                    if attacker_team < 2 {
+                        self.team_buffs[attacker_team as usize] = Some(TeamBuff {
+                            remaining: 60.0,
+                            duration: 60.0,
+                            damage_mult,
+                            speed_mult,
+                            kind,
+                        });
+                    }
+                }
+            }
             _ => {}
         }
+    }
+
+    fn team_damage_mult(&self, team: u8) -> f32 {
+        self.team_buffs
+            .get(team as usize)
+            .and_then(|b| *b)
+            .map(|b| b.damage_mult)
+            .unwrap_or(1.0)
+    }
+
+    fn team_speed_mult(&self, team: u8) -> f32 {
+        self.team_buffs
+            .get(team as usize)
+            .and_then(|b| *b)
+            .map(|b| b.speed_mult)
+            .unwrap_or(1.0)
+    }
+
+    pub fn team_buff(&self, team: u8) -> Option<(f32, f32, CampBuff)> {
+        self.team_buffs
+            .get(team as usize)
+            .and_then(|b| *b)
+            .map(|b| (b.remaining, b.duration, b.kind))
     }
 
     fn update_projectiles(&mut self, dt: f32, height: &HeightGrid) {
@@ -782,7 +935,10 @@ impl AnimatedScene {
 
             let mut hit = None;
             for (i, unit) in self.units.iter().enumerate() {
-                if unit.team == projectile.team || unit.health <= 0.0 || unit.team == 2 {
+                if unit.team == projectile.team
+                    || unit.health <= 0.0
+                    || (unit.team == 2 && unit.kind != UnitKind::Camp)
+                {
                     continue;
                 }
                 let radius = unit.hit_radius.max(70.0);
@@ -872,6 +1028,8 @@ impl AnimatedScene {
                 bar_height: 170.0,
                 lane: lane.clone(),
                 lane_index: 1.min(lane.len()),
+                respawn_time: 0.0,
+                camp_buff: None,
             };
             self.units.push(unit);
         }
@@ -898,7 +1056,7 @@ impl AnimatedScene {
         let bars = self
             .units
             .iter()
-            .filter(|unit| unit.health > 0.0 && unit.team != 2)
+            .filter(|unit| unit.health > 0.0 && (unit.team != 2 || unit.kind == UnitKind::Camp))
             .map(|unit| {
                 let width = match unit.kind {
                     UnitKind::Nexus => 190.0,
@@ -912,6 +1070,8 @@ impl AnimatedScene {
                     (unit.health / unit.max_health).clamp(0.0, 1.0),
                     if unit.team == 0 {
                         [80u8, 150, 255]
+                    } else if unit.team == 2 {
+                        [220u8, 180, 70]
                     } else {
                         [220u8, 65, 60]
                     },
@@ -970,6 +1130,16 @@ impl AnimatedScene {
                     [255, 90, 80]
                 },
             );
+        }
+
+        let camp_rings = self
+            .units
+            .iter()
+            .filter(|u| u.kind == UnitKind::Camp && u.health > 0.0)
+            .map(|u| u.pos)
+            .collect::<Vec<_>>();
+        for pos in camp_rings {
+            append_ring(self, pos, pos.y + 4.0, 120.0, [230, 180, 70]);
         }
 
         if let Some((marker, remaining)) = self.marker {
@@ -1053,11 +1223,13 @@ fn load_unit(
         bar_height,
         lane,
         lane_index: 0,
+        respawn_time: 0.0,
+        camp_buff: None,
     })
 }
 
-fn follow_path(unit: &mut AnimatedUnit, dt: f32, height: &HeightGrid) {
-    let mut budget = unit.speed * dt;
+fn follow_path(unit: &mut AnimatedUnit, dt: f32, height: &HeightGrid, speed_mult: f32) {
+    let mut budget = unit.speed * speed_mult * dt;
     unit.moving = false;
     while budget > 0.0 && unit.path_index < unit.path.len() {
         let waypoint = unit.path[unit.path_index];

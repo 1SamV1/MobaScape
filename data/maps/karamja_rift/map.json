@@ -391,5 +391,63 @@
         }
       ]
     }
+  ],
+  "camps": [
+    {
+      "id": "top_west",
+      "tile": [
+        2820,
+        3085
+      ],
+      "model": 27114,
+      "idle": 6857,
+      "walk": null,
+      "health": 600,
+      "respawn": 90,
+      "buff": "might",
+      "scale": 1.6
+    },
+    {
+      "id": "top_east",
+      "tile": [
+        2880,
+        3085
+      ],
+      "model": 24613,
+      "idle": 6247,
+      "walk": 6248,
+      "health": 450,
+      "respawn": 90,
+      "buff": "swift",
+      "scale": 1.6
+    },
+    {
+      "id": "bot_west",
+      "tile": [
+        2820,
+        3000
+      ],
+      "model": 18898,
+      "idle": 4914,
+      "walk": 4913,
+      "health": 350,
+      "respawn": 90,
+      "buff": "swift",
+      "scale": 1.5
+    },
+    {
+      "id": "bot_east",
+      "tile": [
+        2880,
+        3000
+      ],
+      "model": 16238,
+      "idle": null,
+      "walk": null,
+      "health": 800,
+      "respawn": 120,
+      "buff": "might",
+      "scale": 1.8
+    }
   ]
 }

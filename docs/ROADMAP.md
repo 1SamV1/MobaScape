@@ -83,12 +83,15 @@ Done:
 - Three-minion waves per lane every 25 s (two skeletons, one skeleton mage).
 - Tower targeting/projectiles, minion lane AI, inhibitor-gated nexus, win
   condition, victory/defeat HUD border and title.
-- HUD nexus health bars and wave timer; title shows tower/inhibitor/nexus state.
-- `--timescale` for fast verification.
+- Four jungle camps (giant, spider, bat, abyssal demon) with respawn and
+  Might/Swift team buffs.
+- Live minimap: lanes, structures, camps, minions, player.
+- HUD nexus health bars, wave timer, buff bar; title shows full match state.
+- `--timescale` and `--demo-camp` for fast verification.
 
 Remaining:
 
-- Jungle camps/buffs, brush, fog.
+- Brush, fog of war, and minimap interaction.
 - Gold/XP/items and five champions with full kits.
 - Deterministic 10-bot match at 20× speed with a state hash.
 - Data hot reload for champions/abilities/items/waves.

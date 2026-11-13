@@ -138,3 +138,14 @@ team, and one nexus per team. A nexus is damageable only after at least one
 enemy inhibitor is destroyed. Minions spawn per lane (two melee, one ranged) and
 follow that lane's waypoints. This creates a real push/defend loop without
 requiring items or a full champion kit yet.
+
+## ADR-014 — Jungle camps, team buffs, and a geometry minimap
+
+**Status:** accepted.
+
+Four neutral camps sit in the jungle pockets. They respawn and grant the
+attacker's team a 60 s buff: Might (+25% damage) or Swift (+20% speed). Camps
+are passive in v1 (no retaliation) and use single-model NPCs. The minimap is
+drawn with HUD quads from live state (lanes, structures, camps, minions,
+player); it is display-only until click-to-pan lands. Fog of war remains a
+server-side milestone.

@@ -28,6 +28,9 @@ The playable map is `data/maps/karamja_rift/map.json`:
   `towers` (two per team), and two `inhibitors` (one per team).
 - `wave_interval`: 25 s. Each lane spawns two melee skeletons and one skeleton
   mage per team per wave.
+- `camps`: four neutral jungle camps. Each camp has a tile, model, optional
+  idle/walk sequence, health, respawn time, buff (`might` or `swift`), and
+  scale. Camps grant a 60 s team buff when killed.
 - Towers: model 1761, 450 HP, range 640, 18 damage / 1.2 s.
 - Inhibitors: model 1747, 700 HP, no attack. At least one enemy inhibitor must
   fall before the nexus can be damaged.

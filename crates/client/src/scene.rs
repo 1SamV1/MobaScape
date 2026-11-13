@@ -212,6 +212,40 @@ struct MapJson {
     wave_interval: f32,
     nexus: Vec<StructureJson>,
     lanes: Vec<LaneJson>,
+    #[serde(default)]
+    camps: Vec<CampJson>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CampBuff {
+    Might,
+    Swift,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct CampJson {
+    id: String,
+    tile: [f32; 2],
+    model: u32,
+    idle: Option<u32>,
+    walk: Option<u32>,
+    health: f32,
+    respawn: f32,
+    buff: String,
+    scale: f32,
+}
+
+#[derive(Debug, Clone)]
+pub struct CampSpawn {
+    pub id: String,
+    pub pos: Vec3,
+    pub model_id: u32,
+    pub idle_sequence: Option<u32>,
+    pub walk_sequence: Option<u32>,
+    pub health: f32,
+    pub respawn: f32,
+    pub buff: CampBuff,
+    pub scale: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -225,6 +259,7 @@ pub struct MapLayout {
     pub name: String,
     pub lanes: Vec<LaneSpawn>,
     pub structures: Vec<StructureSpawn>,
+    pub camps: Vec<CampSpawn>,
     pub wave_interval: f32,
 }
 
@@ -276,10 +311,31 @@ impl MapLayout {
             }
         }
 
+        let camps = map
+            .camps
+            .iter()
+            .map(|camp| CampSpawn {
+                id: camp.id.clone(),
+                pos: world_of(camp.tile),
+                model_id: camp.model,
+                idle_sequence: camp.idle,
+                walk_sequence: camp.walk,
+                health: camp.health,
+                respawn: camp.respawn,
+                buff: if camp.buff.eq_ignore_ascii_case("swift") {
+                    CampBuff::Swift
+                } else {
+                    CampBuff::Might
+                },
+                scale: camp.scale,
+            })
+            .collect();
+
         Ok(Self {
             name: map.name,
             lanes,
             structures,
+            camps,
             wave_interval: map.wave_interval,
         })
     }

@@ -1,6 +1,6 @@
 # Status
 
-Last updated: M3.5 three-lane map, 2026-11-13.
+Last updated: M3.75 jungle + minimap, 2026-11-13.
 
 ## Working
 
@@ -16,19 +16,24 @@ Last updated: M3.5 three-lane map, 2026-11-13.
 - Scene: 3×3 Karamja block, 37,249 terrain vertices, 900 scenery placements,
   8 ambient animated NPCs, three stone lane ribbons.
 - Map: `data/maps/karamja_rift/map.json` defines top/mid/bottom lanes,
-  two towers + one inhibitor per lane per team, and one nexus per team.
+  two towers + one inhibitor per lane per team, one nexus per team, and four
+  jungle camps.
 - Movement: click-to-move A* path following; hold-to-steer with axis-separated
   collision sliding; camera follow/pan; selection and click rings.
 - Lane: three-minion waves per lane every 25 s (two skeletons, one skeleton
   mage) per team. Minion lane AI, tower targeting/projectiles, inhibitor-gated
   nexus, victory/defeat.
+- Jungle: four neutral camps (giant, spider, bat, abyssal demon) with respawn
+  timers. Killing a camp grants the attacker's team Might (+25% damage) or
+  Swift (+20% speed) for 60 s.
 - Combat: player auto-attacks, Q fire blast, hit flash, health bars, dummy
-  respawn. Player death/respawn at the spawn point. Towers/minions can damage
-  the player.
+  respawn. Player death/respawn at the spawn point. Towers/minions/camps can
+  damage the player.
 - HUD: screen-space health/mana bars, Q cooldown box, crosshair, team nexus
-  health bars, wave timer; numeric values in the window title. Victory/defeat
-  screen border.
-- Dev demos: `--demo-target X Y`, `--demo-combat`, `--timescale N`.
+  health bars, wave timer, buff bar, and a live minimap (lanes, structures,
+  camps, minions, player). Numeric values live in the window title.
+- Dev demos: `--demo-target X Y`, `--demo-combat`, `--demo-camp`,
+  `--timescale N`.
 
 ## Verified
 
@@ -37,17 +42,21 @@ Last updated: M3.5 three-lane map, 2026-11-13.
 - 20× three-lane run ended in **VICTORY**:
   - team 1 nexus **0/1500 (open)**, team 0 nexus **1500/1500 (shielded)**
   - team 1 inhibitors **2/3**, team 0 inhibitors **3/3**
-  - **72 minions**, 6 towers per team, several towers destroyed
+  - **72 minions**, several towers destroyed
   - player HP dropped to **428/500** from tower/minion damage
+- Jungle demo: camp target killed, title reported **buff Might 58s**, buff bar
+  visible under the health/mana panels.
+- Minimap screenshot: three lane paths, blue/red structures, orange camps,
+  minion dots, player dot.
 - `--demo-combat`: dummy target health 58/120 after auto-attacks + Q.
-- HUD/lane screenshot: three lane ribbons, nexus crystals, obelisk towers,
-  skeleton minions, nexus/wave bars, victory border.
 
 ## Known issues
 
-- Three lanes but no jungle camps, brush, fog, inhibitors respawn, or super
-  minions.
+- No brush or fog of war; the minimap is display-only (not clickable).
+- Camps are passive (they do not retaliate) and use a single model; composite
+  NPC models are not assembled.
 - No gold/XP/items or full champion kit beyond Q.
+- Three lanes, but no inhibitor respawn/super minions or base/fountain.
 - The HUD has no text/font; numbers live in the window title.
 - Lane ribbons can clip under steep terrain in a few spots.
 - Collision is approximate: water, object footprints, 3×3 structure footprints.
@@ -62,10 +71,10 @@ Last updated: M3.5 three-lane map, 2026-11-13.
 
 ## Next tasks
 
-1. Jungle camps/buffs, brush, and fog of war.
+1. Brush + fog of war, and minimap click-to-pan.
 2. Gold/XP/items and a champion kit (passive + Q/W/E/R).
-3. Inhibitor respawn / super minions and a proper base/fountain.
-4. HUD text/font atlas and minimap.
+3. Inhibitor respawn/super minions and a proper base/fountain.
+4. HUD text/font atlas.
 5. Deterministic 30 Hz sim tick in `crates/sim` + state hash.
 6. Texture sampling and better foliage/trunk colours.
 7. Lobby + QUIC netcode after the sim loop is stable.
@@ -78,3 +87,5 @@ Last updated: M3.5 three-lane map, 2026-11-13.
   group rejection, framemap/frame parse).
 - Three-lane 20× run: victory, nexus 0/1500 vs 1500/1500, inhibitors 2/3 vs 3/3,
   72 minions, player 428/500.
+- Jungle demo: camp health dropped, then buff Might 58s; buff bar rendered.
+- Minimap: lanes/structures/camps/units rendered in the HUD.

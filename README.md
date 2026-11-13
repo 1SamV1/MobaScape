@@ -4,12 +4,12 @@ A 5v5 MOBA built on a custom Rust engine, using modern Old School RuneScape
 cache assets for its visual identity. Server-authoritative, data-driven, and
 designed for fast-paced low-team-count matches.
 
-> Status: **M3.5 three-lane map**. The cache reader, terrain/location/model/sequence
-> decoders, animated NPCs, a 3x3 Karamja block, A* pathfinding with collision,
-> hold-to-steer, a screen-space HUD, auto-attacks, Q, and three lanes with
-> towers, inhibitors, a shielded nexus, minion waves, and a win condition are
-> working. There is no networking or full champion kit yet. See
-> [docs/STATUS.md](docs/STATUS.md).
+> Status: **M3.75 jungle + minimap**. The cache reader, terrain/location/model/
+> sequence decoders, animated NPCs, a 3x3 Karamja block, A* pathfinding with
+> collision, hold-to-steer, a screen-space HUD, auto-attacks, Q, three lanes with
+> towers/inhibitors/shielded nexus, minion waves, jungle camps with team buffs,
+> a live minimap, and a win condition are working. There is no networking or
+> full champion kit yet. See [docs/STATUS.md](docs/STATUS.md).
 
 ## What exists
 
@@ -22,9 +22,9 @@ designed for fast-paced low-team-count matches.
 - `crates/sim` — deterministic tile grid, collision, and A* pathfinding
 - `crates/tools` — `rift-tools` CLI for cache inspection and OBJ export
 - `crates/client` — native wgpu client: 3x3 Karamja, animated NPCs, three lanes,
-  towers/inhibitors/nexus, minion waves, click-to-move + hold-to-steer, HUD,
-  auto-attacks, Q
-- `data/maps/karamja_rift/map.json` — three lanes, structures, wave timing
+  towers/inhibitors/nexus, minion waves, jungle camps/buffs, live minimap,
+  click-to-move + hold-to-steer, HUD, auto-attacks, Q
+- `data/maps/karamja_rift/map.json` — lanes, structures, camps, wave timing
 - `docs/reference` — archived Java-era experiments (not built)
 
 ## Requirements
@@ -57,6 +57,9 @@ cargo run -p rift-client -- --demo-combat
 
 # Fast-forward the lane for tower/minion/nexus verification
 cargo run -p rift-client -- --timescale 20
+
+# Teleport to a jungle camp, kill it, and verify the team buff
+cargo run -p rift-client -- --demo-camp --timescale 4
 ```
 
 The cache download is not automated yet; see

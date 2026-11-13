@@ -21,7 +21,7 @@ use winit::window::{Window, WindowId};
 use crate::animated::AnimatedScene;
 use crate::hud::Hud;
 use crate::renderer::{Camera, Renderer};
-use crate::scene::{HeightGrid, SceneData, WorldCollision};
+use crate::scene::{CampBuff, HeightGrid, SceneData, WorldCollision};
 
 #[derive(Parser, Debug)]
 #[command(name = "rift-client", about = "Rift native client (M1 vertical slice)")]
@@ -47,6 +47,9 @@ struct Cli {
     /// Demo: auto-target a dummy and fire Q to verify combat.
     #[arg(long)]
     demo_combat: bool,
+    /// Demo: teleport to a jungle camp, attack it, and verify the buff.
+    #[arg(long)]
+    demo_camp: bool,
     /// Simulation speed multiplier for verification.
     #[arg(long, default_value_t = 1.0)]
     timescale: f32,
@@ -108,6 +111,11 @@ fn main() -> Result<()> {
         demo_target,
         demo_timer: 0.0,
         demo_combat: cli.demo_combat,
+        demo_camp: cli.demo_camp,
+        demo_camp_timer: 0.0,
+        demo_camp_target: None,
+        demo_camp_cast: false,
+        demo_camp_done: false,
         timescale: cli.timescale,
         demo_combat_timer: 0.0,
         demo_combat_targeted: false,
@@ -140,6 +148,11 @@ struct App {
     demo_target: Option<(f32, f32)>,
     demo_timer: f32,
     demo_combat: bool,
+    demo_camp: bool,
+    demo_camp_timer: f32,
+    demo_camp_target: Option<usize>,
+    demo_camp_cast: bool,
+    demo_camp_done: bool,
     timescale: f32,
     demo_combat_timer: f32,
     demo_combat_targeted: bool,
@@ -213,7 +226,7 @@ impl ApplicationHandler for App {
                 self.mouse_pos = (position.x, position.y);
             }
             WindowEvent::MouseInput { state, button, .. } => {
-                if button != MouseButton::Left {
+                if button != MouseButton::Left || self.demo_camp || self.demo_combat {
                     return;
                 }
                 match state {
@@ -312,6 +325,8 @@ impl App {
         };
 
         let steering = self.lmb_down
+            && !self.demo_camp
+            && !self.demo_combat
             && self
                 .lmb_press
                 .map(|t| t.elapsed().as_secs_f32() >= 0.18)
@@ -353,6 +368,38 @@ impl App {
                         }
                     }
                     self.demo_combat = false;
+                }
+            }
+
+            if self.demo_camp && !self.demo_camp_done {
+                self.demo_camp_timer += dt;
+                if self.demo_camp_timer >= 1.0 && self.demo_camp_target.is_none() {
+                    if let Some(index) = animated.nearest_camp(animated.player_pos()) {
+                        if let Some(camp_pos) = animated.unit_pos(index) {
+                            let spawn = camp_pos + Vec3::new(200.0, 0.0, 0.0);
+                            animated.teleport_player(spawn);
+                            let ok = animated.set_attack_target(index, collision, height);
+                            tracing::info!("demo camp: target {index}, attack={ok}");
+                            self.demo_camp_target = Some(index);
+                        }
+                    }
+                }
+                if !self.demo_camp_cast && self.demo_camp_timer >= 2.6 {
+                    if let Some(index) = self.demo_camp_target {
+                        if let Some(pos) = animated.unit_pos(index) {
+                            let ok = animated.cast_q(pos);
+                            tracing::info!("demo camp: Q cast={ok}");
+                        }
+                    }
+                    self.demo_camp_cast = true;
+                }
+                if self.demo_camp_timer >= 10.0 {
+                    if let Some(index) = self.demo_camp_target {
+                        let health = animated.unit_health(index).unwrap_or(-1.0);
+                        let buff = animated.team_buff(0);
+                        tracing::info!("demo camp: health {health:.0}, buff {buff:?}");
+                    }
+                    self.demo_camp_done = true;
                 }
             }
             if steering {
@@ -410,6 +457,13 @@ impl App {
                     animated.nexus_vulnerable(1)
                 );
             }
+            let buff = animated.team_buff(0).map(|(remaining, duration, kind)| {
+                let color = match kind {
+                    CampBuff::Might => [255, 160, 60],
+                    CampBuff::Swift => [90, 220, 255],
+                };
+                (remaining, duration, color)
+            });
             self.hud.build(
                 renderer.size.0 as f32,
                 renderer.size.1 as f32,
@@ -424,8 +478,11 @@ impl App {
                 animated.wave_timer,
                 animated.wave_interval,
                 animated.match_over,
+                buff,
                 self.mouse_pos,
             );
+            self.hud
+                .build_minimap(renderer.size.0 as f32, renderer.size.1 as f32, animated);
             renderer.set_hud_mesh(&self.hud.vertices, &self.hud.indices);
             if self.follow {
                 renderer.camera.target = animated.player_pos() + Vec3::Y * 140.0;
@@ -458,9 +515,13 @@ impl App {
                 } else {
                     "shielded"
                 };
+                let buff_text = animated
+                    .team_buff(0)
+                    .map(|(remaining, _, kind)| format!("{:?} {remaining:.0}s", kind))
+                    .unwrap_or_else(|| "-".to_string());
                 if let Some(window) = self.window.as_ref() {
                     window.set_title(&format!(
-                        "Rift - Karamja | tile {:.0},{:.0} | {:.0} fps | HP {:.0}/{:.0} | Q {:.1}s | nexus {:.0}/{:.0} ({}) - {:.0}/{:.0} ({}) | inhib {}/{} - {}/{} | wave {:.0}s | minions {}{}",
+                        "Rift - Karamja | tile {:.0},{:.0} | {:.0} fps | HP {:.0}/{:.0} | Q {:.1}s | nexus {:.0}/{:.0} ({}) - {:.0}/{:.0} ({}) | inhib {}/{} - {}/{} | wave {:.0}s | minions {} | buff {}{}",
                         pos.x / 128.0,
                         pos.z / 128.0,
                         fps,
@@ -479,6 +540,7 @@ impl App {
                         inhib1.1,
                         animated.wave_timer,
                         animated.minion_count(),
+                        buff_text,
                         result
                     ));
                 }
