@@ -26,7 +26,7 @@ designed for fast-paced low-team-count matches.
 > bloom chain (Rgba16Float scene target, bright pass, separable Gaussian,
 > ACES tonemap) and samples real OSRS ground sprites from a mipmapped texture
 > array. **M5.6** rebuilds the map as a two-sided rift: eight regional biome
-> pockets cut from real OSRS regions (dark magic, vampires, ogres, goblins on
+> pockets inspired from OSRS regions (dark magic, vampires, ogres, goblins on
 > the dire side; human cities, elven lands, gnome stronghold on the radiant
 > side), a diagonal river with a centre bridge, tree lines down every lane, a
 > shadow (not tinted) fog of war, and a Dota style scoreboard, unit tooltip,
@@ -35,7 +35,7 @@ designed for fast-paced low-team-count matches.
 
 ## What exists
 
-- `crates/cache` — read-only OSRS cache reader:
+- `crates/cache` — read-only cache reader:
   - 520-byte sector store, 6-byte index entries, XTEA, gzip/bzip2/LZMA
   - index reference tables, archive splitting with real file IDs
   - terrain (64×64×4), locations, object/NPC/underlay/overlay configs
