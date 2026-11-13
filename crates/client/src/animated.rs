@@ -211,6 +211,8 @@ pub struct AnimatedScene {
     pub projectiles: Vec<Projectile>,
     pub effects: Vec<Effect>,
     pub wave_timer: f32,
+    /// Monotonic wave counter used to stagger formation jitter deterministically.
+    pub wave_serial: u32,
     /// Team scoreboard counters.
     pub kills: [u32; 2],
     pub deaths: [u32; 2],
@@ -353,7 +355,7 @@ impl AnimatedScene {
             let (hit_radius, bar_height) = match kind {
                 UnitKind::Tower => (230.0, 500.0),
                 UnitKind::Inhibitor => (230.0, 430.0),
-                UnitKind::Nexus => (300.0, 400.0),
+                UnitKind::Nexus => (340.0, 575.0),
                 UnitKind::Watchtower => (210.0, 720.0),
                 _ => (150.0, 200.0),
             };
@@ -530,6 +532,7 @@ impl AnimatedScene {
             projectiles: Vec::new(),
             effects: Vec::new(),
             wave_timer: 0.0,
+            wave_serial: 0,
             kills: [0, 0],
             deaths: [0, 0],
             wave_interval: scene.map.wave_interval,
@@ -577,8 +580,8 @@ impl AnimatedScene {
             color: [120, 255, 170],
         });
         for lane_index in 0..animated.lanes.len() {
-            animated.spawn_wave(0, lane_index);
-            animated.spawn_wave(1, lane_index);
+            animated.spawn_wave(0, lane_index, &scene.height);
+            animated.spawn_wave(1, lane_index, &scene.height);
         }
         animated.wave_timer = animated.wave_interval;
         Ok(animated)
@@ -1309,8 +1312,8 @@ impl AnimatedScene {
             self.wave_timer -= dt;
             if self.wave_timer <= 0.0 {
                 for lane_index in 0..self.lanes.len() {
-                    self.spawn_wave(0, lane_index);
-                    self.spawn_wave(1, lane_index);
+                    self.spawn_wave(0, lane_index, height);
+                    self.spawn_wave(1, lane_index, height);
                 }
                 self.wave_timer = self.wave_interval;
             }
@@ -2170,7 +2173,7 @@ impl AnimatedScene {
         self.projectiles = survivors;
     }
 
-    fn spawn_wave(&mut self, team: u8, lane_index: usize) {
+    fn spawn_wave(&mut self, team: u8, lane_index: usize, height: &HeightGrid) {
         if self.match_over.is_some() {
             return;
         }
@@ -2189,6 +2192,22 @@ impl AnimatedScene {
             reversed.reverse();
             reversed
         };
+        // Spawns follow the first lane segment so the three lanes leave the
+        // nexus in different directions instead of all stacking on the same
+        // tile. Units are then arranged in a loose wedge: two melee in front,
+        // the ranged minion behind, and a super minion ahead of the formation.
+        let first = lane.first().copied().unwrap_or(nexus);
+        let next = lane.get(1).copied().unwrap_or(first + Vec3::Z);
+        let mut forward = Vec3::new(next.x - first.x, 0.0, next.z - first.z);
+        if forward.length_squared() < 1.0 {
+            forward = Vec3::Z;
+        } else {
+            forward = forward.normalize();
+        }
+        let across = Vec3::new(-forward.z, 0.0, forward.x);
+        let serial = self.wave_serial;
+        self.wave_serial = self.wave_serial.wrapping_add(1);
+
         let enemy_team = 1 - team;
         let super_lane = self.units.iter().any(|u| {
             u.kind == UnitKind::Inhibitor
@@ -2196,16 +2215,9 @@ impl AnimatedScene {
                 && u.structure_lane == Some(lane_index)
                 && u.health <= 0.0
         });
-        let mut offsets = vec![
-            (Vec3::new(70.0, 0.0, 0.0), false, false),
-            (Vec3::new(-70.0, 0.0, 0.0), false, false),
-            (Vec3::new(0.0, 0.0, 70.0), true, false),
-        ];
-        if super_lane {
-            offsets.push((Vec3::new(0.0, 0.0, -70.0), false, true));
-        }
+        let formation = wave_formation_positions(nexus, forward, across, serial, super_lane);
 
-        for (offset, ranged, super_minion) in offsets {
+        for (mut pos, ranged, super_minion) in formation {
             let template = if ranged {
                 &self.ranged_template
             } else {
@@ -2231,13 +2243,7 @@ impl AnimatedScene {
             } else {
                 template.speed
             };
-            let mut pos = nexus + offset;
-            pos.y = self
-                .units
-                .iter()
-                .find(|u| u.kind == UnitKind::Nexus && u.team == team)
-                .map(|u| u.pos.y)
-                .unwrap_or(0.0);
+            pos.y = height.height_at(pos.x, pos.z);
             let unit = AnimatedUnit {
                 model: template.model.clone(),
                 idle: template.idle.clone(),
@@ -2662,6 +2668,47 @@ fn load_unit(
     })
 }
 
+/// Deterministic loose wedge for a minion wave. Melee minions take the front
+/// row, the ranged minion trails, and an optional super minion leads. Jitter
+/// changes each wave so repeated waves do not line up on the same exact tiles.
+fn wave_formation_positions(
+    nexus: Vec3,
+    forward: Vec3,
+    across: Vec3,
+    serial: u32,
+    super_lane: bool,
+) -> Vec<(Vec3, bool, bool)> {
+    let mut formation = vec![
+        // forward tiles, lateral tiles, ranged, super
+        (1.45f32, -0.72f32, false, false),
+        (1.05, 0.78, false, false),
+        (0.38, 0.0, true, false),
+    ];
+    if super_lane {
+        formation.push((2.15, 0.0, false, true));
+    }
+    formation
+        .into_iter()
+        .enumerate()
+        .map(
+            |(index, (forward_tiles, lateral_tiles, ranged, super_minion))| {
+                let jitter = ((serial
+                    .wrapping_mul(1_103_515_245)
+                    .wrapping_add(index as u32 * 12_345)
+                    >> 16
+                    & 0xff) as f32
+                    / 255.0
+                    - 0.5)
+                    * 0.24;
+                let pos = nexus
+                    + forward * (forward_tiles * 128.0)
+                    + across * ((lateral_tiles + jitter) * 128.0);
+                (pos, ranged, super_minion)
+            },
+        )
+        .collect()
+}
+
 fn follow_path(unit: &mut AnimatedUnit, dt: f32, height: &HeightGrid, speed_mult: f32) {
     let mut budget = unit.speed * speed_mult * dt;
     unit.moving = false;
@@ -2883,4 +2930,49 @@ fn append_quad(scene: &mut AnimatedScene, center: Vec3, right: Vec3, up: Vec3, c
     scene
         .indices
         .extend_from_slice(&[base, base + 1, base + 2, base + 2, base + 1, base + 3]);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wave_formation_spaces_minions_apart() {
+        let nexus = Vec3::new(1000.0, 10.0, 2000.0);
+        let forward = Vec3::Z;
+        let across = Vec3::X;
+        let formation = wave_formation_positions(nexus, forward, across, 7, false);
+        assert_eq!(formation.len(), 3);
+        for i in 0..formation.len() {
+            for j in i + 1..formation.len() {
+                let distance = formation[i].0.distance(formation[j].0);
+                assert!(
+                    distance > 80.0,
+                    "wave minions {i} and {j} spawned only {distance:.0} units apart"
+                );
+            }
+        }
+        let ranged = formation.iter().filter(|(_, ranged, _)| *ranged).count();
+        assert_eq!(ranged, 1);
+    }
+
+    #[test]
+    fn super_wave_adds_a_staggered_leader() {
+        let nexus = Vec3::new(1000.0, 10.0, 2000.0);
+        let formation = wave_formation_positions(nexus, Vec3::Z, Vec3::X, 3, true);
+        assert_eq!(formation.len(), 4);
+        assert_eq!(
+            formation
+                .iter()
+                .filter(|(_, _, super_minion)| *super_minion)
+                .count(),
+            1
+        );
+        let super_pos = formation
+            .iter()
+            .find(|(_, _, super_minion)| *super_minion)
+            .expect("super minion")
+            .0;
+        assert!(super_pos.z > nexus.z + 128.0);
+    }
 }
