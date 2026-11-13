@@ -1,0 +1,19 @@
+{
+  "name": "Kree'arra Jr.",
+  "model": 28019,
+  "idle": 7166,
+  "walk": 7167,
+  "scale": 0.5,
+  "health": 420,
+  "mana": 240,
+  "damage": 10,
+  "attack_range": 650,
+  "attack_interval": 1.0,
+  "speed": 450,
+  "ranged_auto": true,
+  "q_damage": 32,
+  "r_damage": 100,
+  "e_heal": 60,
+  "e_shield": 90,
+  "w_distance": 896
+}

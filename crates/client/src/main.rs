@@ -1,4 +1,5 @@
 mod animated;
+mod champion;
 mod hud;
 mod renderer;
 mod scene;
@@ -19,6 +20,7 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
 use crate::animated::AnimatedScene;
+use crate::champion::ChampionConfig;
 use crate::hud::{Hud, PlayerHud};
 use crate::renderer::{Camera, Renderer};
 use crate::scene::{CampBuff, HeightGrid, SceneData, Vertex, WorldCollision};
@@ -41,6 +43,9 @@ struct Cli {
     /// Map design data.
     #[arg(long, default_value = "data/maps/karamja_rift/map.json")]
     map: PathBuf,
+    /// Champion config name (monkey, jad, kree).
+    #[arg(long, default_value = "monkey")]
+    champion: String,
     /// Demo: walk to this tile coordinate after one second (x y).
     #[arg(long, num_args = 2, value_names = ["X", "Y"])]
     demo_target: Option<Vec<f32>>,
@@ -76,8 +81,9 @@ fn main() -> Result<()> {
         cli.region_x,
         cli.region_y
     );
+    let champion = ChampionConfig::load(&cli.champion)?;
     let scene = scene::build(&cache, cli.region_x, cli.region_y, cli.radius, &cli.map)?;
-    let animated = AnimatedScene::new(&cache, &scene)?;
+    let animated = AnimatedScene::new(&cache, &scene, &champion)?;
     let height = scene.height.clone();
     let collision = scene.collision.clone();
     tracing::info!(
@@ -596,7 +602,8 @@ impl App {
                     .unwrap_or_else(|| "-".to_string());
                 if let Some(window) = self.window.as_ref() {
                     window.set_title(&format!(
-                        "Rift - Karamja | tile {:.0},{:.0} | {:.0} fps | L{} {:.0}/{:.0} XP | HP {:.0}/{:.0} | MP {:.0}/{:.0} | gold {} | Q/W/E/R {:.1}/{:.1}/{:.1}/{:.1}s | nexus {:.0}/{:.0} ({}) - {:.0}/{:.0} ({}) | inhib {}/{} - {}/{} | wave {:.0}s | minions {} | buff {}{}",
+                        "Rift - Karamja | {} | tile {:.0},{:.0} | {:.0} fps | L{} {:.0}/{:.0} XP | HP {:.0}/{:.0} | MP {:.0}/{:.0} | gold {} | Q/W/E/R {:.1}/{:.1}/{:.1}/{:.1}s | nexus {:.0}/{:.0} ({}) - {:.0}/{:.0} ({}) | inhib {}/{} - {}/{} | wave {:.0}s | minions {} | buff {}{}",
+                        animated.champion_name(),
                         pos.x / 128.0,
                         pos.z / 128.0,
                         fps,

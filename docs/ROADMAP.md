@@ -90,8 +90,10 @@ Done:
 - Levels 1–11, XP, gold, shield, and ability HUD boxes.
 - Client-side fog of war: allied vision grid, hidden enemy/neutral units, brush
   zones, and a dark fog mesh over unseen tiles.
+- Three data-driven champions: Monkey, JalRek-Jad, Kree'arra Jr.; distinct
+  models, stats, and ability numbers; Kree has ranged auto-attacks.
 - HUD nexus health bars, wave timer, buff bar; title shows full match state.
-- `--timescale`, `--demo-camp`, and `--demo-kit` for fast verification.
+- `--timescale`, `--demo-camp`, `--demo-kit`, and `--champion` for verification.
 
 Remaining:
 

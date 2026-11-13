@@ -1,0 +1,19 @@
+{
+  "name": "Monkey",
+  "model": 7744,
+  "idle": 222,
+  "walk": 219,
+  "scale": 2.8,
+  "health": 500,
+  "mana": 200,
+  "damage": 12,
+  "attack_range": 330,
+  "attack_interval": 1.15,
+  "speed": 420,
+  "ranged_auto": false,
+  "q_damage": 38,
+  "r_damage": 120,
+  "e_heal": 80,
+  "e_shield": 120,
+  "w_distance": 768
+}

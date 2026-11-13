@@ -4,13 +4,13 @@ A 5v5 MOBA built on a custom Rust engine, using modern Old School RuneScape
 cache assets for its visual identity. Server-authoritative, data-driven, and
 designed for fast-paced low-team-count matches.
 
-> Status: **M3.95 fog + brush**. The cache reader, terrain/location/model/
+> Status: **M3.99 champion roster**. The cache reader, terrain/location/model/
 > sequence decoders, animated NPCs, a 3x3 Karamja block, A* pathfinding with
 > collision, hold-to-steer, a screen-space HUD, auto-attacks, a Q/W/E/R kit
-> with mana/cooldowns/XP/gold, three lanes with towers/inhibitors/shielded
-> nexus, minion waves, jungle camps with team buffs, brush/fog of war, a live
-> minimap, and a win condition are working. There is no networking or item shop
-> yet. See [docs/STATUS.md](docs/STATUS.md).
+> with mana/cooldowns/XP/gold, three data-driven champions, three lanes with
+> towers/inhibitors/shielded nexus, minion waves, jungle camps with team buffs,
+> brush/fog of war, a live minimap, and a win condition are working. There is no
+> networking or item shop yet. See [docs/STATUS.md](docs/STATUS.md).
 
 ## What exists
 
@@ -64,6 +64,10 @@ cargo run -p rift-client -- --demo-camp --timescale 4
 
 # Cast W/E/R and print mana/cooldown/XP state
 cargo run -p rift-client -- --demo-kit --timescale 4
+
+# Play a different champion
+cargo run -p rift-client -- --champion jad
+cargo run -p rift-client -- --champion kree
 ```
 
 The cache download is not automated yet; see

@@ -2,16 +2,12 @@ use anyhow::Result;
 use glam::{Mat3, Vec3};
 use rift_cache::{AnimationClip, Cache, Model, model::hsl_to_rgb};
 
+use crate::champion::ChampionConfig;
 use crate::scene::{
     CampBuff, HeightGrid, SceneData, StructureKind, Vertex, WorldCollision, model_vertex_animated,
 };
 
-const PLAYER_SPEED: f32 = 420.0;
-const PLAYER_ATTACK_RANGE: f32 = 330.0;
-const PLAYER_ATTACK_INTERVAL: f32 = 1.15;
-const PLAYER_ATTACK_DAMAGE: f32 = 12.0;
 const Q_COOLDOWN: f32 = 5.0;
-const Q_DAMAGE: f32 = 38.0;
 const PLAYER_RESPAWN: f32 = 5.0;
 const MINION_AGGRO: f32 = 520.0;
 const MAX_MINIONS_PER_TEAM: usize = 36;
@@ -78,6 +74,12 @@ pub struct AnimatedUnit {
     pub shield_timer: f32,
     pub cooldowns: [f32; 4],
     pub visible: bool,
+    pub ranged_auto: bool,
+    pub q_damage: f32,
+    pub r_damage: f32,
+    pub e_heal: f32,
+    pub e_shield: f32,
+    pub w_distance: f32,
 }
 
 #[derive(Clone, Copy)]
@@ -168,12 +170,13 @@ pub struct AnimatedScene {
     pub brush: Vec<(f32, f32, f32, f32)>,
     pub vision_origin: (i32, i32),
     pub team_buffs: [Option<TeamBuff>; 2],
+    pub champion_name: String,
     melee_template: MinionTemplate,
     ranged_template: MinionTemplate,
 }
 
 impl AnimatedScene {
-    pub fn new(cache: &Cache, scene: &SceneData) -> Result<Self> {
+    pub fn new(cache: &Cache, scene: &SceneData, champion: &ChampionConfig) -> Result<Self> {
         let mut units = Vec::new();
 
         for spawn in &scene.npc_spawns {
@@ -200,27 +203,33 @@ impl AnimatedScene {
         let player_index = units.len();
         units.push(load_unit(
             cache,
-            7744,
-            Some(222),
-            Some(219),
+            champion.model,
+            Some(champion.idle),
+            Some(champion.walk),
             scene.player_spawn,
-            2.8,
+            champion.scale,
             UnitKind::Player,
             0,
-            500.0,
-            PLAYER_ATTACK_RANGE,
-            PLAYER_ATTACK_DAMAGE,
-            PLAYER_ATTACK_INTERVAL,
-            PLAYER_SPEED,
+            champion.health,
+            champion.attack_range,
+            champion.damage,
+            champion.attack_interval,
+            champion.speed,
             240.0,
             380.0,
             Vec::new(),
         )?);
         {
             let player = &mut units[player_index];
-            player.mana = 200.0;
-            player.max_mana = 200.0;
+            player.mana = champion.mana;
+            player.max_mana = champion.mana;
             player.level = 1;
+            player.ranged_auto = champion.ranged_auto;
+            player.q_damage = champion.q_damage;
+            player.r_damage = champion.r_damage;
+            player.e_heal = champion.e_heal;
+            player.e_shield = champion.e_shield;
+            player.w_distance = champion.w_distance;
         }
 
         // A training dummy next to the spawn keeps combat testable without
@@ -396,6 +405,7 @@ impl AnimatedScene {
             brush: scene.map.brush.clone(),
             vision_origin: (vision_origin_x, vision_origin_y),
             team_buffs: [None, None],
+            champion_name: champion.name.clone(),
             melee_template,
             ranged_template,
         };
@@ -405,6 +415,10 @@ impl AnimatedScene {
         }
         animated.wave_timer = animated.wave_interval;
         Ok(animated)
+    }
+
+    pub fn champion_name(&self) -> &str {
+        &self.champion_name
     }
 
     pub fn player_pos(&self) -> Vec3 {
@@ -558,12 +572,13 @@ impl AnimatedScene {
         let team = player.team;
         player.mana -= 25.0;
         player.cooldowns[0] = Q_COOLDOWN;
+        let damage = player.q_damage;
         self.projectiles.push(Projectile {
             pos,
             dir,
             speed: 950.0,
             life: 1.4,
-            damage: Q_DAMAGE,
+            damage,
             team,
         });
         true
@@ -587,7 +602,8 @@ impl AnimatedScene {
         let dir = flat.normalize();
         let start = player.pos;
         let mut destination = start;
-        for step in (1..=12).rev() {
+        let steps = (player.w_distance / 64.0).ceil().max(1.0) as i32;
+        for step in (1..=steps).rev() {
             let p = start + dir * (step as f32 * 64.0);
             if collision.is_walkable_world(p.x, p.z) {
                 destination = Vec3::new(p.x, height.height_at(p.x, p.z), p.z);
@@ -620,8 +636,8 @@ impl AnimatedScene {
         }
         player.mana -= 40.0;
         player.cooldowns[2] = 12.0;
-        player.health = (player.health + 80.0).min(player.max_health);
-        player.shield = 120.0;
+        player.health = (player.health + player.e_heal).min(player.max_health);
+        player.shield = player.e_shield;
         player.shield_timer = 4.0;
         let pos = player.pos;
         self.effects.push(Effect {
@@ -650,13 +666,14 @@ impl AnimatedScene {
             color: [255, 110, 50],
         });
         let radius = 384.0;
+        let damage = player.r_damage;
         for i in 0..self.units.len() {
             let unit = &self.units[i];
             if unit.health <= 0.0 || unit.team == 0 || unit.team == 2 {
                 continue;
             }
             if unit.pos.distance(target) <= radius + unit.hit_radius {
-                self.damage_unit(i, 120.0, 0);
+                self.damage_unit(i, damage, 0);
             }
         }
         true
@@ -875,9 +892,24 @@ impl AnimatedScene {
                     if unit.attack_cooldown <= 0.0 {
                         unit.attack_cooldown = unit.attack_interval;
                         let damage = unit.attack_damage;
-                        self.damage_unit(ti, damage, 0);
-                        if self.units[ti].health <= 0.0 {
-                            self.units[pi].attack_target = None;
+                        let ranged = unit.ranged_auto;
+                        let from = unit.pos + Vec3::Y * (unit.scale * 80.0);
+                        let team = unit.team;
+                        if ranged {
+                            let dir = (target_pos - from).normalize_or_zero();
+                            self.projectiles.push(Projectile {
+                                pos: from,
+                                dir,
+                                speed: 900.0,
+                                life: 1.4,
+                                damage,
+                                team,
+                            });
+                        } else {
+                            self.damage_unit(ti, damage, 0);
+                            if self.units[ti].health <= 0.0 {
+                                self.units[pi].attack_target = None;
+                            }
                         }
                     }
                 }
@@ -1346,6 +1378,12 @@ impl AnimatedScene {
                 shield_timer: 0.0,
                 cooldowns: [0.0; 4],
                 visible: true,
+                ranged_auto: false,
+                q_damage: 0.0,
+                r_damage: 0.0,
+                e_heal: 0.0,
+                e_shield: 0.0,
+                w_distance: 0.0,
             };
             self.units.push(unit);
         }
@@ -1419,13 +1457,7 @@ impl AnimatedScene {
 
         let player = &self.units[self.player_index];
         if player.health > 0.0 {
-            append_ring(
-                self,
-                player.pos,
-                player.pos.y + 3.0,
-                95.0 * player.scale / 2.8,
-                [90, 180, 255],
-            );
+            append_ring(self, player.pos, player.pos.y + 3.0, 95.0, [90, 180, 255]);
         }
 
         let structure_rings = self
@@ -1582,6 +1614,12 @@ fn load_unit(
         shield_timer: 0.0,
         cooldowns: [0.0; 4],
         visible: true,
+        ranged_auto: false,
+        q_damage: 0.0,
+        r_damage: 0.0,
+        e_heal: 0.0,
+        e_shield: 0.0,
+        w_distance: 0.0,
     })
 }
 

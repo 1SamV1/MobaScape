@@ -1,0 +1,19 @@
+{
+  "name": "JalRek-Jad",
+  "model": 33012,
+  "idle": 7589,
+  "walk": 8857,
+  "scale": 0.7,
+  "health": 700,
+  "mana": 260,
+  "damage": 16,
+  "attack_range": 360,
+  "attack_interval": 1.3,
+  "speed": 380,
+  "ranged_auto": false,
+  "q_damage": 50,
+  "r_damage": 150,
+  "e_heal": 100,
+  "e_shield": 160,
+  "w_distance": 640
+}

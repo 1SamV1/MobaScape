@@ -169,3 +169,14 @@ and neutral units outside vision are hidden; brush rectangles hide units unless
 the player is within 500 units; an opaque dark mesh covers unseen tiles. This is
 client-side only and must move to the authoritative server before multiplayer.
 The minimap hides unseen units but does not yet draw fog or support click-to-pan.
+
+## ADR-017 — Data-driven champions, starting with three boss avatars
+
+**Status:** accepted.
+
+Champion data lives in `data/champions/*.json`: model/idle/walk IDs, scale,
+health, mana, damage, range, speed, ranged-auto flag, and Q/R/E/W numbers. The
+client loads one champion at launch with `--champion monkey|jad|kree`. The first
+roster uses OSRS boss/mini-boss models (Monkey, JalRek-Jad, Kree'arra Jr.) and
+shares the Q/W/E/R shape; a champion-select UI, passives, and more distinct kits
+come later.
