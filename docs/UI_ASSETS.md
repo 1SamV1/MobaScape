@@ -92,3 +92,42 @@ pipeline.
 - Verify one icon and one tab visually before batching replacements.
 - Do not add a sprite decoder to the repo just to avoid downloading the pack;
   the external PNG path is deliberate and keeps the repository asset-free.
+
+
+## Interface font and HUD icons
+
+The OSRS interface font is not stored in the cache: the client ships it as
+binary font data, and RuneLite redistributes it as `runescape.ttf`,
+`runescape_bold.ttf` and `runescape_small.ttf` (BSD-2-Clause). Put the regular
+font in `assets/osrs-ui/font/runescape.ttf` and bake it:
+
+```sh
+python3 tools/bake_font.py
+```
+
+This writes `font.png` (a 512px-wide white glyph atlas) and `font.json`
+(per-glyph rects, bearings and advances) next to the font. Both are gitignored.
+`ui_assets.rs` copies the atlas into the UI atlas at `(2, 700)` and the HUD
+draws text with whole-pixel glyph scales so nearest filtering keeps the pixel
+font crisp. If the font files are missing, the HUD falls back to the built-in
+5x7 bitmap font.
+
+HUD icons are scraped from the OSRS sprite dump into `assets/osrs-ui/ui/`:
+
+| key | sprite | use |
+| --- | --- | --- |
+| `panel` | 1017 | nine-slice interface panel for every HUD window |
+| `icon_hp` | 119 | hitpoints heart |
+| `icon_mp` | 1099 | mana orb |
+| `icon_gold` | 1089 | coins |
+| `icon_xp` | 1196 | experience |
+| `icon_swords` | 1073 | kills |
+| `icon_skull` | 1096 | deaths |
+| `icon_q` | 127 | ability Q (wand) |
+| `icon_w` | 1098 | ability W (orb) |
+| `icon_e` | 129 | ability E (green orb) |
+| `icon_r` | 1060 | ability R (red orb) |
+
+The existing `tab`, `button`, `button_red` and `header` sprites plus the six
+item icons are loaded the same way. Missing files fall back to procedural
+shapes so a clean checkout still runs.

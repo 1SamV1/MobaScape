@@ -21,6 +21,11 @@ pub const OSRS_GOLD: [u8; 3] = [255, 196, 0];
 /// readable on a 720p window.
 const TEXT_SCALE: f32 = 1.32;
 
+/// Extra multiplier for the baked OSRS interface font. The atlas glyphs are
+/// authored at 16px, so this maps the authored HUD scale to whole pixels for
+/// crisp nearest-filtered text.
+const FONT_SCALE: f32 = 1.0 / TEXT_SCALE;
+
 /// Information about the unit under the cursor, shown as a Dota style
 /// tooltip next to the mouse.
 pub struct HoverInfo {
@@ -160,7 +165,16 @@ impl Hud {
         text: &str,
         color: [u8; 3],
     ) {
-        self.text_raw(width, height, x + scale, y + scale, scale, text, [0, 0, 0]);
+        let shadow = (scale * TEXT_SCALE * FONT_SCALE).round().max(1.0);
+        self.text_raw(
+            width,
+            height,
+            x + shadow,
+            y + shadow,
+            scale,
+            text,
+            [0, 0, 0],
+        );
         self.text_raw(width, height, x, y, scale, text, color);
     }
 
@@ -175,6 +189,40 @@ impl Hud {
         text: &str,
         color: [u8; 3],
     ) {
+        if self.atlas.font().is_some() {
+            // Real RuneScape interface glyphs: one textured quad per glyph.
+            // Collect first so the atlas borrow ends before drawing.
+            // Pixel glyphs must land on whole pixels: non-integer nearest
+            // scaling drops rows/columns and breaks letters.
+            let scale = (scale * TEXT_SCALE * FONT_SCALE).round().max(1.0);
+            let mut quads = Vec::with_capacity(text.len());
+            {
+                let atlas = self.atlas.font().expect("font atlas");
+                let mut cx = x;
+                for ch in text.chars() {
+                    let Some(glyph) = atlas.glyph(ch) else {
+                        cx += atlas.size * 0.5 * scale;
+                        continue;
+                    };
+                    if ch != ' ' && glyph.w > 0.0 && glyph.h > 0.0 {
+                        quads.push((
+                            cx + glyph.left * scale,
+                            y + glyph.top * scale,
+                            glyph.w * scale,
+                            glyph.h * scale,
+                            glyph.uv,
+                        ));
+                    }
+                    cx += glyph.advance * scale;
+                }
+            }
+            for (qx, qy, qw, qh, uv) in quads {
+                self.sprite(width, height, qx, qy, qw, qh, uv, color, 1.0);
+            }
+            return;
+        }
+
+        // Fallback: the built-in 5x7 pixel font.
         let scale = scale * TEXT_SCALE;
         let mut cx = x;
         for ch in text.chars() {
@@ -205,6 +253,16 @@ impl Hud {
         }
     }
 
+    /// Width of a string in screen pixels for the current font.
+    pub fn text_width(&self, text: &str, scale: f32) -> f32 {
+        if let Some(atlas) = self.atlas.font() {
+            let snapped = (scale * TEXT_SCALE * FONT_SCALE).round().max(1.0);
+            atlas.measure(text, snapped)
+        } else {
+            font::text_width(text, scale * TEXT_SCALE)
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn text_centered(
         &mut self,
@@ -216,7 +274,7 @@ impl Hud {
         text: &str,
         color: [u8; 3],
     ) {
-        let text_width = font::text_width(text, scale);
+        let text_width = self.text_width(text, scale);
         self.text(
             width,
             height,
@@ -441,28 +499,31 @@ impl Hud {
                 [90, 255, 140],
             );
         }
+        self.icon(width, height, 27.0, 26.0, 18.0, "icon_hp", [255, 255, 255]);
         self.text(
             width,
             height,
-            30.0,
+            49.0,
             27.0,
             1.25,
             &format!("HP {:.0}/{:.0}", player.health, player.max_health),
             OSRS_WHITE,
         );
+        self.icon(width, height, 27.0, 56.0, 18.0, "icon_mp", [255, 255, 255]);
         self.text(
             width,
             height,
-            30.0,
+            49.0,
             58.0,
             1.05,
             &format!("MP {:.0}/{:.0}", player.mana, player.max_mana),
-            [150, 210, 255],
+            [235, 242, 255],
         );
+        self.icon(width, height, 23.0, 87.0, 16.0, "icon_xp", [255, 255, 255]);
         self.text(
             width,
             height,
-            22.0,
+            42.0,
             88.0,
             0.95,
             &format!(
@@ -470,6 +531,15 @@ impl Hud {
                 player.level, player.xp, player.xp_next
             ),
             OSRS_YELLOW,
+        );
+        self.icon(
+            width,
+            height,
+            176.0,
+            86.0,
+            17.0,
+            "icon_gold",
+            [255, 255, 255],
         );
         self.text(
             width,
@@ -497,18 +567,9 @@ impl Hud {
         }
 
         // Dota style scoreboard strip across the top of the screen.
-        let strip_w = 720.0;
+        let strip_w = 760.0;
         let strip_x = (width - strip_w) * 0.5;
-        self.quad(
-            width,
-            height,
-            strip_x - 2.0,
-            0.0,
-            strip_w + 4.0,
-            32.0,
-            [74, 68, 48],
-        );
-        self.quad(width, height, strip_x, 2.0, strip_w, 28.0, [18, 18, 22]);
+        self.hud_panel(width, height, strip_x, 0.0, strip_w, 30.0);
         self.text(
             width,
             height,
@@ -548,7 +609,7 @@ impl Hud {
         self.text(
             width,
             height,
-            strip_x + 366.0,
+            strip_x + 372.0,
             9.0,
             1.1,
             &format!("VIS {}", player.visible_enemies),
@@ -562,6 +623,15 @@ impl Hud {
             1.05,
             &format!("K/D {}/{}", player.kills.0, player.deaths.0),
             OSRS_WHITE,
+        );
+        self.icon(
+            width,
+            height,
+            strip_x + 482.0,
+            7.0,
+            16.0,
+            "icon_swords",
+            [255, 255, 255],
         );
         self.text(
             width,
@@ -581,10 +651,28 @@ impl Hud {
             &format_clock(player.match_time),
             [245, 225, 120],
         );
+        self.icon(
+            width,
+            height,
+            strip_x + 642.0,
+            7.0,
+            16.0,
+            "icon_skull",
+            [255, 255, 255],
+        );
+        self.icon(
+            width,
+            height,
+            strip_x + 642.0,
+            7.0,
+            16.0,
+            "icon_skull",
+            [255, 255, 255],
+        );
         self.text(
             width,
             height,
-            strip_x + 632.0,
+            strip_x + 662.0,
             9.0,
             1.25,
             &format!("RED {}", player.kills.1),
@@ -664,16 +752,7 @@ impl Hud {
             let (mx, my, msize, _) = minimap_rect(width, height);
             let card_h = 58.0;
             let card_y = (my - card_h - 8.0).max(120.0);
-            self.quad(
-                width,
-                height,
-                mx - 1.0,
-                card_y - 1.0,
-                msize + 2.0,
-                card_h + 2.0,
-                [82, 76, 58],
-            );
-            self.quad(width, height, mx, card_y, msize, card_h, [20, 20, 24]);
+            self.hud_panel(width, height, mx, card_y, msize, card_h);
             let portrait = 42.0;
             self.quad(
                 width,
@@ -774,16 +853,7 @@ impl Hud {
             let box_h = 58.0;
             let bx = (mouse.0 as f32 + 20.0).min(width - box_w - 10.0).max(6.0);
             let by = (mouse.1 as f32 + 20.0).min(height - box_h - 10.0).max(6.0);
-            self.quad(
-                width,
-                height,
-                bx - 2.0,
-                by - 2.0,
-                box_w + 4.0,
-                box_h + 4.0,
-                [92, 82, 46],
-            );
-            self.quad(width, height, bx, by, box_w, box_h, [22, 20, 16]);
+            self.hud_panel(width, height, bx, by, box_w, box_h);
             self.text(width, height, bx + 8.0, by + 6.0, 1.35, &title, OSRS_YELLOW);
             self.text(
                 width,
@@ -865,14 +935,24 @@ impl Hud {
                     [16, 18, 24],
                 );
             } else {
-                self.quad(width, height, bx + 17.0, y0 + 17.0, 24.0, 24.0, *color);
+                self.quad(width, height, bx + 15.0, y0 + 15.0, 28.0, 28.0, *color);
             }
-            self.text_centered(
+            let icon_key = ["icon_q", "icon_w", "icon_e", "icon_r"][i];
+            self.icon(
                 width,
                 height,
-                bx + box_size * 0.5,
-                y0 + 18.0,
-                2.0,
+                bx + 14.0,
+                y0 + 14.0,
+                box_size - 28.0,
+                icon_key,
+                [255, 255, 255],
+            );
+            self.text(
+                width,
+                height,
+                bx + 4.0,
+                y0 + 3.0,
+                1.2,
                 ["Q", "W", "E", "R"][i],
                 [245, 245, 245],
             );
@@ -891,8 +971,7 @@ impl Hud {
 
         // Team panel, top-right.
         let tx = width - 238.0;
-        self.quad(width, height, tx - 1.0, 3.0, 222.0, 82.0, [82, 76, 58]);
-        self.quad(width, height, tx, 4.0, 220.0, 80.0, [20, 20, 24]);
+        self.hud_panel(width, height, tx, 4.0, 220.0, 80.0);
         self.text(width, height, tx + 8.0, 10.0, 1.0, "YOUR TEAM", OSRS_YELLOW);
         self.text(
             width,
@@ -939,16 +1018,7 @@ impl Hud {
         // Objectives panel, left.
         let ox = 22.0;
         let oy = 112.0;
-        self.quad(
-            width,
-            height,
-            ox - 1.0,
-            oy - 1.0,
-            232.0,
-            114.0,
-            [82, 76, 58],
-        );
-        self.quad(width, height, ox, oy, 230.0, 112.0, [18, 20, 24]);
+        self.hud_panel(width, height, ox, oy, 230.0, 112.0);
         self.text(
             width,
             height,
@@ -1026,16 +1096,7 @@ impl Hud {
         // Event log, bottom-left.
         let lx = 18.0;
         let ly = height - 170.0;
-        self.quad(
-            width,
-            height,
-            lx - 1.0,
-            ly - 1.0,
-            342.0,
-            122.0,
-            [82, 76, 58],
-        );
-        self.quad(width, height, lx, ly, 340.0, 120.0, [16, 18, 22]);
+        self.hud_panel(width, height, lx, ly, 340.0, 120.0);
         self.text(
             width,
             height,
@@ -1108,7 +1169,7 @@ impl Hud {
             height - 129.0,
             0.8,
             &format!("MP {:.0}/{:.0}", player.mana, player.max_mana),
-            [230, 235, 255],
+            [235, 242, 255],
         );
 
         // Delivery guard button, bottom-right next to the shop button.
@@ -1229,16 +1290,29 @@ impl Hud {
 
         // Modal dimmer and window frame.
         self.quad_alpha(width, height, 0.0, 0.0, width, height, [0, 0, 0], 0.42);
-        self.quad(
+        if let Some(uv) = self.atlas.ui_uv("panel") {
+            self.panel_sprite(width, height, wx, wy, ww, wh, uv, 14.0, [92, 84, 72]);
+        } else {
+            self.quad(
+                width,
+                height,
+                wx - 2.0,
+                wy - 2.0,
+                ww + 4.0,
+                wh + 4.0,
+                [96, 82, 50],
+            );
+        }
+        self.quad_alpha(
             width,
             height,
-            wx - 2.0,
-            wy - 2.0,
-            ww + 4.0,
-            wh + 4.0,
-            [96, 82, 50],
+            wx + 6.0,
+            wy + 6.0,
+            ww - 12.0,
+            wh - 12.0,
+            [18, 20, 26],
+            0.94,
         );
-        self.quad_alpha(width, height, wx, wy, ww, wh, [18, 20, 26], 0.97);
         if let Some(uv) = self.atlas.ui_uv("tab") {
             self.sprite(
                 width,
@@ -1292,7 +1366,7 @@ impl Hud {
             [245, 220, 160],
         );
         let gold_text = format!("{}G", player.gold);
-        let gold_width = font::text_width(&gold_text, 1.1);
+        let gold_width = self.text_width(&gold_text, 1.1);
         self.text(
             width,
             height,
@@ -1878,6 +1952,18 @@ impl Hud {
         );
     }
 
+    /// OSRS interface panel background. Uses the scraped cache panel sprite
+    /// as a nine-slice, with the old flat quads as a fallback.
+    pub fn hud_panel(&mut self, width: f32, height: f32, x: f32, y: f32, w: f32, h: f32) {
+        if let Some(uv) = self.atlas.ui_uv("panel") {
+            self.panel_sprite(width, height, x, y, w, h, uv, 12.0, [72, 68, 62]);
+        } else {
+            self.quad(width, height, x, y, w, h, [20, 20, 24]);
+            self.quad(width, height, x, y, w, 1.0, [82, 76, 58]);
+            self.quad(width, height, x, y + h - 1.0, w, 1.0, [82, 76, 58]);
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn sprite(
         &mut self,
@@ -1927,6 +2013,66 @@ impl Hud {
         });
         self.indices
             .extend_from_slice(&[base, base + 1, base + 2, base + 2, base + 1, base + 3]);
+    }
+
+    /// Draw a real OSRS interface panel sprite as a nine-slice so the
+    /// carved border stays crisp at any size.
+    #[allow(clippy::too_many_arguments)]
+    pub fn panel_sprite(
+        &mut self,
+        width: f32,
+        height: f32,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        uv: [f32; 4],
+        border: f32,
+        tint: [u8; 3],
+    ) {
+        let (u0, v0, u1, v1) = (uv[0], uv[1], uv[2], uv[3]);
+        let su = (u1 - u0) / 3.0;
+        let sv = (v1 - v0) / 3.0;
+        let bw = border.min(w * 0.45);
+        let bh = border.min(h * 0.45);
+        // 3x3 grid of quads; the middle stretches.
+        let xs = [0.0, bw, w - bw, w];
+        let ys = [0.0, bh, h - bh, h];
+        for row in 0..3 {
+            for col in 0..3 {
+                let qx = x + xs[col];
+                let qy = y + ys[row];
+                let qw = xs[col + 1] - xs[col];
+                let qh = ys[row + 1] - ys[row];
+                if qw <= 0.0 || qh <= 0.0 {
+                    continue;
+                }
+                let qu = [
+                    u0 + su * col as f32,
+                    v0 + sv * row as f32,
+                    u0 + su * (col + 1) as f32,
+                    v0 + sv * (row + 1) as f32,
+                ];
+                self.sprite(width, height, qx, qy, qw, qh, qu, tint, 1.0);
+            }
+        }
+    }
+
+    /// Draw a small OSRS icon at a screen position.
+    #[allow(clippy::too_many_arguments)]
+    pub fn icon(
+        &mut self,
+        width: f32,
+        height: f32,
+        x: f32,
+        y: f32,
+        size: f32,
+        key: &str,
+        tint: [u8; 3],
+    ) {
+        if let Some(uv) = self.atlas.ui_uv(key) {
+            self.sprite(width, height, x, y, size, size, uv, tint, 1.0);
+        }
     }
 
     #[allow(clippy::too_many_arguments)]

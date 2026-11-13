@@ -11,6 +11,35 @@ const ITEM_SIZE: u32 = 128;
 ///
 /// Assets are loaded from the gitignored `assets/osrs-ui` tree. Missing files
 /// are skipped; the HUD falls back to its procedural icons when a UV is absent.
+/// One glyph in the baked OSRS interface font atlas.
+pub struct FontGlyph {
+    pub uv: [f32; 4],
+    pub w: f32,
+    pub h: f32,
+    pub left: f32,
+    pub top: f32,
+    pub advance: f32,
+}
+
+/// The RuneScape interface font baked into the UI atlas.
+pub struct FontAtlas {
+    pub size: f32,
+    pub glyphs: HashMap<char, FontGlyph>,
+}
+
+impl FontAtlas {
+    pub fn glyph(&self, c: char) -> Option<&FontGlyph> {
+        self.glyphs.get(&c)
+    }
+
+    pub fn measure(&self, text: &str, scale: f32) -> f32 {
+        text.chars()
+            .map(|c| self.glyph(c).map(|g| g.advance).unwrap_or(self.size * 0.5))
+            .sum::<f32>()
+            * scale
+    }
+}
+
 pub struct UiAtlas {
     pub width: u32,
     pub height: u32,
@@ -19,6 +48,7 @@ pub struct UiAtlas {
     item_uv: HashMap<String, [f32; 4]>,
     ui_uv: HashMap<String, [f32; 4]>,
     minimap_uv: Option<[f32; 4]>,
+    font: Option<FontAtlas>,
 }
 
 impl UiAtlas {
@@ -31,6 +61,7 @@ impl UiAtlas {
             item_uv: HashMap::new(),
             ui_uv: HashMap::new(),
             minimap_uv: None,
+            font: None,
         };
         // A single opaque white texel at (0,0) lets every untextured HUD quad
         // use the same textured pipeline.
@@ -78,7 +109,23 @@ impl UiAtlas {
         cursor_x = 2;
         cursor_y += row_height + 2;
         row_height = 0;
-        for key in ["tab", "button", "button_red", "header"] {
+        for key in [
+            "tab",
+            "button",
+            "button_red",
+            "header",
+            "panel",
+            "icon_hp",
+            "icon_mp",
+            "icon_gold",
+            "icon_xp",
+            "icon_swords",
+            "icon_skull",
+            "icon_q",
+            "icon_w",
+            "icon_e",
+            "icon_r",
+        ] {
             let path = format!("assets/osrs-ui/ui/{key}.png");
             if let Some(image) = load_rgba(&path)? {
                 if cursor_x + image.width() + 2 > ATLAS_SIZE {
@@ -93,6 +140,16 @@ impl UiAtlas {
             }
         }
 
+        // The RuneScape interface font: a baked glyph atlas with metrics.
+        let font_png = Path::new("assets/osrs-ui/font/font.png");
+        let font_json = Path::new("assets/osrs-ui/font/font.json");
+        if font_png.exists() && font_json.exists() {
+            match atlas.add_font(font_png, font_json) {
+                Ok(()) => {}
+                Err(err) => tracing::warn!("font atlas: {err}"),
+            }
+        }
+
         tracing::info!(
             "UI atlas: {}x{}, {} item icons, {} UI sprites",
             atlas.width,
@@ -101,6 +158,55 @@ impl UiAtlas {
             atlas.ui_uv.len()
         );
         Ok(atlas)
+    }
+
+    /// Copy the baked interface font into the atlas and resolve glyph UVs.
+    fn add_font(&mut self, png: &Path, json: &Path) -> Result<()> {
+        let image = image::open(png)
+            .with_context(|| format!("loading font atlas {}", png.display()))?
+            .to_rgba8();
+        let data: serde_json::Value = serde_json::from_slice(&std::fs::read(json)?)?;
+        let ox = 2u32;
+        let oy = 700u32;
+        self.copy(&image, ox, oy);
+        let aw = self.width as f32;
+        let ah = self.height as f32;
+        let mut glyphs = HashMap::new();
+        if let Some(map) = data["glyphs"].as_object() {
+            for (ch, g) in map {
+                let Some(c) = ch.chars().next() else {
+                    continue;
+                };
+                let x = g["x"].as_f64().unwrap_or(0.0) as f32;
+                let y = g["y"].as_f64().unwrap_or(0.0) as f32;
+                let w = g["w"].as_f64().unwrap_or(0.0) as f32;
+                let h = g["h"].as_f64().unwrap_or(0.0) as f32;
+                glyphs.insert(
+                    c,
+                    FontGlyph {
+                        uv: [
+                            (ox as f32 + x) / aw,
+                            (oy as f32 + y) / ah,
+                            (ox as f32 + x + w) / aw,
+                            (oy as f32 + y + h) / ah,
+                        ],
+                        w,
+                        h,
+                        left: g["left"].as_f64().unwrap_or(0.0) as f32,
+                        top: g["top"].as_f64().unwrap_or(0.0) as f32,
+                        advance: g["advance"].as_f64().unwrap_or(w as f64) as f32,
+                    },
+                );
+            }
+        }
+        let size = data["size"].as_f64().unwrap_or(16.0) as f32;
+        tracing::info!("font atlas: {} glyphs at {}px", glyphs.len(), size);
+        self.font = Some(FontAtlas { size, glyphs });
+        Ok(())
+    }
+
+    pub fn font(&self) -> Option<&FontAtlas> {
+        self.font.as_ref()
     }
 
     /// Upload the baked terrain minimap into a reserved atlas slot.
