@@ -494,7 +494,7 @@ impl Hud {
         }
 
         // Dota style scoreboard strip across the top of the screen.
-        let strip_w = 700.0;
+        let strip_w = 720.0;
         let strip_x = (width - strip_w) * 0.5;
         self.quad(
             width,
@@ -577,6 +577,15 @@ impl Hud {
             1.25,
             &format_clock(player.match_time),
             [245, 225, 120],
+        );
+        self.text(
+            width,
+            height,
+            strip_x + 632.0,
+            9.0,
+            1.25,
+            &format!("RED {}", player.kills.1),
+            [255, 120, 110],
         );
 
         // Nexus health bars, top-centre.
