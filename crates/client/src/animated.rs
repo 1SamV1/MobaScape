@@ -521,11 +521,6 @@ impl AnimatedScene {
         }
     }
 
-    pub fn in_fountain_range(&self) -> bool {
-        let player = &self.units[self.player_index];
-        player.health > 0.0 && player.pos.distance(self.player_spawn) <= 900.0
-    }
-
     pub fn sell_item(&mut self, item: &ItemConfig) -> Result<(), &'static str> {
         let pi = self.player_index;
         let player = &mut self.units[pi];

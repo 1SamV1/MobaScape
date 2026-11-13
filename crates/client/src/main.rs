@@ -1012,7 +1012,6 @@ impl App {
                 shop_open: self.shop.open,
                 shop_hover,
                 shop_selected: self.shop.selected,
-                shop_in_range: animated.in_fountain_range(),
                 champion_name: animated.champion_name().to_string(),
                 minions: animated.minion_count(),
                 visible_enemies: animated.visible_enemy_count(),

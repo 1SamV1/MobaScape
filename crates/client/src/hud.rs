@@ -58,7 +58,6 @@ pub struct PlayerHud {
     pub shop_open: bool,
     pub shop_hover: Option<usize>,
     pub shop_selected: Option<usize>,
-    pub shop_in_range: bool,
     pub champion_name: String,
     pub minions: usize,
     pub visible_enemies: usize,

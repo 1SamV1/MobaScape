@@ -1681,31 +1681,6 @@ fn build_npc_spawns(
     spawns
 }
 
-fn is_blocking_object(def: &ObjectDefinition) -> bool {
-    let name = def.name.to_lowercase();
-    if name.contains("plant")
-        || name.contains("flower")
-        || name.contains("grass")
-        || name.contains("fern")
-        || name.contains("vine")
-        || name.contains("reed")
-    {
-        return false;
-    }
-    if def.wall_or_door != 0 {
-        return true;
-    }
-    if def.size_x > 1 || def.size_y > 1 {
-        return true;
-    }
-    [
-        "tree", "rock", "wall", "fence", "ruin", "pillar", "statue", "crate", "barrel", "table",
-        "altar", "door", "gate", "bank", "chest", "stump",
-    ]
-    .iter()
-    .any(|needle| name.contains(needle))
-}
-
 fn is_scenery(def: &ObjectDefinition) -> bool {
     let name = def.name.to_lowercase();
     name.contains("tree")
