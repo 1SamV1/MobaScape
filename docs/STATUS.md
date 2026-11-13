@@ -1,6 +1,6 @@
 # Status
 
-Last updated: M5.16 slope-corrected ground textures, 2026-11-13.
+Last updated: M5.17 scattered critters aggro, 2026-11-13.
 
 ## Working
 
@@ -28,7 +28,8 @@ Last updated: M5.16 slope-corrected ground textures, 2026-11-13.
 - Jungle: eight neutral camps with proximity aggro, chase, leash reset and
   respawn; Might (+25% damage) or Swift (+20% speed) team buffs for 60 s.
   Camps are revealed by proximity (1500 units) regardless of brush or tree
-  line of sight, so they never ambush the player from a hidden tile. The two
+  line of sight, so they never ambush the player from a hidden tile. The eight
+  scattered critters are weak camps too (220 HP, 14 damage, 420 aggro). The two
   camps that accidentally used a table prop model now use creature models
   (General Graardor Jr. 27660 and Zilyana Jr. 27989).
 - Ground textures: slope-corrected planar UVs (divide by normal Y) keep

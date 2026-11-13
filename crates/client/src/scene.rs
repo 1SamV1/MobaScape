@@ -1684,24 +1684,14 @@ fn build_npc_spawns(
     }
 
     let mut spawns = Vec::new();
-    for (i, pos) in spots.iter().enumerate() {
-        if i % 4 == 3 {
-            spawns.push(NpcSpawn {
-                model_id: 10413,
-                idle_sequence: 1721,
-                walk_sequence: Some(2405),
-                pos: *pos,
-                scale: 1.6,
-            });
-        } else {
-            spawns.push(NpcSpawn {
-                model_id: 7744,
-                idle_sequence: 222,
-                walk_sequence: Some(219),
-                pos: *pos,
-                scale: 2.2,
-            });
-        }
+    for pos in &spots {
+        spawns.push(NpcSpawn {
+            model_id: 10413,
+            idle_sequence: 1721,
+            walk_sequence: Some(2405),
+            pos: *pos,
+            scale: 1.6,
+        });
     }
     spawns
 }

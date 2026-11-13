@@ -245,25 +245,35 @@ impl AnimatedScene {
     pub fn new(cache: &Cache, scene: &SceneData, champion: &ChampionConfig) -> Result<Self> {
         let mut units = Vec::new();
 
+        // The scattered critters are weak neutral jungle camps: they aggro
+        // when a hero walks into their patch instead of standing there as
+        // decoration.
         for spawn in &scene.npc_spawns {
-            units.push(load_unit(
+            let mut unit = load_unit(
                 cache,
                 spawn.model_id,
                 Some(spawn.idle_sequence),
                 spawn.walk_sequence,
                 spawn.pos,
                 spawn.scale,
-                UnitKind::Ambient,
+                UnitKind::Camp,
                 2,
-                100.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                90.0,
+                220.0,
                 150.0,
+                14.0,
+                1.5,
+                260.0,
+                160.0,
+                260.0,
                 Vec::new(),
-            )?);
+            )?;
+            unit.respawn_time = 60.0;
+            unit.home = spawn.pos;
+            unit.aggro_range = 420.0;
+            unit.leash_range = 760.0;
+            unit.camp_buff = None;
+            tracing::info!("critter camp at {:?}", spawn.pos);
+            units.push(unit);
         }
 
         let player_index = units.len();

@@ -509,3 +509,14 @@ Y (clamped to 0.30) which keeps texel density constant on slopes, and blends a
 rotated stone sample over steep ground (normal Y below 0.86) so cliffs read as
 rock instead of stretched grass or path. The lane road UV gets the same slope
 correction.
+
+
+## ADR-039 — Scattered critters are weak camps
+
+**Status:** accepted for M5.15.
+
+The eight decorative critters scattered around the jungle were ambient units:
+they could be walked through and never reacted. They are now weak neutral
+camps (220 HP, 14 damage, 420 aggro, 760 leash, no buff) using model 10413, so
+approaching one pulls it exactly like the fixed jungle camps. They also show
+up on the minimap through the camp proximity reveal.
