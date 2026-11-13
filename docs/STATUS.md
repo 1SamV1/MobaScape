@@ -1,6 +1,6 @@
 # Status
 
-Last updated: M5.8 deterministic procedural scattering, 2026-11-13.
+Last updated: M5.9 shader-radius fog of war, 2026-11-13.
 
 ## Working
 
@@ -31,6 +31,10 @@ Last updated: M5.8 deterministic procedural scattering, 2026-11-13.
   (bright pass, separable Gaussian, ACES tonemap), cache-native ground
   texture array with world-space UVs, two-sided lighting with a camera fill,
   and a fog of war that shadows unexplored ground instead of tinting it.
+- Fog of war: a shader-side horizontal distance circle around the hero
+  (1500 units, 0.80R..1.30R soft edge, 42% brightness outside). No fog mesh,
+  so it never fights with terrain z levels and the boundary is a consistent
+  lateral radius at every height.
 - HUD: OSRS palette text at 1.32x, Dota scoreboard strip (kills, deaths,
   clock), cursor tooltip for units, minimap viewport box, biome label.
 - Minimap: a baked 256x256 terrain map (biomes, river and lanes) uploaded to

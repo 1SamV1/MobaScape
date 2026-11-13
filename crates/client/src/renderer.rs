@@ -43,6 +43,8 @@ struct SceneGlobals {
     light_view_proj: [[f32; 4]; 4],
     shadow_params: [f32; 4],
     tuning: [f32; 4],
+    /// xyz = hero position, w = vision radius in world units.
+    vision: [f32; 4],
     lights: [GpuLight; 16],
     light_count: [u32; 4],
 }
@@ -78,6 +80,7 @@ impl SceneGlobals {
             light_view_proj: Mat4::IDENTITY.to_cols_array_2d(),
             shadow_params: [1.0 / 1024.0, 0.0020, 0.0, 0.0],
             tuning: [1.0, 4.0, 0.0, 0.0],
+            vision: [0.0, 0.0, 0.0, 1500.0],
             lights: [GpuLight::default(); 16],
             light_count: [0; 4],
         }
@@ -189,7 +192,6 @@ pub struct Renderer {
     _bloom_v_uniform: wgpu::Buffer,
     sky_pipeline: wgpu::RenderPipeline,
     blob_pipeline: wgpu::RenderPipeline,
-    fog_pipeline: wgpu::RenderPipeline,
     shadow_pipeline: wgpu::RenderPipeline,
     bind_group: wgpu::BindGroup,
     shadow_bind_group: wgpu::BindGroup,
@@ -223,11 +225,6 @@ pub struct Renderer {
     hud_vertex_capacity: usize,
     hud_index_capacity: usize,
     hud_index_count: u32,
-    fog_vertex_buffer: wgpu::Buffer,
-    fog_index_buffer: wgpu::Buffer,
-    fog_vertex_capacity: usize,
-    fog_index_capacity: usize,
-    fog_index_count: u32,
     pub camera: Camera,
     pub size: (u32, u32),
 }
@@ -323,10 +320,6 @@ impl Renderer {
         let shadow_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("rift sun shadow shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shadow.wgsl").into()),
-        });
-        let fog_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("rift fog of war shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("fog.wgsl").into()),
         });
 
         let terrain_textures = TerrainTextures::load()?;
@@ -629,63 +622,6 @@ impl Renderer {
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth32Float,
                 depth_write_enabled: Some(true),
-                depth_compare: Some(wgpu::CompareFunction::Less),
-                stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
-            }),
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
-        });
-
-        let fog_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("fog of war pipeline"),
-            layout: Some(&scene_pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &fog_shader,
-                entry_point: Some("vs"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<SceneVertex>() as wgpu::BufferAddress,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &SCENE_ATTRS,
-                })],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &fog_shader,
-                entry_point: Some("fs"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: scene_format,
-                    // Fog of war darkens the world without tinting it, the way
-                    // Dota shades the areas a hero has not lit up yet.
-                    blend: Some(wgpu::BlendState {
-                        color: wgpu::BlendComponent {
-                            src_factor: wgpu::BlendFactor::Zero,
-                            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
-                            operation: wgpu::BlendOperation::Add,
-                        },
-                        alpha: wgpu::BlendComponent {
-                            src_factor: wgpu::BlendFactor::Zero,
-                            dst_factor: wgpu::BlendFactor::One,
-                            operation: wgpu::BlendOperation::Add,
-                        },
-                    }),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: None,
-                polygon_mode: wgpu::PolygonMode::Fill,
-                unclipped_depth: false,
-                conservative: false,
-            },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: Some(false),
                 depth_compare: Some(wgpu::CompareFunction::Less),
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
@@ -1143,21 +1079,6 @@ impl Renderer {
             wgpu::BufferUsages::INDEX,
         );
 
-        let fog_vertex_capacity = 1024;
-        let fog_index_capacity = 1536;
-        let fog_vertex_buffer = create_dynamic_buffer(
-            &device,
-            "fog vertices",
-            fog_vertex_capacity * std::mem::size_of::<SceneVertex>(),
-            wgpu::BufferUsages::VERTEX,
-        );
-        let fog_index_buffer = create_dynamic_buffer(
-            &device,
-            "fog indices",
-            fog_index_capacity * std::mem::size_of::<u32>(),
-            wgpu::BufferUsages::INDEX,
-        );
-
         let mut renderer = Self {
             surface,
             device,
@@ -1193,7 +1114,6 @@ impl Renderer {
             _bloom_v_uniform: bloom_v_uniform,
             sky_pipeline,
             blob_pipeline,
-            fog_pipeline,
             shadow_pipeline,
             bind_group,
             shadow_bind_group,
@@ -1227,11 +1147,6 @@ impl Renderer {
             hud_vertex_capacity,
             hud_index_capacity,
             hud_index_count: 0,
-            fog_vertex_buffer,
-            fog_index_buffer,
-            fog_vertex_capacity,
-            fog_index_capacity,
-            fog_index_count: 0,
             camera: initial_camera,
             size: (width, height),
         };
@@ -1353,6 +1268,12 @@ impl Renderer {
             };
         }
         self.scene_globals.light_count = [count as u32, 0, 0, 0];
+        self.upload_globals();
+    }
+
+    /// Set the hero-centric vision circle used for the fog of war.
+    pub fn set_vision(&mut self, center: Vec3, radius: f32) {
+        self.scene_globals.vision = [center.x, center.y, center.z, radius.max(1.0)];
         self.upload_globals();
     }
 
@@ -1484,38 +1405,6 @@ impl Renderer {
             return None;
         }
         Some((origin, dir))
-    }
-
-    pub fn set_fog_mesh(&mut self, vertices: &[SceneVertex], indices: &[u32]) {
-        if vertices.len() > self.fog_vertex_capacity {
-            let capacity = vertices.len().next_power_of_two();
-            self.fog_vertex_buffer = create_dynamic_buffer(
-                &self.device,
-                "fog vertices",
-                capacity * std::mem::size_of::<SceneVertex>(),
-                wgpu::BufferUsages::VERTEX,
-            );
-            self.fog_vertex_capacity = capacity;
-        }
-        if indices.len() > self.fog_index_capacity {
-            let capacity = indices.len().next_power_of_two();
-            self.fog_index_buffer = create_dynamic_buffer(
-                &self.device,
-                "fog indices",
-                capacity * std::mem::size_of::<u32>(),
-                wgpu::BufferUsages::INDEX,
-            );
-            self.fog_index_capacity = capacity;
-        }
-        if !vertices.is_empty() {
-            self.queue
-                .write_buffer(&self.fog_vertex_buffer, 0, bytemuck::cast_slice(vertices));
-        }
-        if !indices.is_empty() {
-            self.queue
-                .write_buffer(&self.fog_index_buffer, 0, bytemuck::cast_slice(indices));
-        }
-        self.fog_index_count = indices.len() as u32;
     }
 
     pub fn set_hud_mesh(&mut self, vertices: &[UiVertex], indices: &[u32]) {
@@ -1688,15 +1577,6 @@ impl Renderer {
                 pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
                 pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
                 pass.draw_indexed(0..mesh.index_count, 0, 0..1);
-            }
-            if self.fog_index_count > 0 {
-                pass.set_pipeline(&self.fog_pipeline);
-                pass.set_bind_group(0, &self.bind_group, &[]);
-                pass.set_vertex_buffer(0, self.fog_vertex_buffer.slice(..));
-                pass.set_index_buffer(self.fog_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-                pass.draw_indexed(0..self.fog_index_count, 0, 0..1);
-                pass.set_pipeline(&self.scene_pipeline);
-                pass.set_bind_group(0, &self.bind_group, &[]);
             }
             if self.dynamic_index_count > 0 {
                 pass.set_vertex_buffer(0, self.dynamic_vertex_buffer.slice(..));

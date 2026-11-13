@@ -32,7 +32,7 @@ use crate::items::{
     shop_category_at, shop_close_at, shop_sell_at, shop_window_rect,
 };
 use crate::renderer::{Camera, Renderer};
-use crate::scene::{CampBuff, HeightGrid, SceneData, SceneVertex, WorldCollision};
+use crate::scene::{CampBuff, HeightGrid, SceneData, WorldCollision};
 
 #[derive(Parser, Debug)]
 #[command(name = "rift-client", about = "Rift native client (M1 vertical slice)")]
@@ -212,7 +212,6 @@ fn main() -> Result<()> {
         debug_view: parse_debug_view(&cli.debug_view),
         shadow_mode: cli.shadows.clone(),
         app_time: 0.0,
-        fog_timer: 0.0,
         lane_log_timer: 0.0,
         last_frame: Instant::now(),
         title_timer: 0.0,
@@ -277,7 +276,6 @@ struct App {
     debug_view: u32,
     shadow_mode: String,
     app_time: f32,
-    fog_timer: f32,
     lane_log_timer: f32,
     last_frame: Instant,
     title_timer: f32,
@@ -888,12 +886,10 @@ impl App {
             renderer.set_caster_mesh(&animated.caster_vertices, &animated.caster_indices);
             renderer.set_lights(&animated.lights());
             renderer.set_time(self.app_time);
-            self.fog_timer += dt;
-            if self.fog_timer >= 0.15 || animated.visibility_dirty {
-                self.fog_timer = 0.0;
-                rebuild_fog(renderer, animated, height, collision);
-                animated.visibility_dirty = false;
-            }
+            // Fog of war is a shader-side circle around the hero, so it has
+            // no geometry to fight with the terrain's z levels.
+            renderer.set_vision(animated.player_pos(), 1500.0);
+            animated.visibility_dirty = false;
 
             let nexus0 = animated.nexus_health(0).unwrap_or((0.0, 1.0));
             let nexus1 = animated.nexus_health(1).unwrap_or((0.0, 1.0));
@@ -1427,76 +1423,6 @@ impl App {
             renderer.update_camera();
         }
     }
-}
-
-fn rebuild_fog(
-    renderer: &mut Renderer,
-    animated: &AnimatedScene,
-    height: &HeightGrid,
-    collision: &WorldCollision,
-) {
-    let (ox, oy) = collision.origin_tile();
-    let width = collision.width();
-    let height_tiles = collision.height();
-    let stride = (width + 1) as usize;
-    let mut smooth = vec![0.0f32; stride * (height_tiles + 1) as usize];
-    let color = [0u8, 0, 0];
-    let max_alpha = 0.62;
-
-    // Smoothed visibility at grid corners. A single continuous mesh shares
-    // these corners, so the fog has no per-tile height/alpha seams.
-    for gy in 0..=height_tiles {
-        for gx in 0..=width {
-            let mut sum = 0.0;
-            let mut count = 0.0;
-            for dy in -1..=1 {
-                for dx in -1..=1 {
-                    let tx = gx + dx;
-                    let ty = gy + dy;
-                    if tx >= 0 && ty >= 0 && tx < width && ty < height_tiles {
-                        sum += if animated.visibility.is_visible(tx, ty) {
-                            1.0
-                        } else {
-                            0.0
-                        };
-                        count += 1.0;
-                    }
-                }
-            }
-            smooth[gy as usize * stride + gx as usize] =
-                if count > 0.0 { sum / count } else { 0.0 };
-        }
-    }
-
-    let mut vertices = Vec::with_capacity(stride * (height_tiles + 1) as usize);
-    let mut indices = Vec::new();
-    for gy in 0..=height_tiles {
-        for gx in 0..=width {
-            let v = smooth[gy as usize * stride + gx as usize];
-            let alpha = (1.0 - v) * max_alpha;
-            let x = (ox + gx) as f32 * 128.0;
-            let z = (oy + gy) as f32 * 128.0;
-            let y = height.height_at(x, z) + 60.0;
-            vertices.push(SceneVertex::unlit_alpha(Vec3::new(x, y, z), color, alpha));
-        }
-    }
-    for gy in 0..height_tiles {
-        for gx in 0..width {
-            let a = (gy as usize * stride + gx as usize) as u32;
-            let b = a + 1;
-            let c = a + stride as u32;
-            let d = c + 1;
-            let v00 = smooth[gy as usize * stride + gx as usize];
-            let v10 = smooth[gy as usize * stride + gx as usize + 1];
-            let v01 = smooth[(gy as usize + 1) * stride + gx as usize];
-            let v11 = smooth[(gy as usize + 1) * stride + gx as usize + 1];
-            if (1.0 - v00).max(1.0 - v10).max(1.0 - v01).max(1.0 - v11) < 0.01 {
-                continue;
-            }
-            indices.extend_from_slice(&[a, c, b, b, c, d]);
-        }
-    }
-    renderer.set_fog_mesh(&vertices, &indices);
 }
 
 fn log_event(events: &mut Vec<String>, message: String) {

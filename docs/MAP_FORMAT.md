@@ -156,3 +156,11 @@ object footprints. Bridge/plane data is kept separate from display meshes.
 - Asset library: searchable cached locs/npcs/models with thumbnails.
 - Procedural generator: seeded FBM height, river, biome splat, scatter rules.
 - Export writes `map.json` + bakes; hot reload lets the client see changes live.
+
+
+## Fog of war
+
+Fog is not authored in the map. The renderer receives the hero position and a
+1500 world unit vision radius every frame and darkens the scene by horizontal
+distance in `scene.wgsl`. The visibility grid (used for unit/projectile
+culling and the minimap) is still built from team line of sight.

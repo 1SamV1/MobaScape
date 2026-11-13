@@ -409,3 +409,22 @@ are all drawn from the RNG, with occasional gaps that read as clearings. The
 dire side of the river gets dead and dark species, the radiant side keeps the
 green canopy. Ruins use the same walk with wider spacing. Pocket scenery is
 excluded from the lane corridor so town props never block or clutter a lane.
+
+
+## ADR-033 — Fog of war as a shader radius, not a mesh
+
+**Status:** accepted for M5.8.
+
+The old fog of war was a terrain-following mesh drawn 60 units above the
+ground with multiply blending. It fought with the terrain's z levels on slopes
+and its boundary followed the tile visibility grid, which read as a bright
+halo around the hero with hard, tile-shaped edges.
+
+The fog is now a fragment shader term. `SceneGlobals.vision` carries the hero
+position and a vision radius (1500 world units); the scene shader computes the
+horizontal distance from the hero and blends the lit colour between
+`lit * 0.42` outside and `lit` inside with a smooth 0.80R..1.30R falloff. This
+gives a consistent lateral circle at every z level, cannot z-fight with
+anything, and has no geometry cost. The gameplay visibility grid is unchanged:
+it still decides which enemy units and projectiles are drawn and what the
+minimap reveals.

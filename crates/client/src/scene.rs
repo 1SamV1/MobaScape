@@ -54,12 +54,6 @@ impl SceneVertex {
         vertex
     }
 
-    pub fn unlit_alpha(position: Vec3, color: [u8; 3], alpha: f32) -> Self {
-        let mut vertex = Self::unlit(position, color);
-        vertex.color[3] = alpha.clamp(0.0, 1.0);
-        vertex
-    }
-
     pub fn blob(position: Vec3, alpha: f32, uv: [f32; 2]) -> Self {
         Self {
             position: position.to_array(),

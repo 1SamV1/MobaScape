@@ -19,6 +19,7 @@ struct SceneGlobals {
     light_view_proj: mat4x4<f32>,
     shadow_params: vec4<f32>,
     tuning: vec4<f32>,
+    vision: vec4<f32>,
     lights: array<Light, 16>,
     light_count: vec4<u32>,
 };
@@ -242,6 +243,12 @@ fn fs(input: VsOut) -> @location(0) vec4<f32> {
     }
 
     var lit = lighting(input);
+    // Fog of war: a consistent lateral circle around the hero. This is a
+    // shader term rather than a mesh, so it never fights with terrain z
+    // levels and the boundary is a smooth radius instead of a tile edge.
+    let los_distance = length(input.world.xz - scene.vision.xz);
+    let los = 1.0 - smoothstep(scene.vision.w * 0.80, scene.vision.w * 1.30, los_distance);
+    lit = mix(lit * 0.42, lit, los);
     let fog = fog_factor(input);
     let sun_amount = max(
         dot(normalize(input.world - scene.camera_pos.xyz), normalize(scene.sun_dir.xyz)),
