@@ -92,13 +92,18 @@ Done:
   zones, and a dark fog mesh over unseen tiles.
 - Three data-driven champions: Monkey, JalRek-Jad, Kree'arra Jr.; distinct
   models, stats, and ability numbers; Kree has ranged auto-attacks.
-- HUD nexus health bars, wave timer, buff bar; title shows full match state.
-- `--timescale`, `--demo-camp`, `--demo-kit`, and `--champion` for verification.
+- Six data-driven items, six inventory slots, fountain-range shop, gold
+  spending, and stat/ability-power application (`B`, `1`–`6`).
+- HUD nexus health bars, wave timer, buff bar, inventory slots, shop rows;
+  title shows full match state.
+- `--timescale`, `--demo-camp`, `--demo-kit`, `--demo-shop`, and `--champion`
+  for verification.
 
 Remaining:
 
 - Server-authoritative fog, minimap click-to-pan, and brush visuals.
-- Item shop, item stats/passives, and five champions with distinct kits.
+- Item selling/combining/passives and five champions with distinct kits.
+- HUD text/font atlas so shop names, gold, and stats are on-screen.
 - Deterministic 10-bot match at 20× speed with a state hash.
 - Data hot reload for champions/abilities/items/waves.
 - Balance pass v0.

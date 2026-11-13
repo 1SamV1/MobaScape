@@ -1,4 +1,5 @@
 use crate::animated::{AnimatedScene, UnitKind};
+use crate::items::shop_row_rect;
 use crate::scene::Vertex;
 
 pub struct PlayerHud {
@@ -12,6 +13,15 @@ pub struct PlayerHud {
     pub shield: f32,
     pub shield_timer: f32,
     pub buff: Option<(f32, f32, [u8; 3])>,
+    pub gold: u32,
+    pub items: [Option<[u8; 3]>; 6],
+    pub shop_open: bool,
+    pub shop_hover: Option<usize>,
+    pub shop_affordable: [bool; 6],
+    pub shop_costs: [u32; 6],
+    pub shop_colors: [[u8; 3]; 6],
+    pub shop_owned: [bool; 6],
+    pub shop_in_range: bool,
 }
 
 pub struct Hud {
@@ -307,6 +317,148 @@ impl Hud {
             16.0,
             [235, 235, 235],
         );
+    }
+
+    /// Draw the six inventory slots and, when open, the fountain shop panel.
+    /// Geometry only: the window title carries item names and gold.
+    pub fn build_shop(&mut self, width: f32, height: f32, player: &PlayerHud) {
+        // Inventory slots, bottom-left.
+        let slot = 30.0;
+        let gap = 6.0;
+        let ix = 22.0;
+        let iy = height - 96.0;
+        for i in 0..6 {
+            let x = ix + i as f32 * (slot + gap);
+            self.quad(
+                width,
+                height,
+                x - 1.0,
+                iy - 1.0,
+                slot + 2.0,
+                slot + 2.0,
+                [70, 75, 85],
+            );
+            self.quad(width, height, x, iy, slot, slot, [20, 22, 26]);
+            if let Some(color) = player.items[i] {
+                self.quad(
+                    width,
+                    height,
+                    x + 5.0,
+                    iy + 5.0,
+                    slot - 10.0,
+                    slot - 10.0,
+                    color,
+                );
+            } else {
+                self.quad(
+                    width,
+                    height,
+                    x + slot * 0.5 - 2.0,
+                    iy + slot * 0.5 - 2.0,
+                    4.0,
+                    4.0,
+                    [48, 52, 60],
+                );
+            }
+        }
+
+        if !player.shop_open {
+            return;
+        }
+
+        // Shop panel backdrop and header gold bar.
+        let panel_x = 16.0;
+        let panel_y = height - 368.0;
+        self.quad(width, height, panel_x, panel_y, 262.0, 272.0, [70, 75, 85]);
+        self.quad(
+            width,
+            height,
+            panel_x + 2.0,
+            panel_y + 2.0,
+            258.0,
+            268.0,
+            [14, 16, 20],
+        );
+        self.quad(
+            width,
+            height,
+            panel_x + 8.0,
+            panel_y + 8.0,
+            246.0,
+            20.0,
+            [10, 12, 16],
+        );
+        let gold_fill = (player.gold as f32 / 2000.0).clamp(0.0, 1.0);
+        self.quad(
+            width,
+            height,
+            panel_x + 10.0,
+            panel_y + 10.0,
+            242.0 * gold_fill,
+            16.0,
+            if player.shop_in_range {
+                [225, 185, 55]
+            } else {
+                [130, 60, 60]
+            },
+        );
+
+        for row in 0..6 {
+            let (x, y, w, h) = shop_row_rect(width, height, row);
+            let hover = player.shop_hover == Some(row);
+            let affordable = player.shop_affordable[row] && player.shop_in_range;
+            let border = if hover {
+                [120, 200, 255]
+            } else if affordable {
+                [88, 94, 108]
+            } else {
+                [54, 56, 64]
+            };
+            self.quad(width, height, x, y, w, h, border);
+            self.quad(
+                width,
+                height,
+                x + 1.0,
+                y + 1.0,
+                w - 2.0,
+                h - 2.0,
+                if hover { [34, 38, 46] } else { [22, 24, 30] },
+            );
+            let swatch = if affordable {
+                player.shop_colors[row]
+            } else {
+                [56, 58, 66]
+            };
+            // The swatch is the item colour when affordable; owned items are
+            // marked with a green corner so duplicates remain readable.
+            self.quad(width, height, x + 8.0, y + 6.0, 24.0, 24.0, swatch);
+            let cost_frac = (player.shop_costs[row] as f32 / 1000.0).clamp(0.0, 1.0);
+            self.quad(width, height, x + 40.0, y + 27.0, 190.0, 4.0, [10, 12, 16]);
+            self.quad(
+                width,
+                height,
+                x + 40.0,
+                y + 27.0,
+                190.0 * cost_frac,
+                4.0,
+                if affordable {
+                    [225, 185, 55]
+                } else {
+                    [110, 55, 55]
+                },
+            );
+            if player.shop_owned[row] {
+                self.quad(
+                    width,
+                    height,
+                    x + w - 16.0,
+                    y + 8.0,
+                    8.0,
+                    8.0,
+                    [80, 255, 120],
+                );
+            }
+        }
     }
 
     #[allow(clippy::too_many_arguments)]

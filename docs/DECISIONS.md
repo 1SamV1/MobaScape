@@ -180,3 +180,16 @@ client loads one champion at launch with `--champion monkey|jad|kree`. The first
 roster uses OSRS boss/mini-boss models (Monkey, JalRek-Jad, Kree'arra Jr.) and
 shares the Q/W/E/R shape; a champion-select UI, passives, and more distinct kits
 come later.
+
+## ADR-018 — Six-slot fountain shop with flat-stat items
+
+**Status:** accepted for the prototype.
+
+Items live in `data/items/items.json` with an id, name, HUD colour, gold cost,
+and flat damage/health/mana/speed/ability values. The player has six inventory
+slots. Buying is allowed only within 900 world units of the spawn fountain, so
+the shop is a base interaction rather than a global menu. `B` toggles the panel;
+`1`–`6` and row clicks buy; clicking outside or `Esc` closes. Ability power is a
+percentage that scales Q/R damage and E heal/shield. The client applies the
+transaction locally in this prototype; the server must own gold, range,
+inventory, and stats before multiplayer.

@@ -3,6 +3,7 @@ use glam::{Mat3, Vec3};
 use rift_cache::{AnimationClip, Cache, Model, model::hsl_to_rgb};
 
 use crate::champion::ChampionConfig;
+use crate::items::ItemConfig;
 use crate::scene::{
     CampBuff, HeightGrid, SceneData, StructureKind, Vertex, WorldCollision, model_vertex_animated,
 };
@@ -80,6 +81,7 @@ pub struct AnimatedUnit {
     pub e_heal: f32,
     pub e_shield: f32,
     pub w_distance: f32,
+    pub ability_power: f32,
 }
 
 #[derive(Clone, Copy)]
@@ -95,6 +97,9 @@ pub struct PlayerStats {
     pub cooldowns: [f32; 4],
     pub shield: f32,
     pub shield_timer: f32,
+    pub attack_damage: f32,
+    pub speed: f32,
+    pub ability_power: f32,
 }
 
 pub struct Effect {
@@ -439,7 +444,49 @@ impl AnimatedScene {
             cooldowns: p.cooldowns,
             shield: p.shield,
             shield_timer: p.shield_timer,
+            attack_damage: p.attack_damage,
+            speed: p.speed,
+            ability_power: p.ability_power,
         }
+    }
+
+    pub fn in_fountain_range(&self) -> bool {
+        let player = &self.units[self.player_index];
+        player.health > 0.0 && player.pos.distance(self.player_spawn) <= 900.0
+    }
+
+    pub fn debug_grant_gold(&mut self, amount: u32) {
+        let player = &mut self.units[self.player_index];
+        player.gold = player.gold.saturating_add(amount);
+    }
+
+    /// Buy an item at the fountain. The client applies stats locally for the
+    /// prototype; the authoritative server will own this transaction later.
+    pub fn buy_item(&mut self, item: &ItemConfig) -> Result<(), &'static str> {
+        let pi = self.player_index;
+        let player = &mut self.units[pi];
+        if player.health <= 0.0 {
+            return Err("dead");
+        }
+        if player.pos.distance(self.player_spawn) > 900.0 {
+            return Err("out of fountain range");
+        }
+        if player.gold < item.cost {
+            return Err("not enough gold");
+        }
+        player.gold -= item.cost;
+        player.attack_damage += item.damage;
+        if item.health > 0.0 {
+            player.max_health += item.health;
+            player.health += item.health;
+        }
+        if item.mana > 0.0 {
+            player.max_mana += item.mana;
+            player.mana += item.mana;
+        }
+        player.speed += item.speed;
+        player.ability_power += item.ability;
+        Ok(())
     }
 
     pub fn nexus_health(&self, team: u8) -> Option<(f32, f32)> {
@@ -572,7 +619,7 @@ impl AnimatedScene {
         let team = player.team;
         player.mana -= 25.0;
         player.cooldowns[0] = Q_COOLDOWN;
-        let damage = player.q_damage;
+        let damage = player.q_damage * (1.0 + player.ability_power / 100.0);
         self.projectiles.push(Projectile {
             pos,
             dir,
@@ -636,8 +683,9 @@ impl AnimatedScene {
         }
         player.mana -= 40.0;
         player.cooldowns[2] = 12.0;
-        player.health = (player.health + player.e_heal).min(player.max_health);
-        player.shield = player.e_shield;
+        let ability_mult = 1.0 + player.ability_power / 100.0;
+        player.health = (player.health + player.e_heal * ability_mult).min(player.max_health);
+        player.shield = player.e_shield * ability_mult;
         player.shield_timer = 4.0;
         let pos = player.pos;
         self.effects.push(Effect {
@@ -666,7 +714,7 @@ impl AnimatedScene {
             color: [255, 110, 50],
         });
         let radius = 384.0;
-        let damage = player.r_damage;
+        let damage = player.r_damage * (1.0 + player.ability_power / 100.0);
         for i in 0..self.units.len() {
             let unit = &self.units[i];
             if unit.health <= 0.0 || unit.team == 0 || unit.team == 2 {
@@ -1384,6 +1432,7 @@ impl AnimatedScene {
                 e_heal: 0.0,
                 e_shield: 0.0,
                 w_distance: 0.0,
+                ability_power: 0.0,
             };
             self.units.push(unit);
         }
@@ -1620,6 +1669,7 @@ fn load_unit(
         e_heal: 0.0,
         e_shield: 0.0,
         w_distance: 0.0,
+        ability_power: 0.0,
     })
 }
 

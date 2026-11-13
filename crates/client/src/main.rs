@@ -1,6 +1,7 @@
 mod animated;
 mod champion;
 mod hud;
+mod items;
 mod renderer;
 mod scene;
 
@@ -22,6 +23,7 @@ use winit::window::{Window, WindowId};
 use crate::animated::AnimatedScene;
 use crate::champion::ChampionConfig;
 use crate::hud::{Hud, PlayerHud};
+use crate::items::{ItemShop, shop_row_at};
 use crate::renderer::{Camera, Renderer};
 use crate::scene::{CampBuff, HeightGrid, SceneData, Vertex, WorldCollision};
 
@@ -58,6 +60,9 @@ struct Cli {
     /// Demo: cast W/E/R and print the resulting player stats.
     #[arg(long)]
     demo_kit: bool,
+    /// Demo: grant gold, open the shop, and buy one of every item.
+    #[arg(long)]
+    demo_shop: bool,
     /// Simulation speed multiplier for verification.
     #[arg(long, default_value_t = 1.0)]
     timescale: f32,
@@ -82,6 +87,7 @@ fn main() -> Result<()> {
         cli.region_y
     );
     let champion = ChampionConfig::load(&cli.champion)?;
+    let shop = ItemShop::load()?;
     let scene = scene::build(&cache, cli.region_x, cli.region_y, cli.radius, &cli.map)?;
     let animated = AnimatedScene::new(&cache, &scene, &champion)?;
     let height = scene.height.clone();
@@ -124,6 +130,10 @@ fn main() -> Result<()> {
         demo_kit: cli.demo_kit,
         demo_kit_timer: 0.0,
         demo_kit_stage: 0,
+        shop,
+        demo_shop: cli.demo_shop,
+        demo_shop_timer: 0.0,
+        demo_shop_stage: 0,
         demo_camp_timer: 0.0,
         demo_camp_target: None,
         demo_camp_cast: false,
@@ -165,6 +175,10 @@ struct App {
     demo_kit: bool,
     demo_kit_timer: f32,
     demo_kit_stage: u8,
+    shop: ItemShop,
+    demo_shop: bool,
+    demo_shop_timer: f32,
+    demo_shop_stage: u8,
     demo_camp_timer: f32,
     demo_camp_target: Option<usize>,
     demo_camp_cast: bool,
@@ -247,7 +261,21 @@ impl ApplicationHandler for App {
                     || self.demo_camp
                     || self.demo_combat
                     || self.demo_kit
+                    || self.demo_shop
                 {
+                    return;
+                }
+                if state == ElementState::Pressed && self.shop.open {
+                    let (w, h) = self
+                        .renderer
+                        .as_ref()
+                        .map(|r| (r.size.0 as f32, r.size.1 as f32))
+                        .unwrap_or((1280.0, 720.0));
+                    if let Some(row) = shop_row_at(w, h, self.mouse_pos) {
+                        self.purchase_item(row);
+                        return;
+                    }
+                    self.shop.open = false;
                     return;
                 }
                 match state {
@@ -276,7 +304,11 @@ impl ApplicationHandler for App {
                 if event.state == ElementState::Pressed {
                     self.held.insert(code);
                     if code == KeyCode::Escape {
-                        event_loop.exit();
+                        if self.shop.open {
+                            self.shop.open = false;
+                        } else {
+                            event_loop.exit();
+                        }
                     } else if code == KeyCode::KeyF {
                         self.follow = !self.follow;
                         println!("follow={}", self.follow);
@@ -288,6 +320,13 @@ impl ApplicationHandler for App {
                         self.cast_e();
                     } else if code == KeyCode::KeyR {
                         self.cast_r();
+                    } else if code == KeyCode::KeyB {
+                        self.shop.open = !self.shop.open;
+                        println!("shop open={}", self.shop.open);
+                    } else if let Some(index) = digit_index(code) {
+                        if self.shop.open {
+                            self.purchase_item(index);
+                        }
                     } else if code == KeyCode::Space {
                         self.follow = true;
                         if let (Some(renderer), Some(animated)) =
@@ -350,6 +389,44 @@ impl App {
         let dt = (now - self.last_frame).as_secs_f32().min(0.1);
         self.last_frame = now;
 
+        if self.demo_shop {
+            self.demo_shop_timer += dt;
+            if self.demo_shop_stage == 0 && self.demo_shop_timer >= 0.5 {
+                if let Some(animated) = self.animated.as_mut() {
+                    animated.debug_grant_gold(4000);
+                }
+                self.shop.open = true;
+                tracing::info!("demo shop: granted 4000 gold, shop open");
+                self.demo_shop_stage = 1;
+            }
+            if (1..=6).contains(&self.demo_shop_stage) {
+                let due = self.demo_shop_stage as f32 * 0.5;
+                if self.demo_shop_timer >= due {
+                    let index = (self.demo_shop_stage - 1) as usize;
+                    self.purchase_item(index);
+                    self.demo_shop_stage += 1;
+                }
+            }
+            if self.demo_shop_stage == 7 && self.demo_shop_timer >= 4.5 {
+                if let Some(animated) = self.animated.as_ref() {
+                    let s = animated.player_stats();
+                    tracing::info!(
+                        "demo shop: items {}/6 dmg {:.0} hp {:.0}/{:.0} mp {:.0}/{:.0} speed {:.0} ap {:.0}% gold {}",
+                        self.shop.item_count(),
+                        s.attack_damage,
+                        s.health,
+                        s.max_health,
+                        s.mana,
+                        s.max_mana,
+                        s.speed,
+                        s.ability_power,
+                        s.gold
+                    );
+                }
+                self.demo_shop = false;
+            }
+        }
+
         let Some(renderer) = self.renderer.as_mut() else {
             return;
         };
@@ -358,6 +435,7 @@ impl App {
             && !self.demo_camp
             && !self.demo_combat
             && !self.demo_kit
+            && !self.demo_shop
             && self
                 .lmb_press
                 .map(|t| t.elapsed().as_secs_f32() >= 0.18)
@@ -539,6 +617,14 @@ impl App {
                 (remaining, duration, color)
             });
             let stats = animated.player_stats();
+            let (hud_w, hud_h) = (renderer.size.0 as f32, renderer.size.1 as f32);
+            let shop_hover = if self.shop.open {
+                shop_row_at(hud_w, hud_h, self.mouse_pos)
+            } else {
+                None
+            };
+            let shop_costs =
+                std::array::from_fn(|i| self.shop.items.get(i).map(|item| item.cost).unwrap_or(0));
             let player_hud = PlayerHud {
                 health: stats.health,
                 max_health: stats.max_health,
@@ -550,6 +636,21 @@ impl App {
                 shield: stats.shield,
                 shield_timer: stats.shield_timer,
                 buff,
+                gold: stats.gold,
+                items: self.shop.owned_colors(),
+                shop_open: self.shop.open,
+                shop_hover,
+                shop_affordable: self.shop.affordable(stats.gold),
+                shop_costs,
+                shop_colors: std::array::from_fn(|i| {
+                    self.shop
+                        .items
+                        .get(i)
+                        .map(|item| item.color)
+                        .unwrap_or([90, 90, 90])
+                }),
+                shop_owned: std::array::from_fn(|i| self.shop.is_owned(i)),
+                shop_in_range: animated.in_fountain_range(),
             };
             self.hud.build(
                 renderer.size.0 as f32,
@@ -562,6 +663,7 @@ impl App {
                 animated.match_over,
                 self.mouse_pos,
             );
+            self.hud.build_shop(hud_w, hud_h, &player_hud);
             self.hud
                 .build_minimap(renderer.size.0 as f32, renderer.size.1 as f32, animated);
             renderer.set_hud_mesh(&self.hud.vertices, &self.hud.indices);
@@ -600,9 +702,30 @@ impl App {
                     .team_buff(0)
                     .map(|(remaining, _, kind)| format!("{:?} {remaining:.0}s", kind))
                     .unwrap_or_else(|| "-".to_string());
+                let shop_note = if self.shop.open {
+                    match shop_row_at(
+                        renderer.size.0 as f32,
+                        renderer.size.1 as f32,
+                        self.mouse_pos,
+                    ) {
+                        Some(i) => format!(
+                            " | SHOP {} {}g{}",
+                            self.shop.items[i].name,
+                            self.shop.items[i].cost,
+                            if animated.in_fountain_range() {
+                                ""
+                            } else {
+                                " (return to fountain)"
+                            }
+                        ),
+                        None => " | SHOP open (B)".to_string(),
+                    }
+                } else {
+                    String::new()
+                };
                 if let Some(window) = self.window.as_ref() {
                     window.set_title(&format!(
-                        "Rift - Karamja | {} | tile {:.0},{:.0} | {:.0} fps | L{} {:.0}/{:.0} XP | HP {:.0}/{:.0} | MP {:.0}/{:.0} | gold {} | Q/W/E/R {:.1}/{:.1}/{:.1}/{:.1}s | nexus {:.0}/{:.0} ({}) - {:.0}/{:.0} ({}) | inhib {}/{} - {}/{} | wave {:.0}s | minions {} | buff {}{}",
+                        "Rift - Karamja | {} | tile {:.0},{:.0} | {:.0} fps | L{} {:.0}/{:.0} XP | HP {:.0}/{:.0} | MP {:.0}/{:.0} | gold {} | dmg {:.0} spd {:.0} | items {}/6{} | Q/W/E/R {:.1}/{:.1}/{:.1}/{:.1}s | nexus {:.0}/{:.0} ({}) - {:.0}/{:.0} ({}) | inhib {}/{} - {}/{} | wave {:.0}s | minions {} | buff {}{}",
                         animated.champion_name(),
                         pos.x / 128.0,
                         pos.z / 128.0,
@@ -615,6 +738,10 @@ impl App {
                         stats.mana,
                         stats.max_mana,
                         stats.gold,
+                        stats.attack_damage,
+                        stats.speed,
+                        self.shop.item_count(),
+                        shop_note,
                         stats.cooldowns[0],
                         stats.cooldowns[1],
                         stats.cooldowns[2],
@@ -641,6 +768,32 @@ impl App {
         }
 
         self.update_camera(dt);
+    }
+
+    fn purchase_item(&mut self, index: usize) {
+        let Some(item) = self.shop.items.get(index).cloned() else {
+            return;
+        };
+        if !self.shop.has_free_slot() {
+            tracing::info!("shop: inventory full");
+            return;
+        }
+        let Some(animated) = self.animated.as_mut() else {
+            return;
+        };
+        match animated.buy_item(&item) {
+            Ok(()) => {
+                self.shop.add_owned(index);
+                tracing::info!(
+                    "shop: bought {} ({}) for {}g ({} slots used)",
+                    item.name,
+                    item.id,
+                    item.cost,
+                    self.shop.item_count()
+                );
+            }
+            Err(err) => tracing::info!("shop: {} failed: {err}", item.name),
+        }
     }
 
     fn pick_and_move(&mut self) {
@@ -796,6 +949,18 @@ fn rebuild_fog(
         }
     }
     renderer.set_fog_mesh(&vertices, &indices);
+}
+
+fn digit_index(code: KeyCode) -> Option<usize> {
+    match code {
+        KeyCode::Digit1 => Some(0),
+        KeyCode::Digit2 => Some(1),
+        KeyCode::Digit3 => Some(2),
+        KeyCode::Digit4 => Some(3),
+        KeyCode::Digit5 => Some(4),
+        KeyCode::Digit6 => Some(5),
+        _ => None,
+    }
 }
 
 fn print_camera(renderer: &Renderer) {

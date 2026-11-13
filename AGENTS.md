@@ -156,21 +156,24 @@ Cache location: `.cache/osrs-235/cache` by default. Pass `--cache` and
 - Renderer changes: include a headless screenshot or a manual visual check note.
 - Performance: 1080p/60 target on the AMD 680M iGPU. Profile before optimizing.
 
-## 8. Known M3.99 limitations
+## 8. Known M4.0 limitations
 
 - Client renders a 3×3 region block (192×192 tiles); there is no terrain skirt
   or streaming beyond it, and the collision grid is approximate (water + object
   footprints, no cliffs/bridges).
 - Three lanes with two towers and one inhibitor per lane, plus one shielded
   nexus per team. Four jungle camps grant Might (+25% damage) or Swift (+20%
-  speed) for 60 s. No brush, fog, or items.
+  speed) for 60 s. Brush and client-side fog of war are implemented.
 - Nexus is damageable only after at least one enemy inhibitor falls.
-- The HUD is geometry only (bars, four ability boxes, crosshair, nexus/wave
-  bars, minimap, buff bar); all numbers live in the window title. No text
-  renderer yet.
+- The HUD is geometry only (bars, four ability boxes, six inventory slots,
+  shop rows, crosshair, nexus/wave bars, minimap, buff bar); all numbers live in
+  the window title. No text renderer yet.
 - Three data-driven champions (`monkey`, `jad`, `kree`) with distinct models,
   stats, and ability numbers. They share the Q/W/E/R shape; Kree has ranged
-  auto-attacks. No champion-select UI, passive, or item shop; gold is unspent.
+  auto-attacks. No champion-select UI or passive.
+- Six data-driven items in `data/items/items.json`, six inventory slots, gold
+  spending, and a fountain-range shop (`B`, then `1`–`6`). Purchases are
+  client-side in this prototype; no selling, combining, or passives yet.
 - Fog/brush is **client-side** in this prototype. A 192×192 visibility grid is
   computed from allied units/structures, enemy/neutral units outside vision are
   hidden, brush rectangles hide units unless the player is close, and a dark fog
