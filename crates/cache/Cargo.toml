@@ -1,0 +1,19 @@
+[package]
+name = "rift-cache"
+description = "Read-only Old School RuneScape cache reader and asset decoders"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+byteorder.workspace = true
+flate2.workspace = true
+bzip2.workspace = true
+lzma-rs.workspace = true
+memmap2.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true

@@ -1,0 +1,5 @@
+/target
+/.cache
+/assets
+*.log
+.DS_Store

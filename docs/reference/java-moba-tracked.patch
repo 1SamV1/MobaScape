@@ -1,0 +1,398 @@
+diff --git a/2006Scape Client/src/main/java/ClientArgs.java b/2006Scape Client/src/main/java/ClientArgs.java
+index 211fb7e..9e0618a 100644
+--- a/2006Scape Client/src/main/java/ClientArgs.java	
++++ b/2006Scape Client/src/main/java/ClientArgs.java	
+@@ -3,18 +3,22 @@ import java.util.List;
+ 
+ public final class ClientArgs {
+ 
++    /** MOBA dev: true when -u and -p were supplied so the client can log in unattended. */
++    public static boolean AUTO_LOGIN = false;
++
+     private ClientArgs() {}
+ 
+     public static void apply(String rawArgs, Game game) {
+         if (rawArgs == null || rawArgs.trim().isEmpty()) {
++            apply(new String[0], game);
+             return;
+         }
+         apply(splitArgs(rawArgs), game);
+     }
+ 
+     public static void apply(String[] args, Game game) {
+-        if (args == null || args.length == 0) {
+-            return;
++        if (args == null) {
++            args = new String[0];
+         }
+ 
+         for (int i = 0; i < args.length; i++) {
+@@ -22,6 +26,14 @@ public final class ClientArgs {
+             String arg = args[i].trim().toLowerCase();
+ 
+             switch (arg) {
++                case "-moba":
++                    MobaClient.ACTIVE = true;
++                    break;
++                case "-nomoba":
++                case "-no-moba":
++                case "-rs":
++                    MobaClient.ACTIVE = false;
++                    break;
+                 case "-dev":
+                 case "-local":
+                 case "-offline":
+@@ -111,6 +123,23 @@ public final class ClientArgs {
+                 }
+             }
+         }
++
++        // MOBA total conversion: full 765x503 world viewport and no RS chrome.
++        if (MobaClient.ACTIVE) {
++            ClientSettings.VIEWPORT_WIDTH = 765;
++            ClientSettings.VIEWPORT_HEIGHT = 503;
++            ClientSettings.SHOW_NAVBAR = false;
++            ClientSettings.FULL_512PX_VIEWPORT = true;
++            ClientSettings.SHOW_ZOOM_LEVEL_MESSAGES = false;
++        }
++
++        // MOBA dev: if both credentials were supplied, log in without UI interaction.
++        if (game != null && game.myUsername != null && game.myUsername.length() > 0
++                && game.myPassword != null && game.myPassword.length() > 0) {
++            AUTO_LOGIN = true;
++        }
++        // Keep the legacy host field in sync (some paths still read Game.server).
++        Game.server = ClientSettings.SERVER_IP;
+     }
+ 
+     public static String[] splitArgs(String input) {
+diff --git a/2006Scape Client/src/main/java/Game.java b/2006Scape Client/src/main/java/Game.java
+index b531e0b..914dff5 100644
+--- a/2006Scape Client/src/main/java/Game.java	
++++ b/2006Scape Client/src/main/java/Game.java	
+@@ -23,6 +23,7 @@ import java.util.Calendar;
+ import java.util.Date;
+ import java.util.zip.CRC32;
+ 
++
+ /**
+  * NOTICE: IF YOU CHANGE ANYTHING IN GAME.JAVA, PLEASE COPY-PASTE THE WHOLE CLASS OVER TO LOCALGAME.JAVA
+  * THIS IS TO ALLOW LOCAL PARABOT TO CONTINUE TO WORK
+@@ -7596,17 +7597,14 @@ public class Game extends RSApplet {
+ 	}
+ 
+ 	public URL getCodeBase() {
+-		// if (SignLink.mainapp != null) {
+-		// return SignLink.mainapp.getCodeBase();
+-		// }
++		// MOBA dev: always honour ClientSettings.SERVER_IP. The legacy `server`
++		// field is captured in the Game constructor before ClientArgs are applied,
++		// which made -s localhost silently connect to the live server.
+ 		try {
+-			// if (super.gameFrame != null) {
+-			return new URL("http://" + server + ":" + (8080 + portOff));
+-			// }
++			return new URL("http://" + ClientSettings.SERVER_IP + ":" + (8080 + portOff));
+ 		} catch (Exception _ex) {
+ 		}
+ 		return null;
+-		// return super.getCodeBase();
+ 	}
+ 
+ 	public void method95() {
+@@ -7966,7 +7964,31 @@ public class Game extends RSApplet {
+ 		}
+ 	}
+ 
++	/**
++	 * MOBA render path: full 765x503 world viewport, custom HUD, no RS chrome.
++	 */
++	private void drawMobaGameScreen() {
++		if (aRSImageProducer_1165 == null) {
++			// Force resetImageProducers2 past its "already initialised" guard.
++			aRSImageProducer_1166 = null;
++			resetImageProducers2();
++		}
++		if (aRSImageProducer_1165 == null) {
++			return;
++		}
++		welcomeScreenRaised = false;
++		aRSImageProducer_1165.initDrawingArea();
++		Texture.lineOffsets = chatBoxAreaOffsets;
++		method146();
++		MobaHud.draw(this);
++		aRSImageProducer_1165.drawGraphics(0, super.graphics, 0);
++	}
++
+ 	public void drawGameScreen() {
++		if (MobaClient.ACTIVE && loadingStage == 2) {
++			drawMobaGameScreen();
++			return;
++		}
+ 		if (ClientSettings.ANDROID) {
+ 			if (fullScreenInterfaceId != -1) {
+ 				resetAllImageProducers();
+@@ -10591,6 +10613,14 @@ public class Game extends RSApplet {
+ 	}
+ 
+ 	public void processLoginScreenInput() {
++		// MOBA dev: allow unattended multi-client launches with -u/-p.
++		if (ClientArgs.AUTO_LOGIN && !autoLoginAttempted && myUsername != null && myUsername.length() > 0) {
++			autoLoginAttempted = true;
++			loginMessage1 = "";
++			loginMessage2 = "Connecting to server...";
++			login(myUsername, myPassword, false);
++			return;
++		}
+ 		if (loginScreenState == 0) {
+ 			int i = super.myWidth / 2 - 80;
+ 			int l = super.myHeight / 2 + 20;
+@@ -11092,6 +11122,12 @@ public class Game extends RSApplet {
+ 					l2 = inStream.readUnsignedWord();
+ 					aBoolean1159 = true;
+ 				}
++				// MOBA: pin the scene to the arena so the free camera always has
++				// the full 104x104 Karamja map resident.
++				if (MobaClient.ACTIVE) {
++					l2 = MobaClient.SCENE_REGION_X;
++					i11 = MobaClient.SCENE_REGION_Y;
++				}
+ 				if (anInt1069 == l2 && anInt1070 == i11 && loadingStage == 2) {
+ 					pktType = -1;
+ 					return true;
+@@ -12079,7 +12115,10 @@ public class Game extends RSApplet {
+ 		method26(false);
+ 		method55();
+ 		method104();
+-		if (!aBoolean1160) {
++		if (MobaClient.ACTIVE) {
++			MobaCamera.tick(super.mouseX, super.mouseY, ClientSettings.VIEWPORT_WIDTH, ClientSettings.VIEWPORT_HEIGHT);
++			MobaCamera.apply(this);
++		} else if (!aBoolean1160) {
+ 			int i = anInt1184;
+ 			if (anInt984 / 256 > i) {
+ 				i = anInt984 / 256;
+@@ -12151,9 +12190,11 @@ public class Game extends RSApplet {
+ 			drawHeadIcon();
+ 		}
+ 		// Allow tabs to work
+-		method37(k2);
+-		// Allow stuff inside the tabs to work
+-		draw3dScreen();
++		if (!MobaClient.ACTIVE) {
++			method37(k2);
++			// Allow stuff inside the tabs to work
++			draw3dScreen();
++		}
+ 		if (showInfo) {
+ 			int debugX;
+ 			int debugY;
+@@ -12232,8 +12273,8 @@ public class Game extends RSApplet {
+ 			chatTextDrawingArea.textRightShadow(true, debugX + debugWidth - 4, RSColors.YELLOW, "" + (calculateTotalLevels() - customSettingShowExperiencePerHourStartLevels), debugY);
+ 		}
+ 
+-		// Draw main screen
+-		if (aRSImageProducer_1165 != null) {
++		// Draw main screen. In MOBA mode the caller owns the final blit at (0,0).
++		if (aRSImageProducer_1165 != null && !MobaClient.ACTIVE) {
+ 			aRSImageProducer_1165.drawGraphics(4, super.graphics, 4);
+ 		}
+ 
+@@ -12434,6 +12475,7 @@ public class Game extends RSApplet {
+ 	public volatile boolean aBoolean831;
+ 	public Socket aSocket832;
+ 	public int loginScreenState;
++	public boolean autoLoginAttempted;
+ 	public Stream aStream_834;
+ 	public NPC[] npcArray;
+ 	public int npcCount;
+@@ -12906,6 +12948,9 @@ public class Game extends RSApplet {
+ 
+ 	public void handleKeyPressed(int keyCode, char keyChar, boolean isControlDown, boolean isShiftDown)
+ 	{
++		if (MobaClient.ACTIVE && MobaCamera.keyDown(keyCode)) {
++			return;
++		}
+ 		super.handleKeyPressed(keyCode, keyChar, isControlDown, isShiftDown);
+ 		switch (keyCode)
+ 		{
+@@ -13190,6 +13235,10 @@ public class Game extends RSApplet {
+ 	}
+ 
+ 	public void handleMouseWheel(int notches, boolean isControlDown) {
++		if (MobaClient.ACTIVE) {
++			MobaCamera.zoomBy(notches);
++			return;
++		}
+ 		if (!ClientSettings.ANDROID && ClientSettings.CONTROL_KEY_ZOOMING && !isControlDown) {
+ 			return;
+ 		}
+diff --git a/2006Scape Client/src/main/java/Main.java b/2006Scape Client/src/main/java/Main.java
+index 52a3c7b..a00102a 100644
+--- a/2006Scape Client/src/main/java/Main.java	
++++ b/2006Scape Client/src/main/java/Main.java	
+@@ -15,6 +15,10 @@ public final class Main {
+ 		try {
+ 			Game game = new Game();
+ 			ClientArgs.apply(args, game);
++			if (MobaClient.ACTIVE) {
++				MobaDevClient.attach(game);
++				MobaDevClient.start();
++			}
+ 
+ 			Game.nodeID = 10;
+ 			Game.portOff = 0;
+diff --git a/2006Scape Client/src/main/java/RSApplet.java b/2006Scape Client/src/main/java/RSApplet.java
+index e64151b..26b2663 100644
+--- a/2006Scape Client/src/main/java/RSApplet.java	
++++ b/2006Scape Client/src/main/java/RSApplet.java	
+@@ -457,6 +457,9 @@ public class RSApplet extends Applet implements Runnable, MouseListener, MouseWh
+ 		mouseY = -1;
+ 	}
+ 
++	/** MOBA dev: millis of the last real pointer event; 0 until the pointer has been over the client. */
++	public static volatile long lastMouseActivity;
++
+ 	public final void mouseDragged(MouseEvent e) {
+ 		int x = e.getX();
+ 		int y = e.getY();
+@@ -469,6 +472,7 @@ public class RSApplet extends Applet implements Runnable, MouseListener, MouseWh
+ 			return;
+ 		}
+ 		idleTime = 0;
++		lastMouseActivity = System.currentTimeMillis();
+ 		mouseX = x;
+ 		mouseY = y;
+ 	}
+@@ -481,6 +485,7 @@ public class RSApplet extends Applet implements Runnable, MouseListener, MouseWh
+ 		int i = mouseevent.getX();
+ 		int j = mouseevent.getY();
+ 		idleTime = 0;
++		lastMouseActivity = System.currentTimeMillis();
+ 		mouseX = i;
+ 		mouseY = j;
+ 	}
+@@ -558,6 +563,7 @@ public class RSApplet extends Applet implements Runnable, MouseListener, MouseWh
+ 	@Override
+ 	public final void keyReleased(KeyEvent keyevent) {
+ 		idleTime = 0;
++		MobaCamera.keyUp(keyevent.getKeyCode());
+ 		int i = keyevent.getKeyCode();
+ 		char c = keyevent.getKeyChar();
+ 		switch (keyevent.getKeyCode())
+@@ -632,6 +638,7 @@ public class RSApplet extends Applet implements Runnable, MouseListener, MouseWh
+ 	@Override
+ 	public final void focusLost(FocusEvent focusevent) {
+ 		awtFocus = false;
++		MobaCamera.clearKeys();
+ 		for (int i = 0; i < 128; i++) {
+ 			keyArray[i] = 0;
+ 		}
+diff --git a/2006Scape Client/src/main/java/RSFrame.java b/2006Scape Client/src/main/java/RSFrame.java
+index 05e5042..8b02bb8 100644
+--- a/2006Scape Client/src/main/java/RSFrame.java	
++++ b/2006Scape Client/src/main/java/RSFrame.java	
+@@ -20,7 +20,9 @@ final class RSFrame extends Frame {
+ 		this.setLocationRelativeTo(null);
+ 		this.setVisible(true);
+ 		this.toFront();
+-		this.transferFocus();
++		applet.setFocusable(true);
++		applet.requestFocus();
++		applet.requestFocusInWindow();
+ 	}
+ 
+ 	private final RSApplet rsApplet;
+diff --git a/2006Scape Server/src/main/java/com/rs2/GameEngine.java b/2006Scape Server/src/main/java/com/rs2/GameEngine.java
+index 225c446..d541ab6 100644
+--- a/2006Scape Server/src/main/java/com/rs2/GameEngine.java	
++++ b/2006Scape Server/src/main/java/com/rs2/GameEngine.java	
+@@ -227,6 +227,16 @@ public class GameEngine {
+ 		 */
+ 		System.out.println("World Server listening on " + fs.service.toString());
+ 
++		/**
++		 * MOBA bootstrap.
++		 */
++		com.rs2.moba.MobaManager.init();
++
++		/**
++		 * MOBA dev console (localhost only).
++		 */
++		com.rs2.moba.MobaDevConsole.start();
++
+ 		/**
+ 		 * Makes Visible Control Panel If Enabled
+ 		 */
+@@ -325,6 +335,7 @@ public class GameEngine {
+ 					}
+ 					long durationSaveEvents = System.currentTimeMillis() - startSaveEvents;
+ 					checkAndLogDuration("SaveEvents", durationSaveEvents);
++					com.rs2.moba.MobaManager.onTick();
+ 					long totalCycleDuration = stopwatch.elapsed(TimeUnit.MILLISECONDS);
+ 					//Technically, we could add commands to test both client lag (creating many tile objects) and server lag (creating a BCrypt hash on game thread)
+ 					if (totalCycleDuration > 500) {
+diff --git a/2006Scape Server/src/main/java/com/rs2/net/PacketSender.java b/2006Scape Server/src/main/java/com/rs2/net/PacketSender.java
+index d59a55d..90d6c21 100644
+--- a/2006Scape Server/src/main/java/com/rs2/net/PacketSender.java	
++++ b/2006Scape Server/src/main/java/com/rs2/net/PacketSender.java	
+@@ -192,6 +192,7 @@ public class PacketSender {
+ 		player.saveTimer = Constants.SAVE_TIMER;
+ 		player.saveCharacter = true;
+ 		System.out.println((player.isBot ? "[BOT-REGISTERED]" : "[REGISTERED]") + ": " + player.playerName + " (level-" + player.calculateCombatLevel() + ")");
++		com.rs2.moba.MobaManager.onLogin(player);
+ 		player.handler.updatePlayer(player, player.outStream);
+ 		player.handler.updateNPC(player, player.outStream);
+ 		player.flushOutStream();
+diff --git a/2006Scape Server/src/main/java/com/rs2/net/packets/impl/Commands.java b/2006Scape Server/src/main/java/com/rs2/net/packets/impl/Commands.java
+index 6b76179..bb62d72 100644
+--- a/2006Scape Server/src/main/java/com/rs2/net/packets/impl/Commands.java	
++++ b/2006Scape Server/src/main/java/com/rs2/net/packets/impl/Commands.java	
+@@ -26,7 +26,16 @@ public class Commands implements PacketType {
+ 
+     @Override
+     public void processPacket(Player player, Packet packet) {
+-        String[] messageArr = packet.readString().split(" ");
++        execute(player, packet.readString());
++    }
++
++    /**
++     * MOBA dev: execute a raw command line (without the leading "::") for a
++     * player. Used by the TCP dev console so automation does not depend on the
++     * client chat UI.
++     */
++    public static void execute(Player player, String rawCommand) {
++        String[] messageArr = rawCommand.split(" ");
+         String playerCommand = messageArr[0];
+         String[] commandArguments = Arrays.copyOfRange(messageArr, 1, messageArr.length);
+         if ((playerCommand.startsWith("ban") || playerCommand.startsWith("ip") || playerCommand.startsWith("mute") || playerCommand.startsWith("un")) && player.playerRights > 0 && player.playerRights < 4) {
+@@ -859,6 +868,29 @@ public class Commands implements PacketType {
+                 player.getPacketSender().sendMessage("Y: " + player.absY);
+                 player.getPacketSender().sendMessage("H: " + player.heightLevel);
+                 break;
++            case "mapdump": {
++                // MOBA dev: dump a square collision map around a center tile to the console.
++                if (arguments.length < 2) {
++                    player.getPacketSender().sendMessage("Usage: ::mapdump centerX centerY [size]");
++                    return;
++                }
++                int cx = Integer.parseInt(arguments[0]);
++                int cy = Integer.parseInt(arguments[1]);
++                int size = arguments.length > 2 ? Integer.parseInt(arguments[2]) : 104;
++                int half = size / 2;
++                StringBuilder sb = new StringBuilder();
++                sb.append("MAPDUMP center=").append(cx).append(',').append(cy)
++                        .append(" size=").append(size).append('\n');
++                for (int y = cy + half - 1; y >= cy - half; y--) {
++                    for (int x = cx - half; x < cx + half; x++) {
++                        sb.append(Region.getClipping(x, y, 0) == 0 ? '.' : '#');
++                    }
++                    sb.append('\n');
++                }
++                System.out.print(sb);
++                player.getPacketSender().sendMessage("Map dumped to server console.");
++                break;
++            }
+             case "bank":
+                 player.getPacketSender().openUpBank();
+                 break;
