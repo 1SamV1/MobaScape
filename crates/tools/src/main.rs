@@ -28,10 +28,20 @@ enum Command {
     Terrain { region_x: u32, region_y: u32 },
     /// Decode placed locations for a region.
     Locations { region_x: u32, region_y: u32 },
+    /// Scan underlay/overlay colors for suspicious values.
+    ScanColors,
     /// Print an underlay definition.
     Underlay { id: u32 },
     /// Print an overlay definition.
     Overlay { id: u32 },
+    /// Print an NPC definition.
+    Npc { id: u32 },
+    /// Search NPC definitions by name substring.
+    FindNpc {
+        query: String,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
     /// Print an object definition.
     Object { id: u32 },
     /// Search object definitions by name substring.
@@ -40,6 +50,10 @@ enum Command {
         #[arg(long, default_value_t = 20)]
         limit: usize,
     },
+    /// Print a sequence and its first frames.
+    Sequence { id: u32 },
+    /// Animate a model with a sequence and print frame bounds.
+    Animate { model: u32, sequence: u32 },
     /// Print a model summary.
     Model { id: u32 },
     /// Export a model as a Wavefront OBJ.
@@ -68,10 +82,15 @@ fn main() -> Result<()> {
         Command::CacheInfo => cache_info(&cache)?,
         Command::Terrain { region_x, region_y } => terrain(&cache, region_x, region_y)?,
         Command::Locations { region_x, region_y } => locations(&cache, region_x, region_y)?,
+        Command::ScanColors => scan_colors(&cache)?,
         Command::Underlay { id } => underlay(&cache, id)?,
         Command::Overlay { id } => overlay(&cache, id)?,
+        Command::Npc { id } => npc(&cache, id)?,
+        Command::FindNpc { query, limit } => find_npc(&cache, &query, limit)?,
         Command::Object { id } => object(&cache, id)?,
         Command::FindObject { query, limit } => find_object(&cache, &query, limit)?,
+        Command::Sequence { id } => sequence(&cache, id)?,
+        Command::Animate { model, sequence } => animate(&cache, model, sequence)?,
         Command::Model { id } => model(&cache, id)?,
         Command::ExportObj { id, out } => export_obj(&cache, id, &out)?,
         Command::TerrainObj {
@@ -187,6 +206,30 @@ fn locations(cache: &Cache, region_x: u32, region_y: u32) -> Result<()> {
     Ok(())
 }
 
+fn scan_colors(cache: &Cache) -> Result<()> {
+    for (label, archive) in [("underlay", 1u32), ("overlay", 4u32)] {
+        let files = cache.archive_files_with_ids(2, archive)?;
+        println!("{label}: {} files", files.len());
+        for (id, data) in files {
+            let color = if archive == 1 {
+                rift_cache::UnderlayDefinition::parse(id, &data)
+                    .ok()
+                    .map(|d| d.color())
+            } else {
+                rift_cache::OverlayDefinition::parse(id, &data)
+                    .ok()
+                    .map(|d| d.color())
+            };
+            if let Some([r, g, b]) = color {
+                if r > 140 && b > 140 && g < 110 {
+                    println!("  {label} {id}: [{r}, {g}, {b}]");
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 fn underlay(cache: &Cache, id: u32) -> Result<()> {
     let data = cache.file(2, 1, id)?;
     let def = rift_cache::UnderlayDefinition::parse(id, &data)?;
@@ -211,6 +254,58 @@ fn overlay(cache: &Cache, id: u32) -> Result<()> {
     Ok(())
 }
 
+fn npc(cache: &Cache, id: u32) -> Result<()> {
+    let data = cache.file(2, 9, id)?;
+    let def = rift_cache::NpcDefinition::parse(id, &data)?;
+    println!(
+        "npc {id}: {:?} models={:?} size={} combat={} stand={} walk={} run={}",
+        def.name,
+        def.models,
+        def.size,
+        def.combat_level,
+        def.standing_animation,
+        def.walking_animation,
+        def.run_animation
+    );
+    println!(
+        "  idle_l={} idle_r={} turn180={} turn_l={} turn_r={}",
+        def.idle_rotate_left_animation,
+        def.idle_rotate_right_animation,
+        def.rotate180_animation,
+        def.rotate_left_animation,
+        def.rotate_right_animation
+    );
+    Ok(())
+}
+
+fn find_npc(cache: &Cache, query: &str, limit: usize) -> Result<()> {
+    let files = cache.archive_files_with_ids(2, 9)?;
+    let query_lower = query.to_lowercase();
+    let mut found = 0usize;
+    for (id, data) in files {
+        if let Ok(def) = rift_cache::NpcDefinition::parse(id, &data) {
+            if def.name.to_lowercase().contains(&query_lower) {
+                println!(
+                    "npc {:5}: {:?} models={:?} size={} stand={} walk={} run={}",
+                    id,
+                    def.name,
+                    def.models,
+                    def.size,
+                    def.standing_animation,
+                    def.walking_animation,
+                    def.run_animation
+                );
+                found += 1;
+                if found >= limit {
+                    break;
+                }
+            }
+        }
+    }
+    println!("{found} match(es)");
+    Ok(())
+}
+
 fn object(cache: &Cache, id: u32) -> Result<()> {
     let data = cache.config(6, id)?;
     let def = ObjectDefinition::parse(id, &data)?;
@@ -231,11 +326,11 @@ fn object(cache: &Cache, id: u32) -> Result<()> {
 }
 
 fn find_object(cache: &Cache, query: &str, limit: usize) -> Result<()> {
-    let files = cache.archive_files(2, 6)?;
+    let files = cache.archive_files_with_ids(2, 6)?;
     let query_lower = query.to_lowercase();
     let mut found = 0usize;
-    for (id, data) in files.iter().enumerate() {
-        if let Ok(def) = ObjectDefinition::parse(id as u32, data) {
+    for (id, data) in files {
+        if let Ok(def) = ObjectDefinition::parse(id, &data) {
             if def.name.to_lowercase().contains(&query_lower) {
                 println!(
                     "object {:6}: {:?} models={:?} types={:?} size={}x{}",
@@ -249,6 +344,66 @@ fn find_object(cache: &Cache, query: &str, limit: usize) -> Result<()> {
         }
     }
     println!("{found} match(es)");
+    Ok(())
+}
+
+fn sequence(cache: &Cache, id: u32) -> Result<()> {
+    let data = cache.file(2, 12, id)?;
+    let seq = rift_cache::Sequence::load(id, &data)?;
+    println!(
+        "sequence {id}: {} frames, step={} loops={} priority={} maya={} name={:?}",
+        seq.frame_ids.len(),
+        seq.frame_step,
+        seq.max_loops,
+        seq.priority,
+        seq.anim_maya_id,
+        seq.debug_name
+    );
+    println!("  lengths={:?}", seq.frame_lengths);
+    println!(
+        "  frame_ids={:?}",
+        &seq.frame_ids[..seq.frame_ids.len().min(12)]
+    );
+
+    for &frame_id in seq.frame_ids.iter().take(3) {
+        let archive_id = frame_id >> 16;
+        let file_id = frame_id & 0xffff;
+        let frame_data = cache.file(0, archive_id, file_id)?;
+        let framemap_id = u16::from_be_bytes([frame_data[0], frame_data[1]]) as u32;
+        let fm_group = cache.group(1, framemap_id)?;
+        let framemap = rift_cache::Framemap::load(framemap_id, &fm_group.data)?;
+        let frame = rift_cache::Frame::load(file_id, &framemap, &frame_data)?;
+        println!(
+            "  frame {frame_id}: archive={archive_id} file={file_id} framemap={framemap_id} types={:?} entries={} first={:?}",
+            framemap.types,
+            frame.index_frame_ids.len(),
+            frame.index_frame_ids.iter().take(8).collect::<Vec<_>>()
+        );
+    }
+    Ok(())
+}
+
+fn animate(cache: &Cache, model_id: u32, sequence_id: u32) -> Result<()> {
+    let group = cache.group(7, model_id)?;
+    let model = Model::load(model_id, &group.data)?;
+    let clip = rift_cache::AnimationClip::load(cache, sequence_id)?;
+    println!(
+        "model {model_id} x sequence {sequence_id}: {} frames, lengths {:?}",
+        clip.frames.len(),
+        clip.sequence.frame_lengths
+    );
+    for time in [0.0, 100.0, 200.0, 400.0, 600.0, 800.0, 1000.0] {
+        let positions = model.animated_positions(&clip, time);
+        let mut min = [f32::MAX; 3];
+        let mut max = [f32::MIN; 3];
+        for p in &positions {
+            for i in 0..3 {
+                min[i] = min[i].min(p[i]);
+                max[i] = max[i].max(p[i]);
+            }
+        }
+        println!("  t={time:>6.0}ms min={min:?} max={max:?}");
+    }
     Ok(())
 }
 

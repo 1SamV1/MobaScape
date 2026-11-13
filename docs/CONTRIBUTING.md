@@ -27,6 +27,9 @@ cargo run -p rift-tools -- terrain 44 47
 cargo run -p rift-tools -- locations 44 47
 cargo run -p rift-tools -- model 1715
 cargo run -p rift-tools -- export-obj 1715 /tmp/tree.obj
+cargo run -p rift-tools -- find-npc monkey --limit 5
+cargo run -p rift-tools -- sequence 222
+cargo run -p rift-tools -- animate 7744 222
 cargo run -p rift-client
 ```
 

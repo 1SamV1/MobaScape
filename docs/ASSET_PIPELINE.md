@@ -103,7 +103,7 @@ bytes of cumulative size deltas, then interleaved file data.
 | Models type 2 | ✅ | positions, faces, colors, render types, textures, groups |
 | Models type 3 | ✅ | positions, faces, colors, textures, groups, v12 normals |
 | Models type 1 / old | ❌ | return a clear error; add if a needed model uses them |
-| Sequences/frames | ❌ | next milestone; frames/frame sets in indices 0/1, sequence configs in 2/12 |
+| Sequences/frames | ✅ | sequence configs 2/12; frame archives 0; framemaps 1; classic vertex animation |
 | Sprites/icons | ❌ | index 8; next milestone |
 | Textures | ❌ | index 9; deferred until flat-shaded content is complete |
 | Sounds/music | ❌ | indices 4/6; v1 uses placeholder SFX |
@@ -111,6 +111,27 @@ bytes of cumulative size deltas, then interleaved file data.
 Model type detection: last two bytes are `ff fd` (type 3), `ff fe` (type 2),
 `ff ff` (type 1), otherwise old format. Type 2 and 3 headers are read from the
 tail and blocks are addressed by explicit offsets, not sequential parsing.
+
+### Animation format (verified)
+
+- A sequence frame ID is `frame_archive << 16 | frame_file_id`.
+- The frame file's first two bytes are its **framemap ID**; load that framemap
+  from index 1.
+- A frame contains flags (one per framemap group) and short-smart transforms.
+- A framemap has per-group types and vertex-group labels. Types: 0 = translate
+  root/group, 1 = translate, 2 = rotate, 3 = scale, 5 = alpha (ignored).
+- Sequence frame lengths are client ticks of 20 ms. The client interpolates
+  between the current and next frame.
+- Animaya (sequence opcode 13/15) is decoded as metadata but not applied.
+
+Commands:
+
+```sh
+cargo run -p rift-tools -- npc 23
+cargo run -p rift-tools -- sequence 222
+cargo run -p rift-tools -- animate 7744 222
+cargo run -p rift-tools -- animate 7744 219
+```
 
 ## 4. Working commands
 

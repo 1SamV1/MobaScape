@@ -15,7 +15,7 @@ pub struct Vertex {
 }
 
 impl Vertex {
-    fn new(position: Vec3, color: [u8; 3]) -> Self {
+    pub fn new(position: Vec3, color: [u8; 3]) -> Self {
         Self {
             position: position.to_array(),
             color: [
@@ -34,18 +34,64 @@ pub struct MeshData {
 }
 
 impl MeshData {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             vertices: Vec::new(),
             indices: Vec::new(),
         }
     }
 
-    fn push_triangle(&mut self, a: Vertex, b: Vertex, c: Vertex) {
+    pub fn push_triangle(&mut self, a: Vertex, b: Vertex, c: Vertex) {
         let base = self.vertices.len() as u32;
         self.vertices.extend_from_slice(&[a, b, c]);
         self.indices.extend_from_slice(&[base, base + 1, base + 2]);
     }
+}
+
+/// Height grid covering the whole loaded block, used for camera picking and
+/// keeping units on the ground.
+#[derive(Clone)]
+pub struct HeightGrid {
+    origin_tile_x: i32,
+    origin_tile_y: i32,
+    size: usize,
+    heights: Vec<f32>,
+}
+
+impl HeightGrid {
+    pub fn height_at(&self, world_x: f32, world_z: f32) -> f32 {
+        let gx = world_x / 128.0 - self.origin_tile_x as f32;
+        let gy = world_z / 128.0 - self.origin_tile_y as f32;
+        if gx < 0.0 || gy < 0.0 || gx >= (self.size - 1) as f32 || gy >= (self.size - 1) as f32 {
+            return 0.0;
+        }
+        let x0 = gx.floor() as usize;
+        let y0 = gy.floor() as usize;
+        let fx = gx - x0 as f32;
+        let fy = gy - y0 as f32;
+        let h00 = self.heights[y0 * self.size + x0];
+        let h10 = self.heights[y0 * self.size + x0 + 1];
+        let h01 = self.heights[(y0 + 1) * self.size + x0];
+        let h11 = self.heights[(y0 + 1) * self.size + x0 + 1];
+        let a = h00 + (h10 - h00) * fx;
+        let b = h01 + (h11 - h01) * fx;
+        a + (b - a) * fy
+    }
+
+    pub fn contains(&self, world_x: f32, world_z: f32) -> bool {
+        let gx = world_x / 128.0 - self.origin_tile_x as f32;
+        let gy = world_z / 128.0 - self.origin_tile_y as f32;
+        gx >= 0.0 && gy >= 0.0 && gx < (self.size - 1) as f32 && gy < (self.size - 1) as f32
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct NpcSpawn {
+    pub model_id: u32,
+    pub idle_sequence: u32,
+    pub walk_sequence: Option<u32>,
+    pub pos: Vec3,
+    pub scale: f32,
 }
 
 pub struct SceneData {
@@ -53,40 +99,168 @@ pub struct SceneData {
     pub models: MeshData,
     pub center: Vec3,
     pub placements: usize,
+    pub height: HeightGrid,
+    pub npc_spawns: Vec<NpcSpawn>,
+    pub player_spawn: Vec3,
 }
 
-pub fn build(cache: &Cache, region_x: u32, region_y: u32, model_limit: usize) -> Result<SceneData> {
+pub fn build(cache: &Cache, center_x: u32, center_y: u32, radius: u32) -> Result<SceneData> {
     let keys = cache
         .keys()
         .context("cache has no keys.json; cannot resolve map groups")?;
-    let locations_group = keys
-        .find_locations_group(region_x, region_y)
-        .with_context(|| format!("no locations group for region {region_x},{region_y}"))?;
-    let terrain_group = locations_group
-        .checked_sub(1)
-        .context("locations group has no terrain predecessor")?;
 
-    let terrain = Terrain::load(region_x, region_y, &cache.group(5, terrain_group)?.data)?;
-    let locations = Locations::load(region_x, region_y, &cache.group(5, locations_group)?.data)?;
+    let min_x = center_x.saturating_sub(radius);
+    let max_x = center_x + radius;
+    let min_y = center_y.saturating_sub(radius);
+    let max_y = center_y + radius;
+
+    let mut terrains: HashMap<(u32, u32), Terrain> = HashMap::new();
+    let mut all_locations = Vec::new();
+
+    for rx in min_x..=max_x {
+        for ry in min_y..=max_y {
+            let Some(locations_group) = keys.find_locations_group(rx, ry) else {
+                continue;
+            };
+            let terrain_group = locations_group.saturating_sub(1);
+            let terrain = Terrain::load(rx, ry, &cache.group(5, terrain_group)?.data)?;
+            let locations = Locations::load(rx, ry, &cache.group(5, locations_group)?.data)?;
+            all_locations.push((rx, ry, locations));
+            terrains.insert((rx, ry), terrain);
+        }
+    }
 
     let underlays = load_underlays(cache)?;
     let overlays = load_overlays(cache)?;
     let object_files = cache
-        .archive_files(2, 6)
-        .context("loading object definitions")?;
+        .archive_files_with_ids(2, 6)
+        .context("loading object definitions")?
+        .into_iter()
+        .collect::<HashMap<u32, Vec<u8>>>();
+
+    let origin_tile_x = min_x as i32 * 64;
+    let origin_tile_y = min_y as i32 * 64;
+    let size = ((max_x - min_x + 1) * 64 + 1) as usize;
+
+    let mut heights = vec![0.0f32; size * size];
+    let mut colors = vec![[60u8, 90, 50]; size * size];
+
+    for gy in 0..size {
+        for gx in 0..size {
+            let mut sum = 0.0f32;
+            let mut color = [0u32; 3];
+            let mut count = 0.0f32;
+
+            for dy in -1..=0 {
+                for dx in -1..=0 {
+                    let tx = origin_tile_x + gx as i32 + dx;
+                    let ty = origin_tile_y + gy as i32 + dy;
+                    let rx = (tx >> 6) as u32;
+                    let ry = (ty >> 6) as u32;
+                    let lx = (tx & 63) as usize;
+                    let ly = (ty & 63) as usize;
+                    let Some(terrain) = terrains.get(&(rx, ry)) else {
+                        continue;
+                    };
+                    let tile = terrain.tile(0, lx, ly);
+                    sum += tile.height as f32 * 8.0;
+                    let c = tile_color(terrain, &underlays, &overlays, lx, ly);
+                    color[0] += c[0] as u32;
+                    color[1] += c[1] as u32;
+                    color[2] += c[2] as u32;
+                    count += 1.0;
+                }
+            }
+
+            let idx = gy * size + gx;
+            heights[idx] = if count > 0.0 { sum / count } else { 0.0 };
+            colors[idx] = if count > 0.0 {
+                [
+                    (color[0] as f32 / count) as u8,
+                    (color[1] as f32 / count) as u8,
+                    (color[2] as f32 / count) as u8,
+                ]
+            } else {
+                [60, 90, 50]
+            };
+        }
+    }
 
     let mut terrain_mesh = MeshData::new();
-    build_terrain(&terrain, &underlays, &overlays, &mut terrain_mesh);
+    for gy in 0..size {
+        for gx in 0..size {
+            let idx = gy * size + gx;
+            let h = heights[idx];
+            let shade = 0.58 + 0.24 * (h / 800.0).clamp(0.0, 1.0);
+            let c = colors[idx];
+            let color = [
+                (c[0] as f32 * shade * 0.82) as u8,
+                (c[1] as f32 * shade * 0.82) as u8,
+                (c[2] as f32 * shade * 0.82) as u8,
+            ];
+            terrain_mesh.vertices.push(Vertex::new(
+                Vec3::new(
+                    (origin_tile_x + gx as i32) as f32 * 128.0,
+                    h,
+                    (origin_tile_y + gy as i32) as f32 * 128.0,
+                ),
+                color,
+            ));
+        }
+    }
+    for gy in 0..size - 1 {
+        for gx in 0..size - 1 {
+            let a = (gy * size + gx) as u32;
+            let b = a + 1;
+            let c = a + size as u32;
+            let d = c + 1;
+            terrain_mesh.indices.extend_from_slice(&[a, c, b, b, c, d]);
+        }
+    }
+
+    let height = HeightGrid {
+        origin_tile_x,
+        origin_tile_y,
+        size,
+        heights,
+    };
+
+    let center = Vec3::new(
+        (center_x as f32 * 64.0 + 32.0) * 128.0,
+        height.height_at(
+            (center_x as f32 * 64.0 + 32.0) * 128.0,
+            (center_y as f32 * 64.0 + 32.0) * 128.0,
+        ),
+        (center_y as f32 * 64.0 + 32.0) * 128.0,
+    );
+
+    // Sort scenery by distance to the player so the near field looks dense and
+    // the 900-model budget is spent where it is visible.
+    let mut candidates = Vec::new();
+    for (rx, ry, locations) in &all_locations {
+        for loc in &locations.locations {
+            let wx = ((*rx as f32 * 64.0) + loc.x as f32 + 0.5) * 128.0;
+            let wz = ((*ry as f32 * 64.0) + loc.y as f32 + 0.5) * 128.0;
+            let dx = wx - center.x;
+            let dz = wz - center.z;
+            candidates.push((dx * dx + dz * dz, *rx, *ry, *loc));
+        }
+    }
+    candidates.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
 
     let mut model_mesh = MeshData::new();
     let mut model_cache: HashMap<u32, Model> = HashMap::new();
     let mut placements = 0usize;
+    const MODEL_LIMIT: usize = 900;
 
-    for loc in &locations.locations {
-        if placements >= model_limit {
+    for (_, rx, ry, loc) in candidates {
+        if placements >= MODEL_LIMIT {
             break;
         }
-        let Some(data) = object_files.get(loc.id as usize) else {
+        let Some(terrain) = terrains.get(&(rx, ry)) else {
+            continue;
+        };
+        let Some(data) = object_files.get(&loc.id) else {
             continue;
         };
         let Ok(def) = ObjectDefinition::parse(loc.id, data) else {
@@ -107,30 +281,26 @@ pub fn build(cache: &Cache, region_x: u32, region_y: u32, model_limit: usize) ->
             model_cache.get(&model_id).unwrap()
         };
 
-        let tile_x = loc.x as f32;
-        let tile_y = loc.y as f32;
-        let height = terrain.height(loc.z as usize, loc.x as usize, loc.y as usize) as f32 * 8.0;
         let base = Vec3::new(
-            (region_x as f32 * 64.0 + tile_x + 0.5) * 128.0,
-            height,
-            (region_y as f32 * 64.0 + tile_y + 0.5) * 128.0,
+            ((rx as f32 * 64.0) + loc.x as f32 + 0.5) * 128.0,
+            terrain.height(loc.z as usize, loc.x as usize, loc.y as usize) as f32 * 8.0,
+            ((ry as f32 * 64.0) + loc.y as f32 + 0.5) * 128.0,
         );
         let angle = loc.rotation as f32 * std::f32::consts::FRAC_PI_2;
-        append_model(&mut model_mesh, model, base, angle, &def);
+        append_model(&mut model_mesh, model, base, angle);
         placements += 1;
     }
 
-    let center = Vec3::new(
-        (region_x as f32 * 64.0 + 32.0) * 128.0,
-        terrain.height(0, 32, 32) as f32 * 8.0,
-        (region_y as f32 * 64.0 + 32.0) * 128.0,
-    );
+    let player_spawn = find_walkable_spawn(&height, center, &terrains)?;
+    let npc_spawns = build_npc_spawns(&height, center, player_spawn, &terrains);
 
     tracing::info!(
-        "scene: {} terrain verts, {} model verts, {} placements, center {:?}",
+        "scene: {} regions, {} terrain verts, {} model verts, {} placements, {} npcs, center {:?}",
+        terrains.len(),
         terrain_mesh.vertices.len(),
         model_mesh.vertices.len(),
         placements,
+        npc_spawns.len(),
         center
     );
 
@@ -139,7 +309,134 @@ pub fn build(cache: &Cache, region_x: u32, region_y: u32, model_limit: usize) ->
         models: model_mesh,
         center,
         placements,
+        height,
+        npc_spawns,
+        player_spawn,
     })
+}
+
+fn find_walkable_spawn(
+    height: &HeightGrid,
+    center: Vec3,
+    terrains: &HashMap<(u32, u32), Terrain>,
+) -> Result<Vec3> {
+    for radius in 4..40 {
+        for dy in -radius..=radius {
+            for dx in -radius..=radius {
+                let world_x = center.x + dx as f32 * 128.0;
+                let world_z = center.z + dy as f32 * 128.0;
+                if !height.contains(world_x, world_z) {
+                    continue;
+                }
+                let tile_x = (world_x / 128.0).floor() as i32;
+                let tile_y = (world_z / 128.0).floor() as i32;
+                let rx = (tile_x >> 6) as u32;
+                let ry = (tile_y >> 6) as u32;
+                let lx = (tile_x & 63) as usize;
+                let ly = (tile_y & 63) as usize;
+                if let Some(terrain) = terrains.get(&(rx, ry)) {
+                    let tile = terrain.tile(0, lx, ly);
+                    if tile.underlay_id > 0
+                        && tile.underlay_id != 55
+                        && tile.overlay_id == 0
+                        && tile.height > 4
+                    {
+                        return Ok(Vec3::new(
+                            world_x,
+                            height.height_at(world_x, world_z),
+                            world_z,
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    Ok(Vec3::new(
+        center.x,
+        height.height_at(center.x, center.z),
+        center.z,
+    ))
+}
+
+fn build_npc_spawns(
+    height: &HeightGrid,
+    center: Vec3,
+    player_spawn: Vec3,
+    terrains: &HashMap<(u32, u32), Terrain>,
+) -> Vec<NpcSpawn> {
+    let mut spots = Vec::new();
+    for radius in 8..80 {
+        for angle_step in 0..32 {
+            let angle = angle_step as f32 * std::f32::consts::TAU / 32.0;
+            let world_x = center.x + angle.cos() * radius as f32 * 128.0;
+            let world_z = center.z + angle.sin() * radius as f32 * 128.0;
+            if !height.contains(world_x, world_z) {
+                continue;
+            }
+            if Vec3::new(world_x, 0.0, world_z).distance(Vec3::new(
+                player_spawn.x,
+                0.0,
+                player_spawn.z,
+            )) < 4.0 * 128.0
+            {
+                continue;
+            }
+            if spots.iter().any(|p: &Vec3| {
+                Vec3::new(world_x, 0.0, world_z).distance(Vec3::new(p.x, 0.0, p.z)) < 4.0 * 128.0
+            }) {
+                continue;
+            }
+            let tile_x = (world_x / 128.0).floor() as i32;
+            let tile_y = (world_z / 128.0).floor() as i32;
+            let rx = (tile_x >> 6) as u32;
+            let ry = (tile_y >> 6) as u32;
+            let lx = (tile_x & 63) as usize;
+            let ly = (tile_y & 63) as usize;
+            let Some(terrain) = terrains.get(&(rx, ry)) else {
+                continue;
+            };
+            let tile = terrain.tile(0, lx, ly);
+            if tile.underlay_id > 0
+                && tile.underlay_id != 55
+                && tile.overlay_id == 0
+                && tile.height > 4
+            {
+                spots.push(Vec3::new(
+                    world_x,
+                    height.height_at(world_x, world_z),
+                    world_z,
+                ));
+                if spots.len() >= 8 {
+                    break;
+                }
+            }
+        }
+        if spots.len() >= 8 {
+            break;
+        }
+    }
+
+    let mut spawns = Vec::new();
+    for (i, pos) in spots.iter().enumerate() {
+        if i % 4 == 3 {
+            spawns.push(NpcSpawn {
+                model_id: 10413,
+                idle_sequence: 1721,
+                walk_sequence: Some(2405),
+                pos: *pos,
+                scale: 1.6,
+            });
+        } else {
+            spawns.push(NpcSpawn {
+                model_id: 7744,
+                idle_sequence: 222,
+                walk_sequence: Some(219),
+                pos: *pos,
+                scale: 2.2,
+            });
+        }
+    }
+    spawns
 }
 
 fn is_scenery(def: &ObjectDefinition) -> bool {
@@ -154,22 +451,22 @@ fn is_scenery(def: &ObjectDefinition) -> bool {
 }
 
 fn load_underlays(cache: &Cache) -> Result<HashMap<u32, UnderlayDefinition>> {
-    let files = cache.archive_files(2, 1)?;
+    let files = cache.archive_files_with_ids(2, 1)?;
     let mut out = HashMap::new();
-    for (id, data) in files.iter().enumerate() {
-        if let Ok(def) = UnderlayDefinition::parse(id as u32, data) {
-            out.insert(id as u32, def);
+    for (id, data) in files {
+        if let Ok(def) = UnderlayDefinition::parse(id, &data) {
+            out.insert(id, def);
         }
     }
     Ok(out)
 }
 
 fn load_overlays(cache: &Cache) -> Result<HashMap<u32, OverlayDefinition>> {
-    let files = cache.archive_files(2, 4)?;
+    let files = cache.archive_files_with_ids(2, 4)?;
     let mut out = HashMap::new();
-    for (id, data) in files.iter().enumerate() {
-        if let Ok(def) = OverlayDefinition::parse(id as u32, data) {
-            out.insert(id as u32, def);
+    for (id, data) in files {
+        if let Ok(def) = OverlayDefinition::parse(id, &data) {
+            out.insert(id, def);
         }
     }
     Ok(out)
@@ -186,7 +483,12 @@ fn tile_color(
 
     if tile.overlay_id > 0 {
         if let Some(overlay) = overlays.get(&(tile.overlay_id as u32)) {
-            return overlay.color();
+            let color = overlay.color();
+            // 0xff00ff is a sentinel for "texture-only" ground overlays. Until
+            // textures are sampled, fall through to the underlay colour.
+            if color != [255, 0, 255] {
+                return color;
+            }
         }
     }
     if tile.underlay_id > 0 {
@@ -204,94 +506,7 @@ fn tile_color(
     }
 }
 
-fn build_terrain(
-    terrain: &Terrain,
-    underlays: &HashMap<u32, UnderlayDefinition>,
-    overlays: &HashMap<u32, OverlayDefinition>,
-    mesh: &mut MeshData,
-) {
-    const N: usize = 65;
-    let mut heights = [[0.0f32; N]; N];
-    let mut colors = [[[0u8; 3]; N]; N];
-
-    for y in 0..N {
-        for x in 0..N {
-            let mut sum = 0.0f32;
-            let mut color = [0u32; 3];
-            let mut count = 0.0f32;
-
-            for dy in -1..=0 {
-                for dx in -1..=0 {
-                    let tx = x as isize + dx;
-                    let ty = y as isize + dy;
-                    if tx < 0 || ty < 0 || tx >= 64 || ty >= 64 {
-                        continue;
-                    }
-                    let tile = terrain.tile(0, tx as usize, ty as usize);
-                    sum += tile.height as f32;
-                    let c = tile_color(terrain, underlays, overlays, tx as usize, ty as usize);
-                    color[0] += c[0] as u32;
-                    color[1] += c[1] as u32;
-                    color[2] += c[2] as u32;
-                    count += 1.0;
-                }
-            }
-
-            heights[y][x] = if count > 0.0 { sum / count } else { 0.0 };
-            colors[y][x] = if count > 0.0 {
-                [
-                    (color[0] as f32 / count) as u8,
-                    (color[1] as f32 / count) as u8,
-                    (color[2] as f32 / count) as u8,
-                ]
-            } else {
-                [60, 90, 50]
-            };
-        }
-    }
-
-    let base_x = terrain.region_x as f32 * 64.0 * 128.0;
-    let base_z = terrain.region_y as f32 * 64.0 * 128.0;
-
-    for y in 0..N {
-        for x in 0..N {
-            let h = heights[y][x];
-            let shade = 0.58 + 0.24 * (h / 80.0).clamp(0.0, 1.0);
-            let c = colors[y][x];
-            let color = [
-                (c[0] as f32 * shade * 0.82) as u8,
-                (c[1] as f32 * shade * 0.82) as u8,
-                (c[2] as f32 * shade * 0.82) as u8,
-            ];
-            mesh.vertices.push(Vertex::new(
-                Vec3::new(
-                    base_x + x as f32 * 128.0,
-                    h * 8.0,
-                    base_z + y as f32 * 128.0,
-                ),
-                color,
-            ));
-        }
-    }
-
-    for y in 0..64 {
-        for x in 0..64 {
-            let a = (y * N + x) as u32;
-            let b = a + 1;
-            let c = a + N as u32;
-            let d = c + 1;
-            mesh.indices.extend_from_slice(&[a, c, b, b, c, d]);
-        }
-    }
-}
-
-fn append_model(
-    mesh: &mut MeshData,
-    model: &Model,
-    base: Vec3,
-    angle: f32,
-    _def: &ObjectDefinition,
-) {
+fn append_model(mesh: &mut MeshData, model: &Model, base: Vec3, angle: f32) {
     let rot = Mat3::from_rotation_y(angle);
     let light = Vec3::new(0.35, 0.85, 0.4).normalize();
 
@@ -309,13 +524,13 @@ fn append_model(
             .as_ref()
             .and_then(|t| t.get(face_idx))
             .is_some_and(|&t| t >= 0);
-        let rgb = if textured {
+        let rgb = if textured || model.face_colors[face_idx] == 127 {
             let n = model
                 .face_normals
                 .get(face_idx)
                 .copied()
                 .unwrap_or([0.0, 1.0, 0.0]);
-            let leaf = [44.0 + n[1] * 20.0, 92.0 + n[1] * 30.0, 38.0];
+            let leaf = [38.0 + n[1] * 16.0, 82.0 + n[1] * 22.0, 34.0];
             [
                 (leaf[0] * brightness) as u8,
                 (leaf[1] * brightness) as u8,
@@ -333,11 +548,23 @@ fn append_model(
     }
 }
 
-fn model_vertex(model: &Model, i: usize, base: Vec3, rot: Mat3) -> Vec3 {
+pub fn model_vertex(model: &Model, i: usize, base: Vec3, rot: Mat3) -> Vec3 {
     let local = Vec3::new(
         model.vertex_x[i] as f32,
         -(model.vertex_y[i] as f32),
         model.vertex_z[i] as f32,
     );
+    base + rot * local
+}
+
+pub fn model_vertex_animated(
+    positions: &[[f32; 3]],
+    i: usize,
+    base: Vec3,
+    rot: Mat3,
+    scale: f32,
+) -> Vec3 {
+    let p = positions.get(i).copied().unwrap_or([0.0; 3]);
+    let local = Vec3::new(p[0], -p[1], p[2]) * scale;
     base + rot * local
 }

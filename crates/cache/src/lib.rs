@@ -1,3 +1,4 @@
+pub mod angle;
 pub mod buffer;
 pub mod config;
 pub mod error;
@@ -6,15 +7,17 @@ pub mod keys;
 pub mod locations;
 pub mod model;
 pub mod reference;
+pub mod sequence;
 pub mod store;
 pub mod terrain;
 pub mod xtea;
 
-pub use config::{ObjectDefinition, OverlayDefinition, UnderlayDefinition};
+pub use config::{NpcDefinition, ObjectDefinition, OverlayDefinition, UnderlayDefinition};
 pub use error::{Error, Result};
 pub use keys::XteaKeys;
 pub use locations::{Location, Locations};
 pub use model::Model;
 pub use reference::IndexData;
+pub use sequence::{AnimationClip, Frame, Framemap, Sequence};
 pub use store::Cache;
 pub use terrain::{Terrain, Tile};

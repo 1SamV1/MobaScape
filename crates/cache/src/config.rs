@@ -10,6 +10,207 @@ pub enum ParamValue {
 }
 
 #[derive(Debug, Clone, Default)]
+pub struct NpcDefinition {
+    pub id: u32,
+    pub name: String,
+    pub models: Vec<u32>,
+    pub size: u8,
+    pub standing_animation: i32,
+    pub walking_animation: i32,
+    pub idle_rotate_left_animation: i32,
+    pub idle_rotate_right_animation: i32,
+    pub rotate180_animation: i32,
+    pub rotate_left_animation: i32,
+    pub rotate_right_animation: i32,
+    pub run_animation: i32,
+    pub crawl_animation: i32,
+    pub width_scale: u16,
+    pub height_scale: u16,
+    pub combat_level: i32,
+    pub recolor_to_find: Vec<i16>,
+    pub recolor_to_replace: Vec<i16>,
+    pub retexture_to_find: Vec<i16>,
+    pub texture_to_replace: Vec<i16>,
+    pub is_minimap_visible: bool,
+    pub is_interactable: bool,
+}
+
+impl NpcDefinition {
+    pub fn parse(id: u32, data: &[u8]) -> Result<Self> {
+        let mut def = Self {
+            id,
+            standing_animation: -1,
+            walking_animation: -1,
+            idle_rotate_left_animation: -1,
+            idle_rotate_right_animation: -1,
+            rotate180_animation: -1,
+            rotate_left_animation: -1,
+            rotate_right_animation: -1,
+            run_animation: -1,
+            crawl_animation: -1,
+            width_scale: 128,
+            height_scale: 128,
+            combat_level: -1,
+            is_minimap_visible: true,
+            is_interactable: true,
+            ..Default::default()
+        };
+        let mut b = Buffer::new(data);
+
+        loop {
+            let opcode = b.read_u8()?;
+            if opcode == 0 {
+                break;
+            }
+            match opcode {
+                1 => {
+                    let count = b.read_u8()? as usize;
+                    def.models.clear();
+                    for _ in 0..count {
+                        def.models.push(b.read_u16()? as u32);
+                    }
+                }
+                2 => def.name = b.read_string()?,
+                12 => def.size = b.read_u8()?,
+                13 => def.standing_animation = b.read_u16()? as i32,
+                14 => def.walking_animation = b.read_u16()? as i32,
+                15 => def.idle_rotate_left_animation = b.read_u16()? as i32,
+                16 => def.idle_rotate_right_animation = b.read_u16()? as i32,
+                17 => {
+                    def.walking_animation = b.read_u16()? as i32;
+                    def.rotate180_animation = b.read_u16()? as i32;
+                    def.rotate_left_animation = b.read_u16()? as i32;
+                    def.rotate_right_animation = b.read_u16()? as i32;
+                }
+                18 => {
+                    b.read_u16()?;
+                }
+                30..=34 => {
+                    let _ = b.read_string()?;
+                }
+                40 => {
+                    let count = b.read_u8()? as usize;
+                    def.recolor_to_find.clear();
+                    def.recolor_to_replace.clear();
+                    for _ in 0..count {
+                        def.recolor_to_find.push(b.read_i16()?);
+                        def.recolor_to_replace.push(b.read_i16()?);
+                    }
+                }
+                41 => {
+                    let count = b.read_u8()? as usize;
+                    def.retexture_to_find.clear();
+                    def.texture_to_replace.clear();
+                    for _ in 0..count {
+                        def.retexture_to_find.push(b.read_i16()?);
+                        def.texture_to_replace.push(b.read_i16()?);
+                    }
+                }
+                42 => {
+                    b.read_u16()?;
+                }
+                60 => {
+                    let count = b.read_u8()? as usize;
+                    for _ in 0..count {
+                        b.read_u16()?;
+                    }
+                }
+                61 => {
+                    let count = b.read_u8()? as usize;
+                    def.models.clear();
+                    for _ in 0..count {
+                        def.models.push(b.read_i32()? as u32);
+                    }
+                }
+                62 => {
+                    let count = b.read_u8()? as usize;
+                    for _ in 0..count {
+                        b.read_i32()?;
+                    }
+                }
+                74..=79 => {
+                    b.read_u16()?;
+                }
+                93 => def.is_minimap_visible = false,
+                95 => def.combat_level = b.read_u16()? as i32,
+                97 => def.width_scale = b.read_u16()?,
+                98 => def.height_scale = b.read_u16()?,
+                99..=101 => {
+                    b.read_u8()?;
+                }
+                102 => {
+                    let bitfield = b.read_u8()?;
+                    let mut len = 0;
+                    let mut v = bitfield;
+                    while v != 0 {
+                        len += 1;
+                        v >>= 1;
+                    }
+                    for i in 0..len {
+                        if bitfield & (1 << i) != 0 {
+                            let _ = b.read_big_smart2()?;
+                            let _ = b.read_unsigned_short_smart_minus_one()?;
+                        }
+                    }
+                }
+                103 => {
+                    b.read_u16()?;
+                }
+                106 | 118 => {
+                    b.read_u16()?;
+                    b.read_u16()?;
+                    if opcode == 118 {
+                        b.read_u16()?;
+                    }
+                    let count = b.read_u8()? as usize;
+                    for _ in 0..=count {
+                        b.read_u16()?;
+                    }
+                }
+                107 => def.is_interactable = false,
+                109 => {}
+                111 => {}
+                114 => def.run_animation = b.read_u16()? as i32,
+                115 => {
+                    def.run_animation = b.read_u16()? as i32;
+                    b.read_u16()?;
+                    b.read_u16()?;
+                    b.read_u16()?;
+                }
+                116 => def.crawl_animation = b.read_u16()? as i32,
+                117 => {
+                    def.crawl_animation = b.read_u16()? as i32;
+                    b.read_u16()?;
+                    b.read_u16()?;
+                    b.read_u16()?;
+                }
+                122 | 123 | 129 | 130 | 145 => {}
+                124 => {
+                    b.read_u16()?;
+                }
+                126 => {
+                    b.read_u16()?;
+                }
+                146 => {
+                    b.read_u16()?;
+                }
+                147 => {}
+                other => {
+                    return Err(Error::parse(format!(
+                        "npc {}: unknown opcode {} at offset {}",
+                        id,
+                        other,
+                        b.pos()
+                    )));
+                }
+            }
+        }
+
+        Ok(def)
+    }
+}
+
+#[derive(Debug, Clone, Default)]
 pub struct UnderlayDefinition {
     pub id: u32,
     pub rgb: u32,

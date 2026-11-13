@@ -1,72 +1,74 @@
 # Status
 
-Last updated: M0 prototype, 2026-11-12.
+Last updated: M1 vertical slice, 2026-11-13.
 
 ## Working
 
-- Rust workspace builds (`cargo check --workspace`).
-- `rift-tools cache-info`: reads all 25 indices, reference tables, and keys.
-- `rift-tools terrain 44 47`: decodes Karamja terrain, prints height map and stats.
-- `rift-tools locations 44 47`: decodes 3,102 placements and resolves object names.
-- `rift-tools object/underlay/overlay/find-object`: config inspection.
-- `rift-tools model 1570/1617/1715`: model types 3 and 2.
-- `rift-tools export-obj`: OBJ export for Blender checks.
-- `rift-client`: winit + wgpu viewer; renders one 64×64 Karamja region with
-  terrain, underlay/overlay colours, and 320 scenery placements (palms, trees,
-  plants). Camera pan/rotate/zoom works.
-
-## Verified numbers
-
-- Cache: OpenRS2 2392 / build 235; 167 MB; 2,668 XTEA keys.
-- Terrain region 44,47: 46,379-byte group, 16,384 tiles, 7 overlays, 4,096
-  underlays.
-- Locations region 44,47: 6,506 bytes, 3,102 placements.
-- Object 1282 "Dead tree" → model 1715 (271 verts, 496 faces, untextured).
-- Object 1276 "Tree" → model 1570 (90 verts, 110 faces, 12 texture faces).
-- Scene: 4,225 terrain vertices, 174,606 model vertices, 320 placements.
+- Rust workspace builds; `cargo test --workspace` and `cargo clippy
+  --workspace --all-targets` are clean.
+- Cache reader: all 25 indices, reference tables, XTEA, gzip/bzip2/LZMA,
+  archive splitting with real file IDs.
+- Terrain/locations/object/NPC/underlay/overlay configs.
+- Model formats 2 and 3 with flat-shading normals, vertex groups, texture refs.
+- Sequence/frame/framemap decoding and interpolated CPU vertex animation.
+- `rift-tools`: `cache-info`, `terrain`, `locations`, `object`, `find-object`,
+  `npc`, `find-npc`, `sequence`, `animate`, `model`, `export-obj`,
+  `terrain-obj`, `underlay`, `overlay`, `scan-colors`.
+- Client: 3×3 Karamja region block (192×192 tiles), 37,249 terrain vertices,
+  900 scenery placements, 8 animated NPCs (monkeys/snakelings), a click-to-move
+  monkey champion, selection ring, click marker, camera follow, FPS/tile title.
+- Verified animation:
+  - NPC 23 "Monkey", model 7744, idle sequence 222 (2 frames, 21 ticks each),
+    walk sequence 219 (5 frames, 4/5/4/4/3 ticks).
+  - `animate 7744 222` and `animate 7744 219` show changing bounds; the viewer
+    plays both.
+- Verified input: a synthetic LMB click on the terrain produced `MOVE` targets
+  and the champion walked there.
 
 ## Known issues
 
-- The viewer renders a single region as a floating island; no neighbouring
-  regions or skirt yet.
-- Terrain colour is an approximation: underlay/overlay RGB × a height shade.
-  OSRS's palette/light table is not implemented, so greens are brighter than
-  the game.
-- Textured model faces use a green fallback; index 9 textures are not sampled.
-- No animations; sequences/frames and Animaya are not decoded yet.
-- No player kits/equipment compositing. Scenery only.
-- Model type 1 and old-format models return an error.
-- LZMA decompression is implemented but untested against this cache.
-- Config archive file IDs are assumed contiguous (`enumerate` → ID). Verify
-  before relying on non-contiguous config archives.
-- Window title contains a Unicode em dash that can render mojibake under X11;
-  use ASCII in UI strings until fonts are wired.
-- The viewer is not a game: no sim, netcode, HUD, lobby, audio, or editor.
+- Movement is direct steering; no A*, collision, water/cliff checks, or object
+  footprints. The champion can walk through scenery and water.
+- Textures are not sampled. `0xff00ff` overlay sentinels fall back to underlay
+  colours; textured model faces use a flat green fallback. Dead trees read as
+  pale spikes and palms as neon green.
+- Animaya is decoded only as a flag; it is not applied.
+- NPCs are idle; only the player plays idle/walk clips.
+- No HUD, health bars, abilities, combat, minions, towers, fog, lobby, netcode,
+  audio, or map editor.
+- The world is a fixed 3×3 block; no terrain skirt/streaming.
+- Camera follow overwrites pan until `WASD` is pressed; `F` toggles follow.
+- Plain mouse wheel is ignored; zoom is `Ctrl`+wheel to avoid accidental zoom.
+- LZMA is implemented but not exercised by cache 2392.
+- Model type 1 and old-format models still error.
 
-## How to reproduce the screenshot check
+## Reproduce
 
 ```sh
-cargo build -p rift-client
-WINIT_UNIX_BACKEND=x11 WAYLAND_DISPLAY= DISPLAY=:0 ./target/debug/rift-client &
-# raise the window, then:
-spectacle -b -n -o /tmp/rift.png
+cargo run -p rift-tools -- find-npc monkey --limit 5
+cargo run -p rift-tools -- sequence 222
+cargo run -p rift-tools -- animate 7744 222
+cargo run -p rift-client
 ```
 
-Do not commit screenshots of Jagex assets.
+Viewer controls: LMB move, WASD pan, Q/E rotate, Ctrl+wheel zoom, F follow,
+R reset, Esc quit.
 
 ## Next tasks
 
-1. Sequence/frame decoding and CPU vertex animation for one NPC.
-2. Sprite/font extraction for HUD and item icons.
-3. 3×3 Karamja import + terrain skirt + first lane carve.
-4. `crates/sim` skeleton: fixed tick, movement, A*, state hash.
-5. Map data schema + editor minimum carve/place/export.
-6. Fix config file-ID mapping and colour/lighting fidelity.
+1. A* pathfinding + collision on the tile grid, shared by client and sim.
+2. Carve the first MOBA lanes and place tower/nexus pads; bake collision/nav.
+3. Minimal HUD: health/mana, ability bar, FPS/coords, minimap.
+4. A real champion kit (Q/W/E/R) with one ability and auto-attacks.
+5. Sprite/font extraction for HUD and item icons.
+6. Terrain texture sampling and proper foliage/trunk colours.
+7. Deterministic `crates/sim` skeleton + state hash.
 
 ## Verification log
 
-- `cargo check --workspace` passes.
-- `rift-tools model 1617` fixed a type-2 offset bug (face opcodes now precede
-  priorities/packed groups; deltas precede colours).
-- `rift-client` scene build completes and renders; wgpu 30 API changes handled
-  (`CurrentSurfaceTexture`, `Queue::present`, Option depth state, `multiview_mask`).
+- `cargo test -p rift-cache`: 6 tests pass (smart reads, XTEA round trip, HSL,
+  group rejection, framemap/frame parse).
+- `cargo clippy --workspace --all-targets`: no warnings.
+- Scene: 9 regions, 37,249 terrain verts, 389,181 model verts, 900 placements,
+  8 NPCs, 9 animated units (8 NPCs + player).
+- Click test: `MOVE target=...` logged and champion moved; camera followed.

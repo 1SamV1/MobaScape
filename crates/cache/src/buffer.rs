@@ -146,6 +146,25 @@ impl<'a> Buffer<'a> {
         }
     }
 
+    /// Big smart variant used by NPC head icons: 32767 means -1.
+    pub fn read_big_smart2(&mut self) -> Result<i32> {
+        if self.peek_u8()? & 0x80 != 0 {
+            Ok((self.read_u32()? & 0x7fff_ffff) as i32)
+        } else {
+            let value = self.read_u16()?;
+            Ok(if value == 32767 { -1 } else { value as i32 })
+        }
+    }
+
+    /// Unsigned smart minus one, used by NPC head icons.
+    pub fn read_unsigned_short_smart_minus_one(&mut self) -> Result<i32> {
+        if self.peek_u8()? < 128 {
+            Ok(self.read_u8()? as i32 - 1)
+        } else {
+            Ok(self.read_u16()? as i32 - 0x8001)
+        }
+    }
+
     pub fn read_string(&mut self) -> Result<String> {
         const CP1252: [char; 32] = [
             '\u{20ac}', '\u{0}', '\u{201a}', '\u{192}', '\u{201e}', '\u{2026}', '\u{2020}',
@@ -169,5 +188,32 @@ impl<'a> Buffer<'a> {
             }
         }
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_smart_values() {
+        let mut b = Buffer::new(&[0x40, 0x7f, 0xff, 0xff]);
+        assert_eq!(b.read_short_smart().unwrap(), 0);
+        assert_eq!(b.read_short_smart().unwrap(), 63);
+        assert_eq!(b.read_short_smart().unwrap(), 0x3fff);
+
+        let mut b = Buffer::new(&[0x7f, 0x80, 0x00, 0xff, 0xff]);
+        assert_eq!(b.read_unsigned_short_smart().unwrap(), 127);
+        assert_eq!(b.read_unsigned_short_smart().unwrap(), 0);
+        assert_eq!(b.read_unsigned_short_smart().unwrap(), 0x7fff);
+    }
+
+    #[test]
+    fn reads_chained_smart_int() {
+        let mut b = Buffer::new(&[0xff, 0xff, 0x7f]);
+        assert_eq!(
+            b.read_unsigned_int_smart_short_compat().unwrap(),
+            32767 + 127
+        );
     }
 }

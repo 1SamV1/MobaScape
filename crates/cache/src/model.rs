@@ -1,5 +1,7 @@
+use crate::angle;
 use crate::buffer::Buffer;
 use crate::error::{Error, Result};
+use crate::sequence::{AnimationClip, Frame, Framemap};
 
 #[derive(Debug, Clone, Default)]
 pub struct Model {
@@ -54,31 +56,13 @@ impl Model {
         let packed_transparency_flag = h.read_u8()?;
         let face_textures_flag = h.read_u8()?;
         let packed_groups_flag = h.read_u8()?;
-        let animaya_flag = h.read_u8()?;
+        let _animaya_flag = h.read_u8()?;
         let vertex_dx_len = h.read_u16()? as usize;
         let vertex_dy_len = h.read_u16()? as usize;
         let vertex_dz_len = h.read_u16()? as usize;
         let face_index_deltas_len = h.read_u16()? as usize;
         let texture_coords_len = h.read_u16()? as usize;
         let packed_groups_len = h.read_u16()? as usize;
-
-        let mut tex_types = vec![0u8; num_texture_faces];
-        if num_texture_faces > 0 {
-            tex_types.copy_from_slice(&data[..num_texture_faces]);
-        }
-        let mut tex_type0 = 0usize;
-        let mut tex_type123 = 0usize;
-        let mut tex_type2 = 0usize;
-        for &t in &tex_types {
-            if t == 0 {
-                tex_type0 += 1;
-            } else if (1..=3).contains(&t) {
-                tex_type123 += 1;
-            }
-            if t == 2 {
-                tex_type2 += 1;
-            }
-        }
 
         let mut cursor = num_texture_faces + vertex_count;
         let face_render_types_off = cursor;
@@ -87,17 +71,17 @@ impl Model {
         }
         let face_opcodes_off = cursor;
         cursor += face_count;
-        let priorities_off = cursor;
+        let _priorities_off = cursor;
         if priority_raw == 255 {
             cursor += face_count;
         }
-        let packed_transparency_off = cursor;
+        let _packed_transparency_off = cursor;
         if packed_transparency_flag == 1 {
             cursor += face_count;
         }
         let packed_groups_off = cursor;
         cursor += packed_groups_len;
-        let transparencies_off = cursor;
+        let _transparencies_off = cursor;
         if face_transparencies_flag == 1 {
             cursor += face_count;
         }
@@ -116,16 +100,6 @@ impl Model {
         let vertex_dy_off = cursor;
         cursor += vertex_dy_len;
         let vertex_dz_off = cursor;
-        cursor += vertex_dz_len;
-        let tex_type0_off = cursor;
-        cursor += tex_type0 * 6;
-        let _tex_type123_off = cursor;
-        cursor += tex_type123 * 6;
-        cursor += tex_type123 * 6;
-        cursor += tex_type123 * 2;
-        cursor += tex_type123;
-        cursor += tex_type123 * 2 + tex_type2 * 2;
-
         check_range(data.len(), vertex_dx_off, vertex_dx_len, id)?;
         check_range(data.len(), vertex_dy_off, vertex_dy_len, id)?;
         check_range(data.len(), vertex_dz_off, vertex_dz_len, id)?;
@@ -185,11 +159,6 @@ impl Model {
             if let Some(groups) = packed_groups.as_mut() {
                 groups[i] = data[packed_groups_off + i];
             }
-        }
-
-        if animaya_flag == 1 {
-            // Animaya data is not needed for static rendering. It follows the
-            // packed group block and is only read by the client animation code.
         }
 
         let mut face_colors = Vec::with_capacity(face_count);
@@ -276,7 +245,7 @@ impl Model {
         let transparencies_flag = h.read_u8()?;
         let packed_transparency_flag = h.read_u8()?;
         let packed_groups_flag = h.read_u8()?;
-        let animaya_flag = h.read_u8()?;
+        let _animaya_flag = h.read_u8()?;
         let vertex_dx_len = h.read_u16()? as usize;
         let vertex_dy_len = h.read_u16()? as usize;
         let vertex_dz_len = h.read_u16()? as usize;
@@ -286,11 +255,11 @@ impl Model {
         let mut cursor = vertex_count;
         let face_opcodes_off = cursor;
         cursor += face_count;
-        let priorities_off = cursor;
+        let _priorities_off = cursor;
         if priority_raw == 255 {
             cursor += face_count;
         }
-        let packed_transparency_off = cursor;
+        let _packed_transparency_off = cursor;
         if packed_transparency_flag == 1 {
             cursor += face_count;
         }
@@ -300,7 +269,7 @@ impl Model {
         }
         let packed_groups_off = cursor;
         cursor += packed_groups_len;
-        let transparencies_off = cursor;
+        let _transparencies_off = cursor;
         if transparencies_flag == 1 {
             cursor += face_count;
         }
@@ -315,7 +284,6 @@ impl Model {
         let vertex_dy_off = cursor;
         cursor += vertex_dy_len;
         let vertex_dz_off = cursor;
-        cursor += vertex_dz_len;
 
         check_range(data.len(), vertex_dx_off, vertex_dx_len, id)?;
         check_range(data.len(), vertex_dy_off, vertex_dy_len, id)?;
@@ -464,6 +432,187 @@ impl Model {
         let hsl = self.face_colors.get(face).copied().unwrap_or(0);
         hsl_to_rgb(hsl, brightness)
     }
+
+    /// Animate the model with a sequence clip and return cache-space positions.
+    /// The caller converts Y to engine space (engine Y is up; cache Y is negative
+    /// up).
+    pub fn animated_positions(&self, clip: &AnimationClip, time_ms: f32) -> Vec<[f32; 3]> {
+        let original = self
+            .vertex_x
+            .iter()
+            .zip(&self.vertex_y)
+            .zip(&self.vertex_z)
+            .map(|((&x, &y), &z)| [x, y, z])
+            .collect::<Vec<_>>();
+
+        if clip.frames.is_empty() || clip.sequence.frame_lengths.is_empty() {
+            return original
+                .into_iter()
+                .map(|p| [p[0] as f32, p[1] as f32, p[2] as f32])
+                .collect();
+        }
+
+        let total_ticks: u32 = clip
+            .sequence
+            .frame_lengths
+            .iter()
+            .map(|&l| l.max(1) as u32)
+            .sum();
+        let loop_ms = total_ticks as f32 * 20.0;
+        let time = if clip.sequence.max_loops > 1 {
+            time_ms.rem_euclid(loop_ms.max(1.0))
+        } else {
+            time_ms.clamp(0.0, loop_ms)
+        };
+
+        let mut elapsed = 0.0f32;
+        let mut frame_index = 0usize;
+        let mut frame_progress = 0.0f32;
+        for (i, &length) in clip.sequence.frame_lengths.iter().enumerate() {
+            let length_ms = length.max(1) as f32 * 20.0;
+            if time < elapsed + length_ms || i + 1 == clip.sequence.frame_lengths.len() {
+                frame_index = i;
+                frame_progress = ((time - elapsed) / length_ms).clamp(0.0, 1.0);
+                break;
+            }
+            elapsed += length_ms;
+        }
+
+        let next_index = (frame_index + 1) % clip.frames.len();
+        let frame_a = &clip.frames[frame_index.min(clip.frames.len() - 1)];
+        let framemap_a = &clip.framemaps[frame_index.min(clip.framemaps.len() - 1)];
+        let frame_b = &clip.frames[next_index.min(clip.frames.len() - 1)];
+        let framemap_b = &clip.framemaps[next_index.min(clip.framemaps.len() - 1)];
+
+        let mut a = original.clone();
+        let mut b = original;
+        self.apply_frame(frame_a, framemap_a, &mut a);
+        self.apply_frame(frame_b, framemap_b, &mut b);
+
+        a.iter()
+            .zip(&b)
+            .map(|(p, q)| {
+                [
+                    p[0] as f32 + (q[0] - p[0]) as f32 * frame_progress,
+                    p[1] as f32 + (q[1] - p[1]) as f32 * frame_progress,
+                    p[2] as f32 + (q[2] - p[2]) as f32 * frame_progress,
+                ]
+            })
+            .collect()
+    }
+
+    fn apply_frame(&self, frame: &Frame, framemap: &Framemap, positions: &mut [[i32; 3]]) {
+        let mut offset = [0i32; 3];
+
+        for (entry, &group_index) in frame.index_frame_ids.iter().enumerate() {
+            let group_index = group_index as usize;
+            if group_index >= framemap.types.len() {
+                continue;
+            }
+            let group_type = framemap.types[group_index];
+            let group_ids = &framemap.frame_maps[group_index];
+            if group_ids.is_empty() {
+                continue;
+            }
+            let dx = frame.translator_x.get(entry).copied().unwrap_or(0);
+            let dy = frame.translator_y.get(entry).copied().unwrap_or(0);
+            let dz = frame.translator_z.get(entry).copied().unwrap_or(0);
+
+            let mut vertices = Vec::new();
+            for &group in group_ids {
+                if let Some(group_vertices) = self
+                    .vertex_groups
+                    .as_ref()
+                    .and_then(|g| g.get(group as usize))
+                {
+                    vertices.extend_from_slice(group_vertices);
+                }
+            }
+            if vertices.is_empty() {
+                continue;
+            }
+
+            match group_type {
+                0 => {
+                    let mut sum = [0i64; 3];
+                    for &vertex in &vertices {
+                        sum[0] += positions[vertex as usize][0] as i64;
+                        sum[1] += positions[vertex as usize][1] as i64;
+                        sum[2] += positions[vertex as usize][2] as i64;
+                    }
+                    let count = vertices.len() as i64;
+                    offset = [
+                        dx + (sum[0] / count) as i32,
+                        dy + (sum[1] / count) as i32,
+                        dz + (sum[2] / count) as i32,
+                    ];
+                }
+                1 => {
+                    for &vertex in &vertices {
+                        let p = &mut positions[vertex as usize];
+                        p[0] = p[0].saturating_add(dx);
+                        p[1] = p[1].saturating_add(dy);
+                        p[2] = p[2].saturating_add(dz);
+                    }
+                }
+                2 => {
+                    let ax = (dx & 255) * 8;
+                    let ay = (dy & 255) * 8;
+                    let az = (dz & 255) * 8;
+                    for &vertex in &vertices {
+                        let p = &mut positions[vertex as usize];
+                        p[0] = p[0].saturating_sub(offset[0]);
+                        p[1] = p[1].saturating_sub(offset[1]);
+                        p[2] = p[2].saturating_sub(offset[2]);
+
+                        if az != 0 {
+                            let sin = angle::sine(az) as i64;
+                            let cos = angle::cosine(az) as i64;
+                            let x = ((sin * p[1] as i64 + cos * p[0] as i64) >> 16) as i32;
+                            let y = ((cos * p[1] as i64 - sin * p[0] as i64) >> 16) as i32;
+                            p[0] = x;
+                            p[1] = y;
+                        }
+                        if ax != 0 {
+                            let sin = angle::sine(ax) as i64;
+                            let cos = angle::cosine(ax) as i64;
+                            let y = ((cos * p[1] as i64 - sin * p[2] as i64) >> 16) as i32;
+                            let z = ((sin * p[1] as i64 + cos * p[2] as i64) >> 16) as i32;
+                            p[1] = y;
+                            p[2] = z;
+                        }
+                        if ay != 0 {
+                            let sin = angle::sine(ay) as i64;
+                            let cos = angle::cosine(ay) as i64;
+                            let z = ((sin * p[2] as i64 + cos * p[0] as i64) >> 16) as i32;
+                            let x = ((cos * p[2] as i64 - sin * p[0] as i64) >> 16) as i32;
+                            p[2] = z;
+                            p[0] = x;
+                        }
+
+                        p[0] = p[0].saturating_add(offset[0]);
+                        p[1] = p[1].saturating_add(offset[1]);
+                        p[2] = p[2].saturating_add(offset[2]);
+                    }
+                }
+                3 => {
+                    for &vertex in &vertices {
+                        let p = &mut positions[vertex as usize];
+                        p[0] = p[0].saturating_sub(offset[0]);
+                        p[1] = p[1].saturating_sub(offset[1]);
+                        p[2] = p[2].saturating_sub(offset[2]);
+                        p[0] = (dx * p[0]) / 128;
+                        p[1] = (dy * p[1]) / 128;
+                        p[2] = (dz * p[2]) / 128;
+                        p[0] = p[0].saturating_add(offset[0]);
+                        p[1] = p[1].saturating_add(offset[1]);
+                        p[2] = p[2].saturating_add(offset[2]);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
 }
 
 fn check_range(len: usize, off: usize, size: usize, id: u32) -> Result<()> {
@@ -512,8 +661,7 @@ fn decode_faces(
             }
             4 => {
                 let old_v1 = v1;
-                v1 = v2;
-                v2 = old_v1;
+                std::mem::swap(&mut v1, &mut v2);
                 v3 = deltas.read_short_smart()?.saturating_add(last);
                 last = v3;
                 faces[i] = [v1 as u32, old_v1 as u32, v3 as u32];

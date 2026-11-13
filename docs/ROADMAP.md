@@ -38,30 +38,37 @@ Exit criteria:
 
 Status: **met**, with known limitations in [STATUS.md](STATUS.md).
 
-### M1 — Asset pipeline and Karamja carve
+### M1 — Asset pipeline and Karamja carve (in progress)
 
 Scope: sequences/frames, animation playback, sprites/fonts, textures (at least
 sampled foliage), asset pack, 3×3 region import, first lane carve, minimap bake.
 
-Exit criteria:
+Done:
 
-- One animated NPC loops correctly in engine space.
-- Karamja 3×3 block loads without malformed geometry.
-- A 160×160 playable map with three rough lanes, river, bases, and tower pads
-  loads from data.
-- Asset rebuild is reproducible and under ~2 minutes.
+- Sequences, frames, framemaps, interpolated CPU vertex animation.
+- 3×3 Karamja block with 900 scenery placements and 8 animated NPCs.
+- Click-to-move player, selection ring, click marker, camera follow.
+
+Remaining:
+
+- Sprite/font extraction, texture sampling, minimap bake.
+- First lane carve, river/bases/tower pads, collision/nav bake.
+- Asset pack + reproducible rebuild.
 - Missing/unsupported assets fail loudly with cache/model IDs.
 
-### M2 — Playable sandbox
+### M2 — Playable sandbox (partially started)
 
 Scope: camera/input, click-to-move + hold-steer, A* pathing, one champion,
 auto-attacks, one ability, dummy minions, tower, fog v0, HUD v0.
 
-Exit criteria:
+Done so far: click-to-move (direct steering), camera follow/pan, animated
+champion, selection ring.
 
-- A single player can move, attack, cast, and die/respawn in the carved map.
-- Pathing handles collision and lane corridors without rubber-banding.
-- Fog hides enemies behind canopy and at range.
+Remaining:
+
+- A* pathfinding + collision + hold-to-steer.
+- One real ability and auto-attacks.
+- Dummy minions, a tower, fog v0, HUD v0.
 - Frame time <16.6 ms at 1080p on the 680M.
 
 ### M3 — Match loop

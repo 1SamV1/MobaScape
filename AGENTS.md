@@ -71,13 +71,17 @@ cargo fmt --all
 cargo clippy --workspace --all-targets -- -D warnings   # target: clean
 ```
 
-M0 commands:
+M1 commands:
 
 ```sh
 cargo run -p rift-tools -- cache-info
 cargo run -p rift-tools -- terrain 44 47
 cargo run -p rift-tools -- locations 44 47
 cargo run -p rift-tools -- object 1282
+cargo run -p rift-tools -- find-npc monkey --limit 5
+cargo run -p rift-tools -- npc 23
+cargo run -p rift-tools -- sequence 222
+cargo run -p rift-tools -- animate 7744 222
 cargo run -p rift-tools -- model 1715
 cargo run -p rift-client
 ```
@@ -146,17 +150,23 @@ Cache location: `.cache/osrs-235/cache` by default. Pass `--cache` and
 - Renderer changes: include a headless screenshot or a manual visual check note.
 - Performance: 1080p/60 target on the AMD 680M iGPU. Profile before optimizing.
 
-## 8. Known M0 limitations
+## 8. Known M1 limitations
 
-- Client renders one 64×64 region as a floating island.
+- Client renders a 3×3 region block (192×192 tiles); there is no terrain skirt
+  or streaming beyond it.
 - Model formats 1 and old-format models are not implemented yet.
-- Textures are not sampled; textured faces use a green fallback.
-- No animation playback, no player kits, no equipment compositing.
-- No HUD, lobby, gameplay, netcode, audio, or map editor.
+- Textures are not sampled; textured faces and the `0xff00ff` overlay sentinel
+  use flat fallback colours. Dead-tree trunks read as pale spikes.
+- Animaya is not applied; only classic frame/framemap animation works.
+- Player movement is direct steering, not A*/collision. It can walk through
+  water, cliffs, and scenery. The sim/pathing milestone fixes this.
+- No combat, HUD, lobby, netcode, audio, or map editor. NPCs idle only; the
+  player plays idle/walk clips.
 - LZMA groups are implemented but not exercised by the pinned cache.
-- Config archive file IDs are assumed contiguous; verify before relying on them.
-- Window title uses a Unicode em dash that appears mojibake under some X11
-  setups; use ASCII in new UI strings until fonts are wired.
+- Config archives now use real file IDs from the reference table; keep it that
+  way for every new config archive.
+- The viewer follows the player by default. `WASD` disables follow; `F` toggles.
+- Use ASCII in window/UI strings until fonts are wired.
 
 ## 9. Commit / PR style
 

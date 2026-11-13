@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use glam::{Mat4, Vec3};
+use glam::{Mat4, Vec3, Vec4};
 use wgpu::util::DeviceExt;
 use winit::window::Window;
 
-use crate::scene::{MeshData, SceneData, Vertex};
+use crate::scene::{HeightGrid, MeshData, SceneData, Vertex};
 
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
@@ -27,7 +27,7 @@ impl Camera {
             target,
             yaw: 0.72,
             pitch: 0.86,
-            distance: 9000.0,
+            distance: 4400.0,
         }
     }
 
@@ -35,7 +35,7 @@ impl Camera {
         self.target = target;
         self.yaw = 0.72;
         self.pitch = 0.86;
-        self.distance = 9000.0;
+        self.distance = 4400.0;
     }
 
     pub fn eye(&self) -> Vec3 {
@@ -91,6 +91,11 @@ pub struct Renderer {
     depth_view: wgpu::TextureView,
     terrain: GpuMesh,
     models: GpuMesh,
+    dynamic_vertex_buffer: wgpu::Buffer,
+    dynamic_index_buffer: wgpu::Buffer,
+    dynamic_vertex_capacity: usize,
+    dynamic_index_capacity: usize,
+    dynamic_index_count: u32,
     pub camera: Camera,
     scene_center: Vec3,
     pub size: (u32, u32),
@@ -245,6 +250,21 @@ impl Renderer {
         let terrain = GpuMesh::upload(&device, &scene.terrain, "terrain");
         let models = GpuMesh::upload(&device, &scene.models, "models");
 
+        let dynamic_vertex_capacity = 1024;
+        let dynamic_index_capacity = 3072;
+        let dynamic_vertex_buffer = create_dynamic_buffer(
+            &device,
+            "dynamic vertices",
+            dynamic_vertex_capacity * std::mem::size_of::<Vertex>(),
+            wgpu::BufferUsages::VERTEX,
+        );
+        let dynamic_index_buffer = create_dynamic_buffer(
+            &device,
+            "dynamic indices",
+            dynamic_index_capacity * std::mem::size_of::<u32>(),
+            wgpu::BufferUsages::INDEX,
+        );
+
         let mut renderer = Self {
             surface,
             device,
@@ -256,6 +276,11 @@ impl Renderer {
             depth_view,
             terrain,
             models,
+            dynamic_vertex_buffer,
+            dynamic_index_buffer,
+            dynamic_vertex_capacity,
+            dynamic_index_capacity,
+            dynamic_index_count: 0,
             camera: initial_camera,
             scene_center: scene.center,
             size: (width, height),
@@ -291,6 +316,85 @@ impl Renderer {
     pub fn reset_camera(&mut self) {
         self.camera.reset(self.scene_center);
         self.update_camera();
+    }
+
+    pub fn set_dynamic_mesh(&mut self, vertices: &[Vertex], indices: &[u32]) {
+        if vertices.len() > self.dynamic_vertex_capacity {
+            let capacity = vertices.len().next_power_of_two();
+            self.dynamic_vertex_buffer = create_dynamic_buffer(
+                &self.device,
+                "dynamic vertices",
+                capacity * std::mem::size_of::<Vertex>(),
+                wgpu::BufferUsages::VERTEX,
+            );
+            self.dynamic_vertex_capacity = capacity;
+        }
+        if indices.len() > self.dynamic_index_capacity {
+            let capacity = indices.len().next_power_of_two();
+            self.dynamic_index_buffer = create_dynamic_buffer(
+                &self.device,
+                "dynamic indices",
+                capacity * std::mem::size_of::<u32>(),
+                wgpu::BufferUsages::INDEX,
+            );
+            self.dynamic_index_capacity = capacity;
+        }
+        if !vertices.is_empty() {
+            self.queue.write_buffer(
+                &self.dynamic_vertex_buffer,
+                0,
+                bytemuck::cast_slice(vertices),
+            );
+        }
+        if !indices.is_empty() {
+            self.queue
+                .write_buffer(&self.dynamic_index_buffer, 0, bytemuck::cast_slice(indices));
+        }
+        self.dynamic_index_count = indices.len() as u32;
+    }
+
+    pub fn pick_ground(&self, cursor_x: f64, cursor_y: f64, height: &HeightGrid) -> Option<Vec3> {
+        let aspect = self.config.width as f32 / self.config.height as f32;
+        let inv = self.camera.view_proj(aspect).inverse();
+        let ndc_x = 2.0 * cursor_x as f32 / self.config.width as f32 - 1.0;
+        let ndc_y = 1.0 - 2.0 * cursor_y as f32 / self.config.height as f32;
+        let near = inv * Vec4::new(ndc_x, ndc_y, 0.0, 1.0);
+        let far = inv * Vec4::new(ndc_x, ndc_y, 1.0, 1.0);
+        if near.w.abs() < 1e-6 || far.w.abs() < 1e-6 {
+            return None;
+        }
+        let origin = Vec3::new(near.x / near.w, near.y / near.w, near.z / near.w);
+        let far = Vec3::new(far.x / far.w, far.y / far.w, far.z / far.w);
+        let dir = (far - origin).normalize_or_zero();
+        if dir.length_squared() < 1e-6 {
+            return None;
+        }
+
+        let mut t = 0.0f32;
+        let step = 24.0f32;
+        let mut last = origin;
+        while t < 80_000.0 {
+            let p = origin + dir * t;
+            if height.contains(p.x, p.z) && p.y <= height.height_at(p.x, p.z) {
+                let mut lo = (t - step).max(0.0);
+                let mut hi = t;
+                for _ in 0..24 {
+                    let mid = (lo + hi) * 0.5;
+                    let q = origin + dir * mid;
+                    if q.y <= height.height_at(q.x, q.z) {
+                        hi = mid;
+                    } else {
+                        lo = mid;
+                    }
+                }
+                let q = origin + dir * hi;
+                return Some(Vec3::new(q.x, height.height_at(q.x, q.z), q.z));
+            }
+            last = p;
+            t += step;
+        }
+        let _ = last;
+        None
     }
 
     pub fn render(&mut self) -> Result<()> {
@@ -362,12 +466,34 @@ impl Renderer {
                 pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
                 pass.draw_indexed(0..mesh.index_count, 0, 0..1);
             }
+            if self.dynamic_index_count > 0 {
+                pass.set_vertex_buffer(0, self.dynamic_vertex_buffer.slice(..));
+                pass.set_index_buffer(
+                    self.dynamic_index_buffer.slice(..),
+                    wgpu::IndexFormat::Uint32,
+                );
+                pass.draw_indexed(0..self.dynamic_index_count, 0, 0..1);
+            }
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));
         self.queue.present(output);
         Ok(())
     }
+}
+
+fn create_dynamic_buffer(
+    device: &wgpu::Device,
+    label: &str,
+    size: usize,
+    usage: wgpu::BufferUsages,
+) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some(label),
+        size: size.max(4) as u64,
+        usage: usage | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
 }
 
 fn create_depth_view(device: &wgpu::Device, width: u32, height: u32) -> wgpu::TextureView {

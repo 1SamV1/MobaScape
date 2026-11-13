@@ -10,7 +10,6 @@ use crate::keys::XteaKeys;
 use crate::reference::IndexData;
 
 const SECTOR_SIZE: usize = 520;
-const SECTOR_DATA_SIZE: usize = 512;
 const INDEX_ENTRY_SIZE: usize = 6;
 const REFERENCE_INDEX: usize = 255;
 
@@ -200,6 +199,25 @@ impl Cache {
         split_archive(&group.data, file_count)
     }
 
+    /// Split an archive and pair each file with its real file ID from the
+    /// reference table. Config archives are not guaranteed to have contiguous
+    /// IDs, so callers must not use the vector position as the ID.
+    pub fn archive_files_with_ids(&self, index: u32, archive: u32) -> Result<Vec<(u32, Vec<u8>)>> {
+        let files = self.archive_files(index, archive)?;
+        let reference = self.reference(index)?;
+        let meta = reference
+            .archive(archive)
+            .ok_or_else(|| Error::parse(format!("missing archive {index}/{archive}")))?;
+        if meta.files.len() != files.len() {
+            return Err(Error::parse(format!(
+                "archive {index}/{archive}: reference says {} files, split {}",
+                meta.files.len(),
+                files.len()
+            )));
+        }
+        Ok(meta.files.iter().map(|f| f.id).zip(files).collect())
+    }
+
     pub fn file(&self, index: u32, archive: u32, file_id: u32) -> Result<Vec<u8>> {
         let files = self.archive_files(index, archive)?;
         let reference = self.reference(index)?;
@@ -222,6 +240,7 @@ impl Cache {
     }
 }
 
+#[allow(clippy::needless_range_loop)]
 fn split_archive(data: &[u8], file_count: usize) -> Result<Vec<Vec<u8>>> {
     if data.is_empty() {
         return Err(Error::parse("empty multi-file archive"));

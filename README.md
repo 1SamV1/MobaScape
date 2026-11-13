@@ -4,19 +4,22 @@ A 5v5 MOBA built on a custom Rust engine, using modern Old School RuneScape
 cache assets for its visual identity. Server-authoritative, data-driven, and
 designed for fast-paced low-team-count matches.
 
-> Status: **M0 prototype**. The cache reader, terrain/location decoders, model
-> decoders, and a wgpu viewer are working. There is no gameplay, networking, or
-> HUD yet. See [docs/STATUS.md](docs/STATUS.md).
+> Status: **M1 vertical slice**. The cache reader, terrain/location/model/sequence
+> decoders, animated NPCs, a 3x3 Karamja block, click-to-move, and a wgpu viewer
+> are working. There is no HUD, combat, pathfinding, or networking yet. See
+> [docs/STATUS.md](docs/STATUS.md).
 
 ## What exists
 
 - `crates/cache` — read-only OSRS cache reader:
   - 520-byte sector store, 6-byte index entries, XTEA, gzip/bzip2/LZMA
-  - index reference tables, archive splitting
-  - terrain (64×64×4), locations, object/underlay/overlay configs
+  - index reference tables, archive splitting with real file IDs
+  - terrain (64×64×4), locations, object/NPC/underlay/overlay configs
   - model formats 2 and 3 with flat-shading normals and vertex groups
+  - sequences, frames, framemaps, and interpolated vertex animation
 - `crates/tools` — `rift-tools` CLI for cache inspection and OBJ export
-- `crates/client` — native wgpu viewer (terrain + cached scenery)
+- `crates/client` — native wgpu viewer: 3x3 Karamja, scenery, animated NPCs,
+  click-to-move player, camera follow
 - `docs/reference` — archived Java-era experiments (not built)
 
 ## Requirements
@@ -36,9 +39,12 @@ cargo run -p rift-tools -- cache-info
 cargo run -p rift-tools -- terrain 44 47
 cargo run -p rift-tools -- locations 44 47
 cargo run -p rift-tools -- find-object tree --limit 5
+cargo run -p rift-tools -- find-npc monkey --limit 5
+cargo run -p rift-tools -- sequence 222
+cargo run -p rift-tools -- animate 7744 222
 cargo run -p rift-tools -- model 1715
 
-# Render the region
+# Render the 3x3 block and play
 cargo run -p rift-client
 ```
 
@@ -48,10 +54,12 @@ Put `keys.json` next to `main_file_cache.dat2`, or pass `--keys`.
 
 ## Controls (viewer)
 
-- `WASD` / arrows: pan
+- **LMB ground**: click to move the champion (tap-to-move)
+- `WASD` / arrows: pan the camera (disables follow)
 - `Q` / `E`: rotate
-- wheel: zoom (only while the window is focused)
-- `R`: reset camera
+- `Ctrl` + wheel: zoom (plain wheel is ignored to avoid accidental zoom)
+- `F`: toggle camera follow
+- `R`: reset camera to the champion
 - `Esc`: quit
 
 ## Design north star
