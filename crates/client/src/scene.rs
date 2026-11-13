@@ -1221,6 +1221,10 @@ pub fn build(
                     && let Some(kind) = GroundDecor::from_definition(&def)
                     && let Some(model_id) = def.first_model()
                     && !DECOR_MODEL_BLOCKLIST.contains(&model_id)
+                    && !map.in_biome(
+                        *rx as i32 * 64 + loc.x as i32,
+                        *ry as i32 * 64 + loc.y as i32,
+                    )
                     && base_keep_clear
                         .iter()
                         .all(|p| p.distance(Vec3::new(wx, p.y, wz)) >= DECOR_STRUCTURE_CLEAR)
@@ -1338,11 +1342,7 @@ pub fn build(
         let model = cached_model(cache, &mut model_cache, model_id)?;
         let wx = ((rx as f32 * 64.0) + loc.x as f32 + 0.5) * 128.0;
         let wz = ((ry as f32 * 64.0) + loc.y as f32 + 0.5) * 128.0;
-        let base = Vec3::new(
-            wx,
-            terrain.height(0, loc.x as usize, loc.y as usize) as f32 * 8.0,
-            wz,
-        );
+        let base = Vec3::new(wx, height.height_at(wx, wz), wz);
         let seed = loc
             .id
             .wrapping_mul(0x9E37_79B9)
