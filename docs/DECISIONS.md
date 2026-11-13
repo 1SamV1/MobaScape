@@ -466,3 +466,16 @@ The shop shows `IN TRANSIT` on items that are waiting in the chest, and the
 inventory limit counts pending items so a player cannot over-order past six
 slots. Couriers and the chest are not targetable, cannot be damaged, do not
 block clicks and never show health bars.
+
+
+## ADR-036 — Neutral camps are visible by proximity
+
+**Status:** accepted for M5.13.
+
+Camps are static jungle objectives, not ambushers. Hiding them with brush or
+with the tree sight grid made them invisible until the hero was almost
+standing on them. Camps are now revealed whenever the hero is within 1500
+world units, independent of brush and line of sight; their minimap dots follow
+the same rule. Two camps had been configured with model 16238, which is a
+table prop rather than a creature, and were swapped to General Graardor Jr.
+(27660) and Zilyana Jr. (27989).

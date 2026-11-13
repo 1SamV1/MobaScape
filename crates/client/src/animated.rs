@@ -2014,10 +2014,29 @@ impl AnimatedScene {
             if !self.visibility.is_visible(tx, ty) {
                 continue;
             }
-            if point_in_brush(&brush, unit.pos) && player_pos.distance(unit.pos) > 500.0 {
+            // Neutral jungle camps are never hidden by brush: they are
+            // stationary objectives, not ambushers, and should be visible as
+            // soon as the team has line of sight to their camp.
+            if unit.team != 2
+                && point_in_brush(&brush, unit.pos)
+                && player_pos.distance(unit.pos) > 500.0
+            {
                 continue;
             }
             unit.visible = true;
+        }
+        // Neutral camps are revealed by proximity alone: they are static
+        // objectives, so trees or brush should not make them invisible until
+        // the hero is standing on top of them.
+        let player_pos = self.player_pos();
+        for unit in &mut self.units {
+            if unit.team == 2
+                && unit.kind == UnitKind::Camp
+                && unit.health > 0.0
+                && player_pos.distance(unit.pos) <= 1500.0
+            {
+                unit.visible = true;
+            }
         }
         // Structures are permanent map features: the player always knows
         // where the towers, inhibitors, nexus and watchtowers stand, even

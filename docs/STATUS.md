@@ -1,6 +1,6 @@
 # Status
 
-Last updated: M5.11 remote purchases + delivery guard, 2026-11-13.
+Last updated: M5.13 camp visibility + creature models, 2026-11-13.
 
 ## Working
 
@@ -27,6 +27,10 @@ Last updated: M5.11 remote purchases + delivery guard, 2026-11-13.
   the side of the river they stand on.
 - Jungle: eight neutral camps with proximity aggro, chase, leash reset and
   respawn; Might (+25% damage) or Swift (+20% speed) team buffs for 60 s.
+  Camps are revealed by proximity (1500 units) regardless of brush or tree
+  line of sight, so they never ambush the player from a hidden tile. The two
+  camps that accidentally used a table prop model now use creature models
+  (General Graardor Jr. 27660 and Zilyana Jr. 27989).
 - Presentation: HDR `Rgba16Float` scene target with a real bloom chain
   (bright pass, separable Gaussian, ACES tonemap), cache-native ground
   texture array with world-space UVs, two-sided lighting with a camera fill,
