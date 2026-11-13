@@ -9,12 +9,12 @@
         2740.0,
         3010.0
       ],
-      "model": 1747,
+      "model": 36053,
       "health": 1500,
       "range": 0,
       "damage": 0,
       "interval": 0,
-      "scale": 1.4
+      "scale": 2.15
     },
     {
       "team": 1,
@@ -23,12 +23,12 @@
         2960.0,
         3010.0
       ],
-      "model": 1747,
+      "model": 36053,
       "health": 1500,
       "range": 0,
       "damage": 0,
       "interval": 0,
-      "scale": 1.4
+      "scale": 2.15
     }
   ],
   "lanes": [
@@ -126,12 +126,12 @@
             2757.6,
             3065.0
           ],
-          "model": 1747,
+          "model": 12953,
           "health": 700,
           "range": 0,
           "damage": 0,
           "interval": 0,
-          "scale": 0.9
+          "scale": 1.75
         },
         {
           "team": 1,
@@ -140,12 +140,12 @@
             2942.4,
             3065.0
           ],
-          "model": 1747,
+          "model": 9721,
           "health": 700,
           "range": 0,
           "damage": 0,
           "interval": 0,
-          "scale": 0.9
+          "scale": 1.8
         }
       ],
       "watchtowers": [
@@ -283,12 +283,12 @@
             2757.6,
             3021.0
           ],
-          "model": 1747,
+          "model": 12953,
           "health": 700,
           "range": 0,
           "damage": 0,
           "interval": 0,
-          "scale": 0.9
+          "scale": 1.75
         },
         {
           "team": 1,
@@ -297,12 +297,12 @@
             2942.4,
             3021.0
           ],
-          "model": 1747,
+          "model": 9721,
           "health": 700,
           "range": 0,
           "damage": 0,
           "interval": 0,
-          "scale": 0.9
+          "scale": 1.8
         }
       ],
       "watchtowers": [
@@ -432,12 +432,12 @@
             2757.6,
             2955.0
           ],
-          "model": 1747,
+          "model": 12953,
           "health": 700,
           "range": 0,
           "damage": 0,
           "interval": 0,
-          "scale": 0.9
+          "scale": 1.75
         },
         {
           "team": 1,
@@ -446,12 +446,12 @@
             2942.4,
             2955.0
           ],
-          "model": 1747,
+          "model": 9721,
           "health": 700,
           "range": 0,
           "damage": 0,
           "interval": 0,
-          "scale": 0.9
+          "scale": 1.8
         }
       ],
       "watchtowers": [

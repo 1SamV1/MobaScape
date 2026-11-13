@@ -188,15 +188,12 @@ fn albedo(input: VsOut) -> vec3<f32> {
         // Lanes are baked into the terrain: the vertex alpha carries the
         // road mask and the OSRS road sprites are blended into the ground
         // so there is no ribbon hovering over the terrain.
-        // Steep ground blends a vertical stone projection so cliffs read as
-        // rock. The side projection is uniform (x+z, y), so it never
-        // stretches or ripples like a normal-warped planar UV.
+        // Steep ground used to blend a projected stone sprite over cliffs.
+        // That projection stacked the sprite into horizontal bands whenever
+        // the hill climbed, so the ground now keeps its natural grass/dirt
+        // texture on slopes and only takes a light contact-darkening term.
         let steep = smoothstep(0.10, 0.38, slope);
-        if (steep > 0.01) {
-            let rock_uv = vec2<f32>(input.world.x + input.world.z, input.world.y) / 260.0;
-            let rock = textureSample(terrain_textures, terrain_sampler, rock_uv, 2).rgb;
-            tex = mix(tex, rock * (0.55 + c * 0.9), steep * 0.6);
-        }
+        tex *= 1.0 - steep * 0.16;
 
         // Roads fade out on steep ground instead of stretching up cliffs.
         let lane = clamp(input.color.a, 0.0, 1.0) * (1.0 - smoothstep(0.08, 0.30, slope));
@@ -207,12 +204,25 @@ fn albedo(input: VsOut) -> vec3<f32> {
             tex = mix(tex, mix(road, gravel, 0.45), lane * 0.94);
         }
 
+        // A second, much larger noise scale lays broad dirt patches over the
+        // repeating ground sprites. 117HD's fields are never a single tiled
+        // texture; this breaks up the visible repeat without another mesh.
+        let patch_noise = noise2(input.world.xz / 900.0);
+        let dirt_patch = smoothstep(0.53, 0.80, patch_noise);
+        if (dirt_patch > 0.01) {
+            let patch_dirt = textureSample(
+                terrain_textures, terrain_sampler, input.world.xz / 220.0, 1
+            ).rgb;
+            tex = mix(tex, patch_dirt * (0.70 + c * 0.62), dirt_patch * 0.22);
+        }
+
         // The sprite carries the palette; the vertex colour only nudges it
         // so the ground never blows out into a flat highlighter band.
         let tint = 0.86 + c * 1.05;
         let p = input.world.xz / 128.0;
         let fine = noise2(p * 7.0) * 0.55 + noise2(p * 19.0) * 0.30;
-        c = tex * tint * (0.90 + fine * 0.16);
+        let broad = noise2(input.world.xz / 1150.0);
+        c = tex * tint * (0.90 + fine * 0.16) * (0.92 + broad * 0.14);
     }
     return c;
 }

@@ -10,6 +10,27 @@ use rift_cache::{
 use rift_sim::{Grid, find_path, simplify_path};
 use serde::Deserialize;
 
+/// Cache scenery is authored for a first-person player, but the MOBA camera
+/// frames a hero that is roughly two tiles tall. Natural props therefore need
+/// a stylistic lift so trees and ruins tower over the heroes instead of
+/// reading as garden ornaments.
+const NATURAL_SCENERY_SCALE: f32 = 1.5;
+const POCKET_SCENERY_SCALE: f32 = 1.35;
+const TREE_LINE_SCALE_MIN: f32 = 1.35;
+const TREE_LINE_SCALE_MAX: f32 = 2.05;
+const RUIN_SCALE_MIN: f32 = 1.35;
+const RUIN_SCALE_MAX: f32 = 1.85;
+
+/// Small cache objects scattered over the grass: flowers, ferns, mushrooms,
+/// loose rocks, twigs, roots and stumps. 117HD's ground is dense with these,
+/// and they do most of the work in making a flat texture field feel natural.
+const DECOR_LIMIT: usize = 1200;
+const DECOR_LANE_CLEAR: f32 = 2.6 * 128.0;
+const DECOR_STRUCTURE_CLEAR: f32 = 2.2 * 128.0;
+/// Cache decorations that are a single untextured plane or a placeholder cube
+/// look wrong once the flat-colour fallback is applied.
+const DECOR_MODEL_BLOCKLIST: &[u32] = &[3951, 4730, 32530];
+
 /// Convert an sRGB channel to linear light. The surface is an sRGB target, so
 /// shader output must be linear or the palette is double-gamma corrected.
 pub fn srgb_to_linear(c: f32) -> f32 {
@@ -1182,11 +1203,45 @@ pub fn build(
         .chain(map.structures.iter().map(|structure| structure.pos))
         .collect();
     let mut candidates = Vec::new();
+    let mut decor_candidates = Vec::new();
     for (rx, ry, locations) in &all_locations {
         for loc in &locations.locations {
             let wx = ((*rx as f32 * 64.0) + loc.x as f32 + 0.5) * 128.0;
             let wz = ((*ry as f32 * 64.0) + loc.y as f32 + 0.5) * 128.0;
-            if map.distance_to_lane(wx, wz) < 6.5 * 128.0 {
+            let lane_distance = map.distance_to_lane(wx, wz);
+
+            // Ground clutter is selected independently of the tree budget
+            // and sorted by distance to a lane, so every lane gets the dense
+            // flower/fern/rock layer instead of only the map centre.
+            if loc.z == 0 && lane_distance >= DECOR_LANE_CLEAR {
+                let data = object_files.get(&loc.id);
+                if let Some(data) = data
+                    && let Ok(def) = ObjectDefinition::parse(loc.id, data)
+                    && def.size_x.max(def.size_y) <= 3
+                    && let Some(kind) = GroundDecor::from_definition(&def)
+                    && let Some(model_id) = def.first_model()
+                    && !DECOR_MODEL_BLOCKLIST.contains(&model_id)
+                    && base_keep_clear
+                        .iter()
+                        .all(|p| p.distance(Vec3::new(wx, p.y, wz)) >= DECOR_STRUCTURE_CLEAR)
+                {
+                    let seed = loc
+                        .id
+                        .wrapping_mul(0x9E37_79B9)
+                        .wrapping_add((loc.x as u32) << 16)
+                        .wrapping_add(loc.y as u32);
+                    decor_candidates.push((
+                        lane_distance + hash01(seed) * 900.0,
+                        *rx,
+                        *ry,
+                        *loc,
+                        kind,
+                        model_id,
+                    ));
+                }
+            }
+
+            if lane_distance < 6.5 * 128.0 {
                 continue;
             }
             if base_keep_clear
@@ -1201,11 +1256,13 @@ pub fn build(
         }
     }
     candidates.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    decor_candidates.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
 
     let mut model_mesh = MeshData::new();
     let mut shadow_mesh = MeshData::new();
     let mut model_cache: HashMap<u32, Model> = HashMap::new();
     let mut placements = 0usize;
+    let mut decor_placements = 0usize;
     const MODEL_LIMIT: usize = 900;
 
     for (_, rx, ry, loc) in candidates {
@@ -1227,14 +1284,7 @@ pub fn build(
         let Some(model_id) = def.first_model() else {
             continue;
         };
-        let model = if let Some(model) = model_cache.get(&model_id) {
-            model
-        } else {
-            let group = cache.group(7, model_id)?;
-            let model = Model::load(model_id, &group.data)?;
-            model_cache.insert(model_id, model);
-            model_cache.get(&model_id).unwrap()
-        };
+        let model = cached_model(cache, &mut model_cache, model_id)?;
 
         let base = Vec3::new(
             ((rx as f32 * 64.0) + loc.x as f32 + 0.5) * 128.0,
@@ -1242,8 +1292,18 @@ pub fn build(
             ((ry as f32 * 64.0) + loc.y as f32 + 0.5) * 128.0,
         );
         let angle = loc.rotation as f32 * std::f32::consts::FRAC_PI_2;
-        append_model_foliage(&mut model_mesh, model, base, angle, is_plant_object(&def));
-        let shadow_size = (def.size_x.max(def.size_y) as f32 * 128.0 * 0.55).clamp(55.0, 360.0);
+        append_model_scaled_tinted(
+            &mut model_mesh,
+            model,
+            base,
+            angle,
+            NATURAL_SCENERY_SCALE,
+            [1.0, 1.0, 1.0],
+            is_plant_object(&def),
+        );
+        let shadow_size =
+            (def.size_x.max(def.size_y) as f32 * 128.0 * 0.55 * NATURAL_SCENERY_SCALE)
+                .clamp(70.0, 440.0);
         push_blob_quad(&mut shadow_mesh, base, shadow_size, 0.24);
         // What you can see is what blocks: collide with the rendered prop.
         let mut w = def.size_x.max(1) as i32;
@@ -1257,6 +1317,47 @@ pub fn build(
         sight_grid.block_rect(gx, gy, w, h);
         placements += 1;
     }
+
+    // ------------------------------------------------------------------
+    // Ground decoration: the cache's flower beds, ferns, grass tufts,
+    // mushrooms, loose rocks, twigs, roots and stumps. These are rendered
+    // without collision or sight blocking, and the budget is sorted by
+    // distance to a lane so the detail follows the player.
+    // ------------------------------------------------------------------
+    for (_, rx, ry, loc, kind, model_id) in decor_candidates {
+        if decor_placements >= DECOR_LIMIT {
+            break;
+        }
+        let Some(terrain) = terrains.get(&(rx, ry)) else {
+            continue;
+        };
+        let tile = terrain.tile(0, loc.x as usize, loc.y as usize);
+        if tile.underlay_id == 0 {
+            continue;
+        }
+        let model = cached_model(cache, &mut model_cache, model_id)?;
+        let wx = ((rx as f32 * 64.0) + loc.x as f32 + 0.5) * 128.0;
+        let wz = ((ry as f32 * 64.0) + loc.y as f32 + 0.5) * 128.0;
+        let base = Vec3::new(
+            wx,
+            terrain.height(0, loc.x as usize, loc.y as usize) as f32 * 8.0,
+            wz,
+        );
+        let seed = loc
+            .id
+            .wrapping_mul(0x9E37_79B9)
+            .wrapping_add((loc.x as u32) << 16)
+            .wrapping_add(loc.y as u32);
+        let scale = 0.9 + hash01(seed) * 0.5;
+        let angle = loc.rotation as f32 * std::f32::consts::FRAC_PI_2;
+        append_ground_decor(&mut model_mesh, model, base, angle, scale, kind, seed);
+        let shadow = kind.shadow_size() * scale;
+        if shadow > 0.0 {
+            push_blob_quad(&mut shadow_mesh, base, shadow, 0.16);
+        }
+        decor_placements += 1;
+    }
+    tracing::info!("ground decor: {} props", decor_placements);
 
     // ------------------------------------------------------------------
     // Biome pocket scenery: real OSRS objects taken from each pocket's
@@ -1357,11 +1458,13 @@ pub fn build(
                 model,
                 base,
                 angle,
-                1.0,
+                POCKET_SCENERY_SCALE,
                 biome.tint,
                 is_plant_object(def),
             );
-            let shadow_size = (def.size_x.max(def.size_y) as f32 * 128.0 * 0.55).clamp(55.0, 360.0);
+            let shadow_size =
+                (def.size_x.max(def.size_y) as f32 * 128.0 * 0.55 * POCKET_SCENERY_SCALE)
+                    .clamp(65.0, 420.0);
             push_blob_quad(&mut shadow_mesh, base, shadow_size, 0.24);
 
             let mut w = def.size_x.max(1) as i32;
@@ -1532,11 +1635,12 @@ pub fn build(
     let npc_spawns = build_npc_spawns(&height, &collision, center, player_spawn, &terrains);
 
     tracing::info!(
-        "scene: {} regions, {} terrain verts, {} model verts, {} placements, {} npcs, map {:?} lanes {:?}, center {:?}",
+        "scene: {} regions, {} terrain verts, {} model verts, {} placements ({} ground decor), {} npcs, map {:?} lanes {:?}, center {:?}",
         terrains.len(),
         terrain_mesh.vertices.len(),
         model_mesh.vertices.len(),
         placements,
+        decor_placements,
         npc_spawns.len(),
         map.name,
         map.lanes
@@ -1711,6 +1815,107 @@ fn is_scenery(def: &ObjectDefinition) -> bool {
         || name.contains("bush")
         || name.contains("fern")
         || name.contains("cactus")
+}
+
+fn cached_model<'a>(
+    cache: &Cache,
+    model_cache: &'a mut HashMap<u32, Model>,
+    model_id: u32,
+) -> Result<&'a Model> {
+    if let std::collections::hash_map::Entry::Vacant(entry) = model_cache.entry(model_id) {
+        let group = cache.group(7, model_id)?;
+        let model = Model::load(model_id, &group.data)?;
+        entry.insert(model);
+    }
+    Ok(model_cache.get(&model_id).expect("model inserted"))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GroundDecor {
+    Flower,
+    Grass,
+    Fern,
+    Mushroom,
+    Rock,
+    Twig,
+    Root,
+    Stump,
+    Plant,
+}
+
+impl GroundDecor {
+    /// Ground clutter is deliberately non-blocking. Only objects that look
+    /// like a low plant, loose stone or broken wood qualify.
+    fn from_definition(def: &ObjectDefinition) -> Option<Self> {
+        let name = def.name.to_lowercase();
+        if name.is_empty()
+            || name.contains("potted")
+            || [
+                "chair", "table", "bench", "crate", "chest", "bank", "counter", "shelf", "bed",
+                "fire", "portal", "fountain", "well", "altar", "statue", "wall", "door", "gate",
+                "ladder", "stair", "furnace", "anvil", "range", "spinning", "loom", "barrel",
+                "sack", "coffin", "grave", "sign", "flag", "banner", "lantern", "candle", "torch",
+                "cage", "rack", "display", "machine", "pump", "pipe", "wheel", "cart", "boat",
+                "canoe", "target", "dummy",
+            ]
+            .iter()
+            .any(|needle| name.contains(needle))
+        {
+            return None;
+        }
+        if name.contains("flower")
+            || name.contains("rose")
+            || name.contains("tulip")
+            || name.contains("thistle")
+            || name.contains("nettle")
+            || name.contains("herb")
+        {
+            return Some(Self::Flower);
+        }
+        if name.contains("mushroom") || name.contains("toadstool") {
+            return Some(Self::Mushroom);
+        }
+        if name.contains("fern") {
+            return Some(Self::Fern);
+        }
+        if name.contains("grass") || name.contains("reed") || name.contains("weed") {
+            return Some(Self::Grass);
+        }
+        if name.contains("twig") || name.contains("branch") {
+            return Some(Self::Twig);
+        }
+        if name.contains("root") {
+            return Some(Self::Root);
+        }
+        if name.contains("stump") || name.contains("log") {
+            return Some(Self::Stump);
+        }
+        if name.contains("rock") || name.contains("boulder") || name.contains("stone") {
+            return Some(Self::Rock);
+        }
+        if name.contains("plant")
+            || name.contains("vine")
+            || name.contains("leaf")
+            || name.contains("leaves")
+            || name.contains("bush")
+            || name.contains("shrub")
+            || name.contains("coral")
+            || name.contains("shell")
+        {
+            return Some(Self::Plant);
+        }
+        None
+    }
+
+    fn shadow_size(self) -> f32 {
+        match self {
+            Self::Rock => 62.0,
+            Self::Root => 52.0,
+            Self::Stump => 48.0,
+            Self::Mushroom => 26.0,
+            _ => 0.0,
+        }
+    }
 }
 
 fn load_underlays(cache: &Cache) -> Result<HashMap<u32, UnderlayDefinition>> {
@@ -2022,7 +2227,7 @@ fn place_ruin(
 
     let base = Vec3::new(pos.x, ctx.height.height_at(pos.x, pos.z), pos.z);
     let angle = (hash01(seed ^ 0x1234_5678) * 4.0).floor() * std::f32::consts::FRAC_PI_2;
-    let scale = 0.9 + hash01(seed.wrapping_add(3)) * 0.35;
+    let scale = RUIN_SCALE_MIN + hash01(seed.wrapping_add(3)) * (RUIN_SCALE_MAX - RUIN_SCALE_MIN);
     append_model_scaled_tinted(
         sink.model_mesh,
         model,
@@ -2032,7 +2237,12 @@ fn place_ruin(
         [0.92, 0.9, 0.86],
         false,
     );
-    push_blob_quad(sink.shadow_mesh, base, 150.0, 0.22);
+    push_blob_quad(
+        sink.shadow_mesh,
+        base,
+        (165.0 * scale).clamp(180.0, 340.0),
+        0.22,
+    );
     sink.collision_grid
         .block_rect(gx - footprint / 2, gy - footprint / 2, footprint, footprint);
     *count += 1;
@@ -2091,14 +2301,20 @@ fn place_tree(
 
     let base = Vec3::new(pos.x, ctx.height.height_at(pos.x, pos.z), pos.z);
     let angle = hash01(seed ^ 0x5bf0_3635) * std::f32::consts::TAU;
-    let scale = 0.72 + hash01(seed.wrapping_add(7)) * 0.46;
+    let scale = TREE_LINE_SCALE_MIN
+        + hash01(seed.wrapping_add(7)) * (TREE_LINE_SCALE_MAX - TREE_LINE_SCALE_MIN);
     let tint = if side < 0.0 {
         [0.86f32, 0.90, 0.80]
     } else {
         [1.0, 1.06, 0.92]
     };
     append_model_scaled_tinted(sink.model_mesh, model, base, angle, scale, tint, true);
-    push_blob_quad(sink.shadow_mesh, base, 150.0, 0.22);
+    push_blob_quad(
+        sink.shadow_mesh,
+        base,
+        (150.0 * scale).clamp(180.0, 350.0),
+        0.22,
+    );
     sink.collision_grid.block_rect(gx, gy, 2, 2);
     *count += 1;
 }
@@ -2128,10 +2344,6 @@ fn push_blob_quad(mesh: &mut MeshData, center: Vec3, size: f32, alpha: f32) {
     ));
     mesh.indices
         .extend_from_slice(&[base, base + 1, base + 2, base + 2, base + 1, base + 3]);
-}
-
-fn append_model_foliage(mesh: &mut MeshData, model: &Model, base: Vec3, angle: f32, foliage: bool) {
-    append_model_scaled_tinted(mesh, model, base, angle, 1.0, [1.0, 1.0, 1.0], foliage);
 }
 
 /// OSRS tree models are often plain grey or white. When the object is a
@@ -2181,6 +2393,34 @@ fn lift_brightness(rgb: [u8; 3], min: f32) -> [u8; 3] {
     ]
 }
 
+#[derive(Debug, Clone, Copy)]
+enum ModelStyle {
+    Scenery { tint: [f32; 3], foliage: bool },
+    Decor { kind: GroundDecor, seed: u32 },
+}
+
+/// Procedural fallback colour for the textured faces of small ground props.
+/// OSRS ships these as texture atlases, and the client still renders flat
+/// colours, so the select palette keeps flower beds and mushroom rings
+/// readable instead of turning them into grey rocks.
+fn decor_flat_color(kind: GroundDecor, seed: u32, face: usize) -> [u8; 3] {
+    const FLOWERS: [[u8; 3]; 5] = [
+        [228, 94, 76],
+        [244, 168, 64],
+        [194, 108, 206],
+        [245, 224, 118],
+        [238, 240, 232],
+    ];
+    let pick = (hash01(seed ^ face as u32) * FLOWERS.len() as f32) as usize;
+    match kind {
+        GroundDecor::Flower => FLOWERS[pick.min(FLOWERS.len() - 1)],
+        GroundDecor::Grass | GroundDecor::Fern | GroundDecor::Plant => [78, 136, 58],
+        GroundDecor::Mushroom => [196, 62, 48],
+        GroundDecor::Rock => [128, 124, 114],
+        GroundDecor::Twig | GroundDecor::Root | GroundDecor::Stump => [116, 84, 52],
+    }
+}
+
 fn append_model_scaled_tinted(
     mesh: &mut MeshData,
     model: &Model,
@@ -2190,7 +2430,46 @@ fn append_model_scaled_tinted(
     tint: [f32; 3],
     foliage: bool,
 ) {
+    append_model_styled(
+        mesh,
+        model,
+        base,
+        angle,
+        scale,
+        ModelStyle::Scenery { tint, foliage },
+    );
+}
+
+fn append_ground_decor(
+    mesh: &mut MeshData,
+    model: &Model,
+    base: Vec3,
+    angle: f32,
+    scale: f32,
+    kind: GroundDecor,
+    seed: u32,
+) {
+    append_model_styled(
+        mesh,
+        model,
+        base,
+        angle,
+        scale,
+        ModelStyle::Decor { kind, seed },
+    );
+}
+
+fn append_model_styled(
+    mesh: &mut MeshData,
+    model: &Model,
+    base: Vec3,
+    angle: f32,
+    scale: f32,
+    style: ModelStyle,
+) {
     let rot = Mat3::from_rotation_y(angle);
+    let (bounds_min, bounds_max) = model.bounds();
+    let model_height = ((bounds_max[1] - bounds_min[1]).max(1) as f32 * scale).max(1.0);
 
     for (face_idx, &[a, b, c]) in model.faces.iter().enumerate() {
         let pa = model_vertex_scaled(model, a as usize, base, rot, scale);
@@ -2214,44 +2493,68 @@ fn append_model_scaled_tinted(
             .as_ref()
             .and_then(|t| t.get(face_idx))
             .is_some_and(|&t| t >= 0);
-        // Several OSRS tree models mix textured canopy faces with plain white
-        // inner faces. Cap the plain faces so the tree reads as foliage
-        // instead of a white cone.
-        let rgb = if textured || model.face_colors[face_idx] == 127 {
-            let n = model
-                .face_normals
-                .get(face_idx)
-                .copied()
-                .unwrap_or([0.0, 1.0, 0.0]);
-            if foliage {
-                [(84.0 + n[1] * 26.0) as u8, (142.0 + n[1] * 30.0) as u8, 62]
-            } else {
-                // Buildings, walls and ruins read as stone rather than grass.
-                [
-                    (116.0 + n[1] * 22.0) as u8,
-                    (112.0 + n[1] * 20.0) as u8,
-                    104,
-                ]
+        let rgb = match style {
+            ModelStyle::Scenery { tint, foliage } => {
+                // Several OSRS tree models mix textured canopy faces with
+                // plain white inner faces. Cap the plain faces so the tree
+                // reads as foliage instead of a white cone.
+                let rgb = if textured || model.face_colors[face_idx] == 127 {
+                    let n = model
+                        .face_normals
+                        .get(face_idx)
+                        .copied()
+                        .unwrap_or([0.0, 1.0, 0.0]);
+                    if foliage {
+                        [(84.0 + n[1] * 26.0) as u8, (142.0 + n[1] * 30.0) as u8, 62]
+                    } else {
+                        // Buildings, walls and ruins read as stone.
+                        [
+                            (116.0 + n[1] * 22.0) as u8,
+                            (112.0 + n[1] * 20.0) as u8,
+                            104,
+                        ]
+                    }
+                } else {
+                    hsl_to_rgb(model.face_colors[face_idx], 1.0)
+                };
+                let rgb = foliage_tint(rgb, foliage);
+                let rgb = if textured {
+                    rgb
+                } else if model_is_textured(model) {
+                    [rgb[0].min(120), rgb[1].min(96), rgb[2].min(74)]
+                } else {
+                    rgb
+                };
+                let rgb = [
+                    (rgb[0] as f32 * tint[0]).clamp(0.0, 255.0) as u8,
+                    (rgb[1] as f32 * tint[1]).clamp(0.0, 255.0) as u8,
+                    (rgb[2] as f32 * tint[2]).clamp(0.0, 255.0) as u8,
+                ];
+                // OSRS models carry very dark vertex colours; lift them so
+                // the scenery never reads as a black blob.
+                lift_brightness(rgb, 62.0)
             }
-        } else {
-            hsl_to_rgb(model.face_colors[face_idx], 1.0)
+            ModelStyle::Decor { kind, seed } => {
+                let raw = if textured || model.face_colors[face_idx] == 127 {
+                    decor_flat_color(kind, seed, face_idx)
+                } else {
+                    hsl_to_rgb(model.face_colors[face_idx], 1.0)
+                };
+                // Flower heads and mushroom caps are the top of the model;
+                // keep their stems/leaves green or cream.
+                let top = ((pa.y + pb.y + pc.y) / 3.0 - base.y) / model_height;
+                let rgb = match kind {
+                    GroundDecor::Flower if top > 0.28 => raw,
+                    GroundDecor::Flower => [72, 124, 54],
+                    GroundDecor::Mushroom if top > 0.34 => [196, 62, 48],
+                    GroundDecor::Mushroom => [214, 208, 188],
+                    GroundDecor::Rock => [128, 124, 114],
+                    GroundDecor::Twig | GroundDecor::Root | GroundDecor::Stump => [116, 84, 52],
+                    GroundDecor::Grass | GroundDecor::Fern | GroundDecor::Plant => [78, 136, 58],
+                };
+                lift_brightness(rgb, 58.0)
+            }
         };
-        let rgb = foliage_tint(rgb, foliage);
-        let rgb = if textured {
-            rgb
-        } else if model_is_textured(model) {
-            [rgb[0].min(120), rgb[1].min(96), rgb[2].min(74)]
-        } else {
-            rgb
-        };
-        let rgb = [
-            (rgb[0] as f32 * tint[0]).clamp(0.0, 255.0) as u8,
-            (rgb[1] as f32 * tint[1]).clamp(0.0, 255.0) as u8,
-            (rgb[2] as f32 * tint[2]).clamp(0.0, 255.0) as u8,
-        ];
-        // OSRS models carry very dark vertex colours; lift them so the
-        // scenery never reads as a black blob.
-        let rgb = lift_brightness(rgb, 62.0);
 
         let ao_at = |p: Vec3| {
             (0.78 + 0.22 * ((p.y - base.y).max(0.0) / 400.0).clamp(0.0, 1.0)).clamp(0.70, 1.0)
