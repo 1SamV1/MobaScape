@@ -172,15 +172,17 @@ Cache location: `.cache/osrs-235/cache` by default. Pass `--cache` and
   shop names/costs/tooltips, and match result are on-screen. This is a
   code-defined font, not a cache-native OSRS font atlas.
 - **117HD Core** rendering is in: `SceneVertex` carries position, normal,
-  colour, UV, AO, and material; terrain uses smooth heightfield normals, models
-  use flat per-face normals; the scene shader does sun + hemispheric ambient,
-  height fog, sky/clouds, blob shadows, and up to 16 point lights.
+  colour, UV, AO, material, and texture ID; terrain uses smooth heightfield
+  normals, models use flat per-face normals; the scene shader does sun +
+  hemispheric ambient, height fog, sky/clouds, blob shadows, and up to 16 point
+  lights. Model faces sample cache-native textures from index 9/8 with per-face
+  planar UVs and nearest filtering.
 - **M5.1 shadows**: a 1024px sun shadow map covers 60x60 tiles around the
   camera with PCF. Player, towers, inhibitors, nexuses, and camps are dynamic
   casters; static scenery uses blob shadows. The map updates every other frame
   and can be toggled with `--shadows off|blob|map`. Terrain and model vertices
-  carry baked contact AO. Full screen-space SSAO, textures, HD water, bloom,
-  MSAA, and draw-distance streaming are not implemented yet.
+  carry baked contact AO. Full screen-space SSAO, HD water, MSAA, and
+  draw-distance streaming are not implemented yet.
 - `--graphics classic` preserves a flat baseline; `--debug-view albedo|normal|
   lighting|fog|lights|shadow|ao` helps tune the renderer.
 - **UI pass**: the Fountain Shop is a centered OSRS-style window with category
@@ -205,8 +207,9 @@ Cache location: `.cache/osrs-235/cache` by default. Pass `--cache` and
   mesh covers unseen tiles. The minimap draws 8×8-tile fog blocks and supports
   click-to-pan. Server-authoritative fog is still required.
 - Model formats 1 and old-format models are not implemented yet.
-- Textures are not sampled; textured faces and the `0xff00ff` overlay sentinel
-  use flat fallback colours. Dead-tree trunks read as pale spikes.
+- Model textures are sampled, but texture alpha cut-outs are not: leaf and
+  flower sprites are drawn opaque. The `0xff00ff` terrain overlay sentinel
+  still uses a flat fallback colour. Dead-tree trunks read as pale spikes.
 - Animaya is not applied; only classic frame/framemap animation works.
 - No lobby, netcode, audio, or map editor. Ambient NPCs idle only.
 - The UI atlas depends on external PNGs in `assets/osrs-ui`; without them the
@@ -216,9 +219,9 @@ Cache location: `.cache/osrs-235/cache` by default. Pass `--cache` and
 - Baked numbers/icons in the tab sprites are covered by dark overlays; faint
   traces can still show through at some scales.
 - Terrain color is blurred per vertex (two separable box-blur passes) and the
-  scene shader adds procedural ground detail. This removes tile seams but is
-  **not** cache-native ground texture blending yet; real texture decoding and
-  UV/ground-layer blending remain M5.3b.
+  scene shader samples pre-baked OSRS ground sprites plus procedural detail.
+  Terrain is **not** cache-native per-tile texture blending yet; ground-layer
+  decoding and anisotropic blending remain M5.3b.
 - M5.4 currently ships an offscreen post pass with FXAA, cheap bloom, color
   grading, and dithering. MSAA, full SSAO, and chunked draw-distance/LOD are
   still pending. The post pass samples the scene with corrected NDC UVs and the

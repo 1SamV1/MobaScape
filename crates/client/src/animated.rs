@@ -6,7 +6,7 @@ use crate::champion::ChampionConfig;
 use crate::items::ItemConfig;
 use crate::scene::{
     CampBuff, HeightGrid, SceneData, SceneVertex, StructureKind, WorldCollision,
-    model_vertex_animated,
+    model_dominant_texture, model_vertex_animated,
 };
 
 const Q_COOLDOWN: f32 = 5.0;
@@ -66,6 +66,9 @@ pub struct AnimatedUnit {
     pub attack_damage: f32,
     pub attack_interval: f32,
     pub speed: f32,
+    /// Seconds before this unit becomes visible and starts acting. Used to
+    /// stagger the members of a minion wave without changing the sim tick.
+    pub spawn_delay: f32,
     pub hit_radius: f32,
     pub bar_height: f32,
     pub lane: Vec<Vec3>,
@@ -1365,6 +1368,10 @@ impl AnimatedScene {
             if self.units[i].health <= 0.0 {
                 continue;
             }
+            if self.units[i].spawn_delay > 0.0 {
+                self.units[i].spawn_delay = (self.units[i].spawn_delay - dt).max(0.0);
+                continue;
+            }
             if kind.is_minion() {
                 self.update_minion(i, dt, height);
             } else if kind == UnitKind::Tower {
@@ -2217,7 +2224,11 @@ impl AnimatedScene {
         });
         let formation = wave_formation_positions(nexus, forward, across, serial, super_lane);
 
-        for (mut pos, ranged, super_minion) in formation {
+        for (index, (mut pos, lane_offset, ranged, super_minion)) in
+            formation.into_iter().enumerate()
+        {
+            let spawn_delay = index as f32 * 0.35;
+            let unit_lane = offset_lane(&lane, lane_offset * 128.0);
             let template = if ranged {
                 &self.ranged_template
             } else {
@@ -2272,10 +2283,11 @@ impl AnimatedScene {
                 attack_damage: damage,
                 attack_interval: template.interval,
                 speed,
+                spawn_delay,
                 hit_radius: if super_minion { 120.0 } else { 90.0 },
                 bar_height: if super_minion { 220.0 } else { 170.0 },
-                lane: lane.clone(),
-                lane_index: 1.min(lane.len()),
+                lane: unit_lane.clone(),
+                lane_index: 1.min(unit_lane.len()),
                 respawn_time: 0.0,
                 camp_buff: None,
                 mana: 0.0,
@@ -2311,7 +2323,7 @@ impl AnimatedScene {
         self.shadow_vertices.clear();
         self.shadow_indices.clear();
         for unit in &self.units {
-            if unit.health <= 0.0 || !unit.visible {
+            if unit.health <= 0.0 || !unit.visible || unit.spawn_delay > 0.0 {
                 continue;
             }
             let size = (unit.hit_radius * 1.15).clamp(55.0, 480.0);
@@ -2391,7 +2403,7 @@ impl AnimatedScene {
 
         let units = std::mem::take(&mut self.units);
         for unit in &units {
-            if unit.health > 0.0 && unit.visible {
+            if unit.health > 0.0 && unit.visible && unit.spawn_delay <= 0.0 {
                 let clip = if unit.moving {
                     unit.walk.as_ref().unwrap_or(&unit.idle)
                 } else {
@@ -2408,6 +2420,7 @@ impl AnimatedScene {
             .iter()
             .filter(|unit| {
                 unit.health > 0.0
+                    && unit.spawn_delay <= 0.0
                     && (unit.team != 2 || unit.kind == UnitKind::Camp)
                     && !matches!(unit.kind, UnitKind::DeliveryGuard | UnitKind::StorageChest)
             })
@@ -2635,6 +2648,7 @@ fn load_unit(
         attack_damage,
         attack_interval,
         speed,
+        spawn_delay: 0.0,
         hit_radius,
         bar_height,
         lane,
@@ -2677,15 +2691,15 @@ fn wave_formation_positions(
     across: Vec3,
     serial: u32,
     super_lane: bool,
-) -> Vec<(Vec3, bool, bool)> {
+) -> Vec<(Vec3, f32, bool, bool)> {
     let mut formation = vec![
         // forward tiles, lateral tiles, ranged, super
-        (1.45f32, -0.72f32, false, false),
-        (1.05, 0.78, false, false),
-        (0.38, 0.0, true, false),
+        (1.20f32, -1.85f32, false, false),
+        (2.60, 1.85, false, false),
+        (0.20, 0.0, true, false),
     ];
     if super_lane {
-        formation.push((2.15, 0.0, false, true));
+        formation.push((3.60, 0.0, false, true));
     }
     formation
         .into_iter()
@@ -2700,13 +2714,31 @@ fn wave_formation_positions(
                     / 255.0
                     - 0.5)
                     * 0.24;
-                let pos = nexus
-                    + forward * (forward_tiles * 128.0)
-                    + across * ((lateral_tiles + jitter) * 128.0);
-                (pos, ranged, super_minion)
+                let lateral = lateral_tiles + jitter;
+                let pos = nexus + forward * (forward_tiles * 128.0) + across * (lateral * 128.0);
+                (pos, lateral, ranged, super_minion)
             },
         )
         .collect()
+}
+
+/// Copy a lane centre line shifted sideways by `offset` world units. Each
+/// minion keeps its own parallel track so a wave does not collapse into a
+/// single-file clump on the way to the enemy nexus.
+fn offset_lane(lane: &[Vec3], offset: f32) -> Vec<Vec3> {
+    let mut out = Vec::with_capacity(lane.len());
+    for index in 0..lane.len() {
+        let previous = lane[index.saturating_sub(1)];
+        let next = lane[(index + 1).min(lane.len() - 1)];
+        let dir = Vec3::new(next.x - previous.x, 0.0, next.z - previous.z);
+        let perpendicular = if dir.length_squared() > 1e-6 {
+            Vec3::new(-dir.z, 0.0, dir.x).normalize()
+        } else {
+            Vec3::X
+        };
+        out.push(lane[index] + perpendicular * offset);
+    }
+    out
 }
 
 fn follow_path(unit: &mut AnimatedUnit, dt: f32, height: &HeightGrid, speed_mult: f32) {
@@ -2741,6 +2773,7 @@ fn follow_path(unit: &mut AnimatedUnit, dt: f32, height: &HeightGrid, speed_mult
 
 fn append_unit(scene: &mut AnimatedScene, unit: &AnimatedUnit, positions: &[[f32; 3]]) {
     let rot = Mat3::from_rotation_y(unit.yaw);
+    let dominant_texture = model_dominant_texture(&unit.model);
 
     for (face_idx, &[a, b, c]) in unit.model.faces.iter().enumerate() {
         let pa = model_vertex_animated(positions, a as usize, unit.pos, rot, unit.scale);
@@ -2759,16 +2792,24 @@ fn append_unit(scene: &mut AnimatedScene, unit: &AnimatedUnit, positions: &[[f32
                 );
         }
 
-        let textured = unit
+        let texture_id = unit
             .model
             .face_textures
             .as_ref()
             .and_then(|t| t.get(face_idx))
-            .is_some_and(|&t| t >= 0);
+            .copied()
+            .map(|t| t as u32)
+            .filter(|&t| t < 256)
+            .or(dominant_texture);
+        let textured = texture_id.is_some();
         let plain_face = !textured && unit.model.face_colors[face_idx] != 127;
-        let mut rgb = if unit.kind == UnitKind::Tower {
+        let mut rgb = if textured {
+            // The sampled model texture supplies the detail; vertex colour is
+            // only a team/hit-flash tint.
+            [255, 255, 255]
+        } else if unit.kind == UnitKind::Tower {
             [125, 117, 102]
-        } else if textured || unit.model.face_colors[face_idx] == 127 {
+        } else if unit.model.face_colors[face_idx] == 127 {
             [84, 142, 58]
         } else if plain_face {
             let raw = hsl_to_rgb(unit.model.face_colors[face_idx], 1.0);
@@ -2794,9 +2835,31 @@ fn append_unit(scene: &mut AnimatedScene, unit: &AnimatedUnit, positions: &[[f32
         let mut va = SceneVertex::new(pa, normal, rgb);
         let mut vb = SceneVertex::new(pb, normal, rgb);
         let mut vc = SceneVertex::new(pc, normal, rgb);
-        va.material = 3;
-        vb.material = 3;
-        vc.material = 3;
+        let material = if let Some(texture_id) = texture_id {
+            let abs_normal = normal.abs();
+            let uv_for = |p: Vec3| {
+                let local = p - unit.pos;
+                if abs_normal.y >= abs_normal.x && abs_normal.y >= abs_normal.z {
+                    [local.x / 128.0, local.z / 128.0]
+                } else if abs_normal.x >= abs_normal.z {
+                    [local.z / 128.0, local.y / 128.0]
+                } else {
+                    [local.x / 128.0, local.y / 128.0]
+                }
+            };
+            va.texture_id = texture_id;
+            vb.texture_id = texture_id;
+            vc.texture_id = texture_id;
+            va.uv = uv_for(pa);
+            vb.uv = uv_for(pb);
+            vc.uv = uv_for(pc);
+            5
+        } else {
+            3
+        };
+        va.material = material;
+        vb.material = material;
+        vc.material = material;
         va.ao = ao_at(pa);
         vb.ao = ao_at(pb);
         vc.ao = ao_at(pc);
@@ -2947,12 +3010,12 @@ mod tests {
             for j in i + 1..formation.len() {
                 let distance = formation[i].0.distance(formation[j].0);
                 assert!(
-                    distance > 80.0,
+                    distance > 220.0,
                     "wave minions {i} and {j} spawned only {distance:.0} units apart"
                 );
             }
         }
-        let ranged = formation.iter().filter(|(_, ranged, _)| *ranged).count();
+        let ranged = formation.iter().filter(|(_, _, ranged, _)| *ranged).count();
         assert_eq!(ranged, 1);
     }
 
@@ -2964,15 +3027,29 @@ mod tests {
         assert_eq!(
             formation
                 .iter()
-                .filter(|(_, _, super_minion)| *super_minion)
+                .filter(|(_, _, _, super_minion)| *super_minion)
                 .count(),
             1
         );
         let super_pos = formation
             .iter()
-            .find(|(_, _, super_minion)| *super_minion)
+            .find(|(_, _, _, super_minion)| *super_minion)
             .expect("super minion")
             .0;
         assert!(super_pos.z > nexus.z + 128.0);
+    }
+
+    #[test]
+    fn offset_lanes_keep_parallel_tracks() {
+        let lane = vec![
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1000.0),
+            Vec3::new(1000.0, 0.0, 2000.0),
+        ];
+        let left = offset_lane(&lane, -200.0);
+        let right = offset_lane(&lane, 200.0);
+        for (a, b) in left.iter().zip(&right) {
+            assert!(a.distance(*b) > 350.0);
+        }
     }
 }

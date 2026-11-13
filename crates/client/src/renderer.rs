@@ -7,6 +7,7 @@ use winit::window::Window;
 
 use crate::animated::SceneLight;
 use crate::hud::UiVertex;
+use crate::model_textures::ModelTextures;
 use crate::scene::{Atmosphere, HeightGrid, MeshData, SceneData, SceneVertex, srgb_to_linear};
 use crate::terrain_textures::TerrainTextures;
 use crate::ui_assets::UiAtlas;
@@ -169,6 +170,8 @@ pub struct Renderer {
     _ui_sampler: wgpu::Sampler,
     _terrain_texture: wgpu::Texture,
     _terrain_sampler: wgpu::Sampler,
+    _model_texture: wgpu::Texture,
+    _model_sampler: wgpu::Sampler,
     post_pipeline: wgpu::RenderPipeline,
     post_bind_group: wgpu::BindGroup,
     post_bind_group_layout: wgpu::BindGroupLayout,
@@ -234,6 +237,7 @@ impl Renderer {
         window: Arc<Window>,
         scene: &SceneData,
         initial_camera: Camera,
+        model_textures: ModelTextures,
         ui_atlas: Arc<UiAtlas>,
     ) -> Result<Self> {
         let size = window.inner_size();
@@ -357,6 +361,40 @@ impl Renderer {
             ..Default::default()
         });
 
+        let model_texture = device.create_texture_with_data(
+            &queue,
+            &wgpu::TextureDescriptor {
+                label: Some("model texture array"),
+                size: wgpu::Extent3d {
+                    width: model_textures.width,
+                    height: model_textures.height,
+                    depth_or_array_layers: model_textures.layers,
+                },
+                mip_level_count: model_textures.mip_levels,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            },
+            wgpu::util::TextureDataOrder::LayerMajor,
+            &model_textures.pixels,
+        );
+        let model_view = model_texture.create_view(&wgpu::TextureViewDescriptor {
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            ..Default::default()
+        });
+        let model_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("model sampler"),
+            address_mode_u: wgpu::AddressMode::Repeat,
+            address_mode_v: wgpu::AddressMode::Repeat,
+            address_mode_w: wgpu::AddressMode::Repeat,
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            ..Default::default()
+        });
+
         let scene_globals = SceneGlobals::from_atmosphere(&scene.atmosphere);
         let scene_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("scene globals uniform"),
@@ -439,6 +477,22 @@ impl Renderer {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2Array,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 6,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
             ],
         });
 
@@ -465,6 +519,14 @@ impl Renderer {
                 wgpu::BindGroupEntry {
                     binding: 4,
                     resource: wgpu::BindingResource::Sampler(&terrain_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::TextureView(&model_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: wgpu::BindingResource::Sampler(&model_sampler),
                 },
             ],
         });
@@ -576,13 +638,14 @@ impl Renderer {
             immediate_size: 0,
         });
 
-        const SCENE_ATTRS: [wgpu::VertexAttribute; 6] = wgpu::vertex_attr_array![
+        const SCENE_ATTRS: [wgpu::VertexAttribute; 7] = wgpu::vertex_attr_array![
             0 => Float32x3,
             1 => Float32x3,
             2 => Float32x4,
             3 => Float32x2,
             4 => Float32,
-            5 => Uint32
+            5 => Uint32,
+            6 => Uint32
         ];
         const HUD_ATTRS: [wgpu::VertexAttribute; 3] =
             wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2, 2 => Float32x4];
@@ -1091,6 +1154,8 @@ impl Renderer {
             _ui_sampler: ui_sampler,
             _terrain_texture: terrain_texture,
             _terrain_sampler: terrain_sampler,
+            _model_texture: model_texture,
+            _model_sampler: model_sampler,
             post_pipeline,
             post_bind_group,
             post_bind_group_layout,

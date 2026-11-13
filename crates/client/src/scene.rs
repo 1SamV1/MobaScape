@@ -5,7 +5,6 @@ use anyhow::{Context, Result};
 use glam::{Mat3, Vec2, Vec3};
 use rift_cache::{
     Cache, Locations, Model, ObjectDefinition, OverlayDefinition, Terrain, UnderlayDefinition,
-    model::hsl_to_rgb,
 };
 use rift_sim::{Grid, find_path, simplify_path};
 use serde::Deserialize;
@@ -50,6 +49,7 @@ pub struct SceneVertex {
     pub uv: [f32; 2],
     pub ao: f32,
     pub material: u32,
+    pub texture_id: u32,
 }
 
 impl SceneVertex {
@@ -66,6 +66,7 @@ impl SceneVertex {
             uv: [0.0, 0.0],
             ao: 1.0,
             material: 0,
+            texture_id: 0,
         }
     }
 
@@ -83,6 +84,7 @@ impl SceneVertex {
             uv,
             ao: 1.0,
             material: 2,
+            texture_id: 0,
         }
     }
 }
@@ -1303,7 +1305,7 @@ pub fn build(
             angle,
             NATURAL_SCENERY_SCALE,
             [1.0, 1.0, 1.0],
-            is_plant_object(&def),
+            scenery_texture_hint(&def, is_plant_object(&def)),
         );
         let shadow_size =
             (def.size_x.max(def.size_y) as f32 * 128.0 * 0.55 * NATURAL_SCENERY_SCALE)
@@ -1460,7 +1462,7 @@ pub fn build(
                 angle,
                 POCKET_SCENERY_SCALE,
                 biome.tint,
-                is_plant_object(def),
+                scenery_texture_hint(def, is_plant_object(def)),
             );
             let shadow_size =
                 (def.size_x.max(def.size_y) as f32 * 128.0 * 0.55 * POCKET_SCENERY_SCALE)
@@ -2235,7 +2237,7 @@ fn place_ruin(
         angle,
         scale,
         [0.92, 0.9, 0.86],
-        false,
+        pick_texture(TEX_STONE, seed),
     );
     push_blob_quad(
         sink.shadow_mesh,
@@ -2308,7 +2310,15 @@ fn place_tree(
     } else {
         [1.0, 1.06, 0.92]
     };
-    append_model_scaled_tinted(sink.model_mesh, model, base, angle, scale, tint, true);
+    append_model_scaled_tinted(
+        sink.model_mesh,
+        model,
+        base,
+        angle,
+        scale,
+        tint,
+        pick_texture(TEX_LEAVES, seed),
+    );
     push_blob_quad(
         sink.shadow_mesh,
         base,
@@ -2346,79 +2356,79 @@ fn push_blob_quad(mesh: &mut MeshData, center: Vec3, size: f32, alpha: f32) {
         .extend_from_slice(&[base, base + 1, base + 2, base + 2, base + 1, base + 3]);
 }
 
-/// OSRS tree models are often plain grey or white. When the object is a
-/// plant, swap those faces for the foliage green so the tree reads as a
-/// tree instead of a white cone.
-fn foliage_tint(rgb: [u8; 3], foliage: bool) -> [u8; 3] {
-    if !foliage {
-        return rgb;
-    }
-    let max = rgb[0].max(rgb[1]).max(rgb[2]) as f32;
-    let min = rgb[0].min(rgb[1]).min(rgb[2]) as f32;
-    if max - min < 40.0 && max > 70.0 {
-        return [70, 128, 58];
-    }
-    rgb
-}
-
-/// True when most of a model's faces are textured, which means it is a
-/// canopy model whose plain faces are inner geometry.
-fn model_is_textured(model: &Model) -> bool {
-    let mut textured = 0usize;
-    for (index, colour) in model.face_colors.iter().enumerate() {
-        let is_textured = model
-            .face_textures
-            .as_ref()
-            .and_then(|t| t.get(index))
-            .is_some_and(|&t| t >= 0);
-        if is_textured || *colour == 127 {
-            textured += 1;
-        }
-    }
-    textured * 2 > model.faces.len()
-}
-
-/// Scale a colour up until its brightest channel reaches `min`, so dark
-/// OSRS vertex colours stay readable in shadow.
-fn lift_brightness(rgb: [u8; 3], min: f32) -> [u8; 3] {
-    let peak = rgb[0].max(rgb[1]).max(rgb[2]) as f32;
-    if peak >= min || peak <= 1.0 {
-        return rgb;
-    }
-    let scale = min / peak;
-    [
-        (rgb[0] as f32 * scale).clamp(0.0, 255.0) as u8,
-        (rgb[1] as f32 * scale).clamp(0.0, 255.0) as u8,
-        (rgb[2] as f32 * scale).clamp(0.0, 255.0) as u8,
-    ]
-}
-
 #[derive(Debug, Clone, Copy)]
 enum ModelStyle {
-    Scenery { tint: [f32; 3], foliage: bool },
+    Scenery { tint: [f32; 3], texture_hint: u32 },
     Decor { kind: GroundDecor, seed: u32 },
 }
 
-/// Procedural fallback colour for the textured faces of small ground props.
-/// OSRS ships these as texture atlases, and the client still renders flat
-/// colours, so the select palette keeps flower beds and mushroom rings
-/// readable instead of turning them into grey rocks.
-fn decor_flat_color(kind: GroundDecor, seed: u32, face: usize) -> [u8; 3] {
-    const FLOWERS: [[u8; 3]; 5] = [
-        [228, 94, 76],
-        [244, 168, 64],
-        [194, 108, 206],
-        [245, 224, 118],
-        [238, 240, 232],
-    ];
-    let pick = (hash01(seed ^ face as u32) * FLOWERS.len() as f32) as usize;
-    match kind {
-        GroundDecor::Flower => FLOWERS[pick.min(FLOWERS.len() - 1)],
-        GroundDecor::Grass | GroundDecor::Fern | GroundDecor::Plant => [78, 136, 58],
-        GroundDecor::Mushroom => [196, 62, 48],
-        GroundDecor::Rock => [128, 124, 114],
-        GroundDecor::Twig | GroundDecor::Root | GroundDecor::Stump => [116, 84, 52],
+/// A small palette of real cache texture IDs used when a model has no texture
+/// reference of its own. Keeping every face on a cache texture prevents the
+/// flat-colour triangles that used to clash with the sampled foliage and stone.
+const TEX_LEAVES: &[u32] = &[8, 28, 30, 41, 60];
+const TEX_STONE: &[u32] = &[2, 10, 44, 45, 46, 47];
+const TEX_WOOD: &[u32] = &[5, 16, 22, 23];
+const TEX_FLOWERS: &[u32] = &[31, 40, 56];
+const TEX_ROOF: &[u32] = &[6, 50];
+
+fn pick_texture(pool: &[u32], seed: u32) -> u32 {
+    let index = (hash01(seed) * pool.len() as f32) as usize;
+    pool[index.min(pool.len() - 1)]
+}
+
+fn scenery_texture_hint(def: &ObjectDefinition, foliage: bool) -> u32 {
+    let name = def.name.to_lowercase();
+    let seed = def
+        .id
+        .wrapping_mul(0x9E37_79B9)
+        .wrapping_add(def.size_x as u32);
+    if foliage {
+        return pick_texture(TEX_LEAVES, seed);
     }
+    if name.contains("roof") || name.contains("thatch") {
+        return pick_texture(TEX_ROOF, seed);
+    }
+    if name.contains("door")
+        || name.contains("hut")
+        || name.contains("tent")
+        || name.contains("table")
+        || name.contains("chair")
+        || name.contains("sign")
+        || name.contains("bank")
+        || name.contains("stall")
+    {
+        return pick_texture(TEX_WOOD, seed);
+    }
+    pick_texture(TEX_STONE, seed)
+}
+
+fn decor_texture_hint(kind: GroundDecor, seed: u32) -> u32 {
+    match kind {
+        GroundDecor::Flower | GroundDecor::Mushroom => pick_texture(TEX_FLOWERS, seed),
+        GroundDecor::Grass | GroundDecor::Fern | GroundDecor::Plant => {
+            pick_texture(TEX_LEAVES, seed)
+        }
+        GroundDecor::Rock => pick_texture(TEX_STONE, seed),
+        GroundDecor::Twig | GroundDecor::Root | GroundDecor::Stump => pick_texture(TEX_WOOD, seed),
+    }
+}
+
+/// Most frequent valid face texture, used to fill in untextured faces on an
+/// otherwise textured model so the model does not show flat-colour patches.
+pub fn model_dominant_texture(model: &Model) -> Option<u32> {
+    let textures = model.face_textures.as_ref()?;
+    let mut counts = [0u16; 256];
+    for &texture in textures {
+        if (0..256).contains(&texture) {
+            counts[texture as usize] = counts[texture as usize].saturating_add(1);
+        }
+    }
+    counts
+        .iter()
+        .enumerate()
+        .max_by_key(|(_, count)| **count)
+        .filter(|(_, count)| **count > 0)
+        .map(|(id, _)| id as u32)
 }
 
 fn append_model_scaled_tinted(
@@ -2428,7 +2438,7 @@ fn append_model_scaled_tinted(
     angle: f32,
     scale: f32,
     tint: [f32; 3],
-    foliage: bool,
+    texture_hint: u32,
 ) {
     append_model_styled(
         mesh,
@@ -2436,7 +2446,7 @@ fn append_model_scaled_tinted(
         base,
         angle,
         scale,
-        ModelStyle::Scenery { tint, foliage },
+        ModelStyle::Scenery { tint, texture_hint },
     );
 }
 
@@ -2468,8 +2478,15 @@ fn append_model_styled(
     style: ModelStyle,
 ) {
     let rot = Mat3::from_rotation_y(angle);
+    let dominant = model_dominant_texture(model);
     let (bounds_min, bounds_max) = model.bounds();
     let model_height = ((bounds_max[1] - bounds_min[1]).max(1) as f32 * scale).max(1.0);
+    let wood_hint = pick_texture(
+        TEX_WOOD,
+        (base.x as u32)
+            .wrapping_mul(0x9E37_79B9)
+            .wrapping_add(base.z as u32),
+    );
 
     for (face_idx, &[a, b, c]) in model.faces.iter().enumerate() {
         let pa = model_vertex_scaled(model, a as usize, base, rot, scale);
@@ -2488,71 +2505,55 @@ fn append_model_styled(
                 );
         }
 
-        let textured = model
+        let mut texture_id = model
             .face_textures
             .as_ref()
             .and_then(|t| t.get(face_idx))
-            .is_some_and(|&t| t >= 0);
-        let rgb = match style {
-            ModelStyle::Scenery { tint, foliage } => {
-                // Several OSRS tree models mix textured canopy faces with
-                // plain white inner faces. Cap the plain faces so the tree
-                // reads as foliage instead of a white cone.
-                let rgb = if textured || model.face_colors[face_idx] == 127 {
-                    let n = model
-                        .face_normals
-                        .get(face_idx)
-                        .copied()
-                        .unwrap_or([0.0, 1.0, 0.0]);
-                    if foliage {
-                        [(84.0 + n[1] * 26.0) as u8, (142.0 + n[1] * 30.0) as u8, 62]
-                    } else {
-                        // Buildings, walls and ruins read as stone.
-                        [
-                            (116.0 + n[1] * 22.0) as u8,
-                            (112.0 + n[1] * 20.0) as u8,
-                            104,
-                        ]
-                    }
-                } else {
-                    hsl_to_rgb(model.face_colors[face_idx], 1.0)
-                };
-                let rgb = foliage_tint(rgb, foliage);
-                let rgb = if textured {
-                    rgb
-                } else if model_is_textured(model) {
-                    [rgb[0].min(120), rgb[1].min(96), rgb[2].min(74)]
-                } else {
-                    rgb
-                };
-                let rgb = [
-                    (rgb[0] as f32 * tint[0]).clamp(0.0, 255.0) as u8,
-                    (rgb[1] as f32 * tint[1]).clamp(0.0, 255.0) as u8,
-                    (rgb[2] as f32 * tint[2]).clamp(0.0, 255.0) as u8,
-                ];
-                // OSRS models carry very dark vertex colours; lift them so
-                // the scenery never reads as a black blob.
-                lift_brightness(rgb, 62.0)
+            .copied()
+            .map(|t| t as u32)
+            .filter(|&t| t < 256)
+            .or(dominant)
+            .unwrap_or_else(|| match style {
+                ModelStyle::Scenery { texture_hint, .. } => texture_hint,
+                ModelStyle::Decor { kind, seed } => decor_texture_hint(kind, seed),
+            });
+        let leaf_based = dominant.is_some_and(|id| TEX_LEAVES.contains(&id))
+            || matches!(style, ModelStyle::Scenery { texture_hint, .. } if TEX_LEAVES.contains(&texture_hint));
+        if leaf_based && model_height > 300.0 {
+            let centroid = (pa + pb + pc) / 3.0;
+            let top = (centroid.y - base.y) / model_height;
+            let radial = Vec2::new(centroid.x - base.x, centroid.z - base.z).length();
+            let trunk_radius =
+                (((bounds_max[0] - bounds_min[0]).max(bounds_max[2] - bounds_min[2])) as f32
+                    * scale
+                    * 0.18)
+                    .max(24.0);
+            if top < 0.38 && radial < trunk_radius {
+                // Tree trunks and low stems are wood, not canopy.
+                texture_id = wood_hint;
             }
-            ModelStyle::Decor { kind, seed } => {
-                let raw = if textured || model.face_colors[face_idx] == 127 {
-                    decor_flat_color(kind, seed, face_idx)
-                } else {
-                    hsl_to_rgb(model.face_colors[face_idx], 1.0)
-                };
-                // Flower heads and mushroom caps are the top of the model;
-                // keep their stems/leaves green or cream.
-                let top = ((pa.y + pb.y + pc.y) / 3.0 - base.y) / model_height;
-                let rgb = match kind {
-                    GroundDecor::Flower if top > 0.28 => raw,
-                    GroundDecor::Flower => [72, 124, 54],
-                    GroundDecor::Mushroom if top > 0.34 => [196, 62, 48],
-                    GroundDecor::Mushroom => [214, 208, 188],
-                    GroundDecor::Rock => [128, 124, 114],
-                    GroundDecor::Twig | GroundDecor::Root | GroundDecor::Stump => [116, 84, 52],
-                    GroundDecor::Grass | GroundDecor::Fern | GroundDecor::Plant => [78, 136, 58],
-                };
-                lift_brightness(rgb, 58.0)
+        }
+        let rgb = match style {
+            ModelStyle::Scenery { tint, .. } => [
+                (tint[0] * 255.0).clamp(0.0, 255.0) as u8,
+                (tint[1] * 255.0).clamp(0.0, 255.0) as u8,
+                (tint[2] * 255.0).clamp(0.0, 255.0) as u8,
+            ],
+            ModelStyle::Decor { .. } => [255, 255, 255],
+        };
+
+        // One planar projection per face, chosen from the face normal. This
+        // is the OSRS texture-plane model in miniature: large cone and roof
+        // triangles stay coherent instead of smearing a triplanar blend.
+        let abs_normal = normal.abs();
+        let uv_for = |p: Vec3| {
+            let local = p - base;
+            if abs_normal.y >= abs_normal.x && abs_normal.y >= abs_normal.z {
+                [local.x / 128.0, local.z / 128.0]
+            } else if abs_normal.x >= abs_normal.z {
+                [local.z / 128.0, local.y / 128.0]
+            } else {
+                [local.x / 128.0, local.y / 128.0]
             }
         };
 
@@ -2562,6 +2563,15 @@ fn append_model_styled(
         let mut va = SceneVertex::new(pa, normal, rgb);
         let mut vb = SceneVertex::new(pb, normal, rgb);
         let mut vc = SceneVertex::new(pc, normal, rgb);
+        va.material = 5;
+        vb.material = 5;
+        vc.material = 5;
+        va.texture_id = texture_id;
+        vb.texture_id = texture_id;
+        vc.texture_id = texture_id;
+        va.uv = uv_for(pa);
+        vb.uv = uv_for(pb);
+        vc.uv = uv_for(pc);
         va.ao = ao_at(pa);
         vb.ao = ao_at(pb);
         vc.ao = ao_at(pc);

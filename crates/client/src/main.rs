@@ -5,6 +5,7 @@ mod hero_select;
 mod hud;
 mod items;
 mod minimap;
+mod model_textures;
 mod portraits;
 mod renderer;
 mod scene;
@@ -344,10 +345,19 @@ impl ApplicationHandler for App {
         let scene = self.scene.take().expect("scene missing");
         let animated = self.animated.take().expect("animated scene missing");
         let camera = Camera::new(animated.player_pos() + Vec3::Y * 140.0);
+        let model_textures = match crate::model_textures::ModelTextures::load(&self.cache) {
+            Ok(textures) => textures,
+            Err(err) => {
+                tracing::error!("failed to load model textures: {err:#}");
+                event_loop.exit();
+                return;
+            }
+        };
         let mut renderer = match pollster::block_on(Renderer::new(
             window.clone(),
             &scene,
             camera,
+            model_textures,
             self.hud.atlas.clone(),
         )) {
             Ok(renderer) => renderer,

@@ -1,6 +1,6 @@
 # Status
 
-Last updated: M5.19 hero select + ground decor, 2026-11-13.
+Last updated: M5.20 cache model textures + 117HD ground language, 2026-11-13.
 
 ## Working
 
@@ -10,6 +10,8 @@ Last updated: M5.19 hero select + ground decor, 2026-11-13.
   archive splitting with real file IDs.
 - Terrain/locations/object/NPC/underlay/overlay configs.
 - Model formats 2 and 3 with flat-shading normals, vertex groups, texture refs.
+- Cache texture pipeline: index 9 texture definitions resolve to index 8 sprite
+  archives; 208 sprites decode to a mipmapped 256-layer texture array.
 - Sequence/frame/framemap decoding and interpolated CPU vertex animation.
 - `crates/sim`: deterministic 192×192 tile grid, A* with octile heuristic,
   no corner cutting, nearest-walkable fallback, path simplification, LOS.
@@ -150,7 +152,7 @@ Last updated: M5.19 hero select + ground decor, 2026-11-13.
 
 ## Verified
 
-- `cargo test --workspace`: 35 tests pass (6 cache, 22 client, 7 sim).
+- `cargo test --workspace`: 39 tests pass (9 cache, 23 client, 7 sim).
 - `cargo clippy --workspace --all-targets`: no warnings.
 - 117HD Core runs at **60–68 fps at 1280×720** on the dev machine at timescale 1;
   shadow modes measured **67 fps (off)**, **68 fps (blob)**, **66 fps (map)**.
@@ -165,15 +167,20 @@ Last updated: M5.19 hero select + ground decor, 2026-11-13.
 - Base demo: 200/500 → 410/500 HP; passive gold 8 → 64.
 - Inhibitor demo: 2/3 → respawn 3/3; nexus re-shielded; super minions spawned.
 - Champion runs: Jad 700 HP / 260 mana; Kree 420 HP / 240 mana; W/E/R true.
+- Model textures: 208 cache texture sprites uploaded to a 256-layer array;
+  textured faces sample native leaf/wood/stone/flower art instead of flat
+  fallbacks, with wood tree bases below the leaf canopy.
+- Lane road: dirt-dominant, noise-warped 310-unit UVs remove the repeating
+  cobble border while keeping the cache path sprite as a low-weight accent.
 - Fog run: visible enemies 7–13; dark fog mesh over unseen tiles.
 - Three-lane 20× run: victory states, towers/inhibitors/nexus live.
 - Jungle demo: camp killed, buff Might 58s.
 
 ## Known issues
 
-- 117HD Core has **no cache-native textures, HD water, MSAA, full SSAO, or
-  draw-distance streaming** yet. M5.3a/M5.4a ship terrain smoothing, procedural
-  ground detail, FXAA, cheap bloom, color grading, and dithering.
+- 117HD Core has **no HD water, MSAA, full SSAO, or draw-distance streaming**
+  yet. Terrain still uses pre-baked ground sprites in `assets/osrs-ground`
+  rather than cache-native ground-layer blending. Model texture sampling is in.
 - The post bloom is a cheap 8-tap screen-space glow, not a full HDR bloom chain.
 - Draw-distance streaming/LOD is still pending; the map remains a 3×3 block.
 - The shadow map covers dynamic units/structures/camps only; static scenery
@@ -196,17 +203,16 @@ Last updated: M5.19 hero select + ground decor, 2026-11-13.
   detail render because the plain inventory icon file was unavailable under the
   expected wiki name. Faint baked tab numbers/icons can show through overlays.
 - Kree'arra/Jad models are large; scale tuning is ongoing.
-- Ground decorations use flat fallback colours on textured faces until cache
-  texture sampling lands; they read as flowers/foliage, not sprite-accurate
-  OSRS billboards.
+- Cache texture alpha cut-outs are rendered opaque; leaf and flower sprites are
+  wrapped and colour-lifted rather than alpha-tested.
 - Fog/brush is client-side only; server-authoritative fog is required.
 - No lobby, netcode, audio, or map editor.
 
 ## Next tasks
 
 1. **M5.2 117HD Water**: water mesh, fresnel, sky reflection, specular, caustics.
-2. **M5.3b cache textures**: texture decoding, atlas, model/ground textures,
-   ground blending, anisotropic filtering.
+2. **M5.3b ground blending**: cache-native terrain layers, per-tile texture
+   IDs, anisotropic filtering, and alpha-tested foliage cut-outs.
 3. **M5.4b post + draw distance**: full SSAO, MSAA, proper HDR bloom,
    chunked streaming/LOD, model batching.
 4. Static scenery shadow caching/chunked casters.
@@ -218,11 +224,11 @@ Last updated: M5.19 hero select + ground decor, 2026-11-13.
 
 - `cargo test -p rift-sim`: 7 tests (straight path, wall detour, nearest
   walkable, no corner cutting, simplification, bounds, LOS).
-- `cargo test -p rift-cache`: 6 tests (smart reads, chained smart, XTEA, HSL,
-  group rejection, framemap/frame parse).
-- `cargo test -p rift-client`: 22 tests (5 items/layout, 2 font, 2 minimap,
+- `cargo test -p rift-cache`: 9 tests (smart reads, chained smart, XTEA, HSL,
+  group rejection, framemap/frame parse, sprite bounds, texture reference).
+- `cargo test -p rift-client`: 23 tests (5 items/layout, 2 font, 2 minimap,
   3 hero-select layout/cycling, 2 portrait raster, 2 wave formation,
-  4 scene/lighting, 2 shadow matrix/defaults).
+  1 parallel lane offset, 4 scene/lighting, 2 shadow matrix/defaults).
 - Shop demo: 6/6 items, dmg 45, HP 730/730, MP 260/260, speed 460, AP 45%,
   gold 300.
 - Base demo: 200/500 -> 410/500 HP; gold 8 -> 64.
@@ -239,8 +245,14 @@ Last updated: M5.19 hero select + ground decor, 2026-11-13.
   starts a fresh match with the chosen champion; `--champion` skips the screen.
 - Scene scatter: 1511 scenery placements plus 1200 ground decorations; tree
   lines scaled 1.35–2.05× and cache props 1.35–1.5× over the old sizes.
-- Wave formation: initial waves spawn in lane-relative wedges; the formation
-  unit test verifies all base minions start at least 80 units apart.
+- Wave formation: initial waves spawn in lane-relative wedges with per-unit
+  parallel lane offsets and 0.35 s stagger; the test verifies at least 220
+  units between base minions and the offset-lane test verifies parallel tracks.
+- Model textures: 208 cache texture sprites uploaded to a 256-layer array;
+  textured faces sample native leaf/wood/stone/flower art instead of flat
+  fallbacks, with wood tree bases below the leaf canopy.
+- Lane road: dirt-dominant, noise-warped 310-unit UVs remove the repeating
+  cobble border while keeping the cache path sprite as a low-weight accent.
 - Fog run: visible enemies 7–13; dark fog mesh over unseen tiles.
 - Three-lane 20× run: victory states, towers/inhibitors/nexus live.
 - Jungle demo: camp killed, buff Might 58s.

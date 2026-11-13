@@ -29,6 +29,8 @@ struct SceneGlobals {
 @group(0) @binding(2) var shadow_sampler: sampler_comparison;
 @group(0) @binding(3) var terrain_textures: texture_2d_array<f32>;
 @group(0) @binding(4) var terrain_sampler: sampler;
+@group(0) @binding(5) var model_textures: texture_2d_array<f32>;
+@group(0) @binding(6) var model_sampler: sampler;
 
 struct VsIn {
     @location(0) position: vec3<f32>,
@@ -37,6 +39,7 @@ struct VsIn {
     @location(3) uv: vec2<f32>,
     @location(4) ao: f32,
     @location(5) material: u32,
+    @location(6) texture_id: u32,
 };
 
 struct VsOut {
@@ -47,6 +50,7 @@ struct VsOut {
     @location(3) uv: vec2<f32>,
     @location(4) ao: f32,
     @location(5) @interpolate(flat) material: u32,
+    @location(6) @interpolate(flat) texture_id: u32,
 };
 
 @vertex
@@ -59,6 +63,7 @@ fn vs(input: VsIn) -> VsOut {
     output.uv = input.uv;
     output.ao = input.ao;
     output.material = input.material;
+    output.texture_id = input.texture_id;
     return output;
 }
 
@@ -154,8 +159,31 @@ fn noise2(p: vec2<f32>) -> f32 {
     );
 }
 
+fn is_leaf_texture(id: u32) -> bool {
+    return id == 8u || id == 28u || id == 30u || id == 41u || id == 60u;
+}
+
+fn sample_model_texture(input: VsOut) -> vec3<f32> {
+    // Textured faces carry a per-face planar UV generated on the CPU. This
+    // follows the OSRS texture-plane idea and avoids the smeared triplanar
+    // look on large cone/roof triangles.
+    let tex = textureSampleGrad(
+        model_textures, model_sampler, input.uv, input.texture_id, dpdx(input.uv), dpdy(input.uv)
+    ).rgb;
+    // Cache foliage palettes are very dark in linear light. Lift leaves much
+    // harder than wood/stone so canopies read like OSRS rather than black
+    // silhouettes.
+    if (is_leaf_texture(input.texture_id)) {
+        return pow(max(tex, vec3<f32>(0.0)), vec3<f32>(0.62)) * 1.75;
+    }
+    return pow(max(tex, vec3<f32>(0.0)), vec3<f32>(0.88)) * 1.18;
+}
+
 fn albedo(input: VsOut) -> vec3<f32> {
     var c = input.color.rgb;
+    if (input.material == 5u) {
+        return sample_model_texture(input) * input.color.rgb;
+    }
     if (input.material == 4u) {
         // Stable world-space planar UVs. Scaling UVs by the fragment normal
         // warps the sprite into ripples, so the slope is baked per vertex
@@ -198,10 +226,22 @@ fn albedo(input: VsOut) -> vec3<f32> {
         // Roads fade out on steep ground instead of stretching up cliffs.
         let lane = clamp(input.color.a, 0.0, 1.0) * (1.0 - smoothstep(0.08, 0.30, slope));
         if (lane > 0.002) {
-            let road_uv = input.world.xz / 192.0;
-            let road = textureSample(terrain_textures, terrain_sampler, road_uv, 1).rgb;
-            let gravel = textureSample(terrain_textures, terrain_sampler, road_uv * 0.63, 5).rgb;
-            tex = mix(tex, mix(road, gravel, 0.45), lane * 0.94);
+            // The dirt layer is the dominant road surface. The cobbled path
+            // sprite is only a low-weight gravel accent, which hides its dark
+            // repeating border and keeps the lane from looking like a pasted
+            // tile. A large, slowly warped UV scale breaks the grid further.
+            let road_uv = input.world.xz / 310.0;
+            let warp = vec2<f32>(
+                noise2(input.world.xz / 520.0),
+                noise2(input.world.zx / 610.0 + 31.0)
+            ) * 0.045;
+            let road = textureSample(
+                terrain_textures, terrain_sampler, road_uv + warp, 1
+            ).rgb;
+            let gravel = textureSample(
+                terrain_textures, terrain_sampler, road_uv * 0.72 + warp, 5
+            ).rgb;
+            tex = mix(tex, mix(road, gravel, 0.22), lane * 0.94);
         }
 
         // A second, much larger noise scale lays broad dirt patches over the
