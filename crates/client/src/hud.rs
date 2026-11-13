@@ -1,6 +1,19 @@
 use crate::animated::{AnimatedScene, UnitKind};
 use crate::scene::Vertex;
 
+pub struct PlayerHud {
+    pub health: f32,
+    pub max_health: f32,
+    pub mana: f32,
+    pub max_mana: f32,
+    pub xp: f32,
+    pub xp_next: f32,
+    pub cooldowns: [f32; 4],
+    pub shield: f32,
+    pub shield_timer: f32,
+    pub buff: Option<(f32, f32, [u8; 3])>,
+}
+
 pub struct Hud {
     pub vertices: Vec<Vertex>,
     pub indices: Vec<u32>,
@@ -116,24 +129,18 @@ impl Hud {
         &mut self,
         width: f32,
         height: f32,
-        health: f32,
-        max_health: f32,
-        mana: f32,
-        max_mana: f32,
-        q_cooldown: f32,
-        q_max: f32,
+        player: &PlayerHud,
         nexus0: (f32, f32),
         nexus1: (f32, f32),
         wave_timer: f32,
         wave_interval: f32,
         match_over: Option<u8>,
-        buff: Option<(f32, f32, [u8; 3])>,
         mouse: (f64, f64),
     ) {
         self.vertices.clear();
         self.indices.clear();
 
-        // Health and mana panels, top-left.
+        // Health, mana, XP, and buff panels, top-left.
         self.panel(
             width,
             height,
@@ -141,7 +148,7 @@ impl Hud {
             22.0,
             280.0,
             22.0,
-            health / max_health,
+            player.health / player.max_health,
             [70, 190, 95],
         );
         self.panel(
@@ -151,13 +158,34 @@ impl Hud {
             50.0,
             280.0,
             14.0,
-            mana / max_mana,
+            player.mana / player.max_mana.max(1.0),
             [70, 120, 235],
         );
-
-        if let Some((remaining, duration, color)) = buff {
+        self.panel(
+            width,
+            height,
+            22.0,
+            70.0,
+            280.0,
+            6.0,
+            (player.xp / player.xp_next.max(1.0)).clamp(0.0, 1.0),
+            [170, 90, 230],
+        );
+        if player.shield > 0.0 && player.shield_timer > 0.0 {
+            self.panel(
+                width,
+                height,
+                22.0,
+                45.0,
+                280.0,
+                3.0,
+                (player.shield / 120.0).clamp(0.0, 1.0),
+                [90, 255, 140],
+            );
+        }
+        if let Some((remaining, duration, color)) = player.buff {
             let fill = (remaining / duration.max(0.1)).clamp(0.0, 1.0);
-            self.panel(width, height, 22.0, 72.0, 150.0, 10.0, fill, color);
+            self.panel(width, height, 22.0, 82.0, 150.0, 10.0, fill, color);
         }
 
         // Nexus health bars, top-centre.
@@ -212,33 +240,47 @@ impl Hud {
             self.quad(width, height, width - 5.0, 0.0, 5.0, height, color);
         }
 
-        // Q cooldown box, bottom-centre.
-        let qx = width * 0.5 - 34.0;
-        let qy = height - 104.0;
-        self.quad(width, height, qx - 3.0, qy - 3.0, 74.0, 74.0, [12, 12, 16]);
-        self.quad(width, height, qx, qy, 68.0, 68.0, [38, 38, 46]);
-        if q_cooldown > 0.0 {
-            let frac = (q_cooldown / q_max).clamp(0.0, 1.0);
-            let fill_h = 68.0 * frac;
+        // Four ability boxes, bottom-centre.
+        let box_size = 58.0;
+        let gap = 8.0;
+        let total = box_size * 4.0 + gap * 3.0;
+        let x0 = (width - total) * 0.5;
+        let y0 = height - 96.0;
+        let colors = [
+            [255, 150, 40],
+            [90, 220, 255],
+            [90, 255, 140],
+            [255, 90, 60],
+        ];
+        let maxima = [5.0f32, 8.0, 12.0, 45.0];
+        for (i, color) in colors.iter().enumerate() {
+            let bx = x0 + i as f32 * (box_size + gap);
             self.quad(
                 width,
                 height,
-                qx,
-                qy + 68.0 - fill_h,
-                68.0,
-                fill_h,
-                [20, 20, 28],
+                bx - 2.0,
+                y0 - 2.0,
+                box_size + 4.0,
+                box_size + 4.0,
+                [70, 75, 85],
             );
-        } else {
-            self.quad(
-                width,
-                height,
-                qx + 22.0,
-                qy + 22.0,
-                24.0,
-                24.0,
-                [255, 150, 40],
-            );
+            self.quad(width, height, bx, y0, box_size, box_size, [32, 34, 40]);
+            let cooldown = player.cooldowns[i];
+            if cooldown > 0.0 {
+                let frac = (cooldown / maxima[i]).clamp(0.0, 1.0);
+                let fill_h = box_size * frac;
+                self.quad(
+                    width,
+                    height,
+                    bx,
+                    y0 + box_size - fill_h,
+                    box_size,
+                    fill_h,
+                    [16, 18, 24],
+                );
+            } else {
+                self.quad(width, height, bx + 17.0, y0 + 17.0, 24.0, 24.0, *color);
+            }
         }
 
         // Crosshair at the cursor.

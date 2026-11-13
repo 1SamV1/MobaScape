@@ -19,7 +19,7 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
 use crate::animated::AnimatedScene;
-use crate::hud::Hud;
+use crate::hud::{Hud, PlayerHud};
 use crate::renderer::{Camera, Renderer};
 use crate::scene::{CampBuff, HeightGrid, SceneData, WorldCollision};
 
@@ -50,6 +50,9 @@ struct Cli {
     /// Demo: teleport to a jungle camp, attack it, and verify the buff.
     #[arg(long)]
     demo_camp: bool,
+    /// Demo: cast W/E/R and print the resulting player stats.
+    #[arg(long)]
+    demo_kit: bool,
     /// Simulation speed multiplier for verification.
     #[arg(long, default_value_t = 1.0)]
     timescale: f32,
@@ -112,6 +115,9 @@ fn main() -> Result<()> {
         demo_timer: 0.0,
         demo_combat: cli.demo_combat,
         demo_camp: cli.demo_camp,
+        demo_kit: cli.demo_kit,
+        demo_kit_timer: 0.0,
+        demo_kit_stage: 0,
         demo_camp_timer: 0.0,
         demo_camp_target: None,
         demo_camp_cast: false,
@@ -149,6 +155,9 @@ struct App {
     demo_timer: f32,
     demo_combat: bool,
     demo_camp: bool,
+    demo_kit: bool,
+    demo_kit_timer: f32,
+    demo_kit_stage: u8,
     demo_camp_timer: f32,
     demo_camp_target: Option<usize>,
     demo_camp_cast: bool,
@@ -226,7 +235,11 @@ impl ApplicationHandler for App {
                 self.mouse_pos = (position.x, position.y);
             }
             WindowEvent::MouseInput { state, button, .. } => {
-                if button != MouseButton::Left || self.demo_camp || self.demo_combat {
+                if button != MouseButton::Left
+                    || self.demo_camp
+                    || self.demo_combat
+                    || self.demo_kit
+                {
                     return;
                 }
                 match state {
@@ -256,17 +269,26 @@ impl ApplicationHandler for App {
                     self.held.insert(code);
                     if code == KeyCode::Escape {
                         event_loop.exit();
-                    } else if code == KeyCode::KeyR {
-                        self.follow = true;
-                        if let Some(renderer) = self.renderer.as_mut() {
-                            renderer.reset_camera();
-                            print_camera(renderer);
-                        }
                     } else if code == KeyCode::KeyF {
                         self.follow = !self.follow;
                         println!("follow={}", self.follow);
                     } else if code == KeyCode::KeyQ {
                         self.cast_q();
+                    } else if code == KeyCode::KeyW {
+                        self.cast_w();
+                    } else if code == KeyCode::KeyE {
+                        self.cast_e();
+                    } else if code == KeyCode::KeyR {
+                        self.cast_r();
+                    } else if code == KeyCode::Space {
+                        self.follow = true;
+                        if let (Some(renderer), Some(animated)) =
+                            (self.renderer.as_mut(), self.animated.as_ref())
+                        {
+                            renderer.camera.target = animated.player_pos() + Vec3::Y * 140.0;
+                            renderer.update_camera();
+                            print_camera(renderer);
+                        }
                     }
                 } else {
                     self.held.remove(&code);
@@ -327,6 +349,7 @@ impl App {
         let steering = self.lmb_down
             && !self.demo_camp
             && !self.demo_combat
+            && !self.demo_kit
             && self
                 .lmb_press
                 .map(|t| t.elapsed().as_secs_f32() >= 0.18)
@@ -402,6 +425,44 @@ impl App {
                     self.demo_camp_done = true;
                 }
             }
+            if self.demo_kit {
+                self.demo_kit_timer += dt;
+                if self.demo_kit_stage == 0 && self.demo_kit_timer >= 1.0 {
+                    let dest = animated.player_pos() + Vec3::new(500.0, 0.0, 300.0);
+                    let ok = animated.cast_w(dest, collision, height);
+                    tracing::info!("demo kit: W cast={ok}");
+                    self.demo_kit_stage = 1;
+                }
+                if self.demo_kit_stage == 1 && self.demo_kit_timer >= 2.0 {
+                    let ok = animated.cast_e();
+                    tracing::info!("demo kit: E cast={ok}");
+                    self.demo_kit_stage = 2;
+                }
+                if self.demo_kit_stage == 2 && self.demo_kit_timer >= 3.0 {
+                    if let Some(index) = animated.nearest_enemy(animated.player_pos()) {
+                        if let Some(pos) = animated.unit_pos(index) {
+                            let ok = animated.cast_r(pos);
+                            tracing::info!("demo kit: R cast={ok}");
+                        }
+                    }
+                    self.demo_kit_stage = 3;
+                }
+                if self.demo_kit_stage == 3 && self.demo_kit_timer >= 4.0 {
+                    let s = animated.player_stats();
+                    tracing::info!(
+                        "demo kit: level {} xp {:.0}/{:.0} gold {} mana {:.0}/{:.0} cds {:?}",
+                        s.level,
+                        s.xp,
+                        s.xp_next,
+                        s.gold,
+                        s.mana,
+                        s.max_mana,
+                        s.cooldowns
+                    );
+                    self.demo_kit = false;
+                }
+            }
+
             if steering {
                 if let Some(point) =
                     renderer.pick_ground(self.mouse_pos.0, self.mouse_pos.1, height)
@@ -438,7 +499,6 @@ impl App {
             }
             renderer.set_dynamic_mesh(&animated.vertices, &animated.indices);
 
-            let (hp, max_hp) = animated.player_health();
             let nexus0 = animated.nexus_health(0).unwrap_or((0.0, 1.0));
             let nexus1 = animated.nexus_health(1).unwrap_or((0.0, 1.0));
             self.lane_log_timer += dt;
@@ -464,21 +524,28 @@ impl App {
                 };
                 (remaining, duration, color)
             });
+            let stats = animated.player_stats();
+            let player_hud = PlayerHud {
+                health: stats.health,
+                max_health: stats.max_health,
+                mana: stats.mana,
+                max_mana: stats.max_mana,
+                xp: stats.xp,
+                xp_next: stats.xp_next,
+                cooldowns: stats.cooldowns,
+                shield: stats.shield,
+                shield_timer: stats.shield_timer,
+                buff,
+            };
             self.hud.build(
                 renderer.size.0 as f32,
                 renderer.size.1 as f32,
-                hp,
-                max_hp,
-                1.0,
-                1.0,
-                animated.q_cooldown,
-                5.0,
+                &player_hud,
                 nexus0,
                 nexus1,
                 animated.wave_timer,
                 animated.wave_interval,
                 animated.match_over,
-                buff,
                 self.mouse_pos,
             );
             self.hud
@@ -494,8 +561,8 @@ impl App {
             if self.title_timer >= 0.5 {
                 let fps = self.title_frames as f32 / self.title_timer;
                 let pos = animated.player_pos();
-                let (hp, max_hp) = animated.player_health();
-                let q = animated.q_cooldown;
+                let stats = animated.player_stats();
+                let (hp, max_hp) = (stats.health, stats.max_health);
                 let nexus0 = animated.nexus_health(0).unwrap_or((0.0, 1.0));
                 let nexus1 = animated.nexus_health(1).unwrap_or((0.0, 1.0));
                 let result = match animated.match_over {
@@ -521,13 +588,22 @@ impl App {
                     .unwrap_or_else(|| "-".to_string());
                 if let Some(window) = self.window.as_ref() {
                     window.set_title(&format!(
-                        "Rift - Karamja | tile {:.0},{:.0} | {:.0} fps | HP {:.0}/{:.0} | Q {:.1}s | nexus {:.0}/{:.0} ({}) - {:.0}/{:.0} ({}) | inhib {}/{} - {}/{} | wave {:.0}s | minions {} | buff {}{}",
+                        "Rift - Karamja | tile {:.0},{:.0} | {:.0} fps | L{} {:.0}/{:.0} XP | HP {:.0}/{:.0} | MP {:.0}/{:.0} | gold {} | Q/W/E/R {:.1}/{:.1}/{:.1}/{:.1}s | nexus {:.0}/{:.0} ({}) - {:.0}/{:.0} ({}) | inhib {}/{} - {}/{} | wave {:.0}s | minions {} | buff {}{}",
                         pos.x / 128.0,
                         pos.z / 128.0,
                         fps,
+                        stats.level,
+                        stats.xp,
+                        stats.xp_next,
                         hp,
                         max_hp,
-                        q,
+                        stats.mana,
+                        stats.max_mana,
+                        stats.gold,
+                        stats.cooldowns[0],
+                        stats.cooldowns[1],
+                        stats.cooldowns[2],
+                        stats.cooldowns[3],
                         nexus0.0,
                         nexus0.1,
                         shield0,
@@ -591,6 +667,43 @@ impl App {
         }
     }
 
+    fn cast_w(&mut self) {
+        let (Some(renderer), Some(height), Some(collision), Some(animated)) = (
+            self.renderer.as_ref(),
+            self.height.as_ref(),
+            self.collision.as_ref(),
+            self.animated.as_mut(),
+        ) else {
+            return;
+        };
+        if let Some(point) = renderer.pick_ground(self.mouse_pos.0, self.mouse_pos.1, height) {
+            let cast = animated.cast_w(point, collision, height);
+            println!("W cast={cast}");
+        }
+    }
+
+    fn cast_e(&mut self) {
+        let Some(animated) = self.animated.as_mut() else {
+            return;
+        };
+        let cast = animated.cast_e();
+        println!("E cast={cast}");
+    }
+
+    fn cast_r(&mut self) {
+        let (Some(renderer), Some(height), Some(animated)) = (
+            self.renderer.as_ref(),
+            self.height.as_ref(),
+            self.animated.as_mut(),
+        ) else {
+            return;
+        };
+        if let Some(point) = renderer.pick_ground(self.mouse_pos.0, self.mouse_pos.1, height) {
+            let cast = animated.cast_r(point);
+            println!("R cast={cast}");
+        }
+    }
+
     fn update_camera(&mut self, dt: f32) {
         let Some(renderer) = self.renderer.as_mut() else {
             return;
@@ -601,16 +714,16 @@ impl App {
         let right = Vec3::new(yaw.cos(), 0.0, -yaw.sin());
 
         let mut movement = Vec3::ZERO;
-        if self.held.contains(&KeyCode::KeyW) || self.held.contains(&KeyCode::ArrowUp) {
+        if self.held.contains(&KeyCode::ArrowUp) {
             movement += forward;
         }
-        if self.held.contains(&KeyCode::KeyS) || self.held.contains(&KeyCode::ArrowDown) {
+        if self.held.contains(&KeyCode::ArrowDown) {
             movement -= forward;
         }
-        if self.held.contains(&KeyCode::KeyD) || self.held.contains(&KeyCode::ArrowRight) {
+        if self.held.contains(&KeyCode::ArrowRight) {
             movement += right;
         }
-        if self.held.contains(&KeyCode::KeyA) || self.held.contains(&KeyCode::ArrowLeft) {
+        if self.held.contains(&KeyCode::ArrowLeft) {
             movement -= right;
         }
 
@@ -621,11 +734,11 @@ impl App {
             renderer.camera.target += movement.normalize() * speed;
             changed = true;
         }
-        if self.held.contains(&KeyCode::KeyQ) {
+        if self.held.contains(&KeyCode::KeyZ) {
             renderer.camera.yaw += 1.2 * dt;
             changed = true;
         }
-        if self.held.contains(&KeyCode::KeyE) {
+        if self.held.contains(&KeyCode::KeyX) {
             renderer.camera.yaw -= 1.2 * dt;
             changed = true;
         }

@@ -458,7 +458,6 @@ pub struct NpcSpawn {
 pub struct SceneData {
     pub terrain: MeshData,
     pub models: MeshData,
-    pub center: Vec3,
     pub placements: usize,
     pub height: HeightGrid,
     pub collision: WorldCollision,
@@ -741,7 +740,6 @@ pub fn build(
     Ok(SceneData {
         terrain: terrain_mesh,
         models: model_mesh,
-        center,
         placements,
         height,
         collision,

@@ -31,13 +31,6 @@ impl Camera {
         }
     }
 
-    pub fn reset(&mut self, target: Vec3) {
-        self.target = target;
-        self.yaw = 0.72;
-        self.pitch = 0.86;
-        self.distance = 4400.0;
-    }
-
     pub fn eye(&self) -> Vec3 {
         self.target
             + Vec3::new(
@@ -105,7 +98,6 @@ pub struct Renderer {
     hud_index_capacity: usize,
     hud_index_count: u32,
     pub camera: Camera,
-    scene_center: Vec3,
     pub size: (u32, u32),
 }
 
@@ -377,7 +369,6 @@ impl Renderer {
             hud_index_capacity,
             hud_index_count: 0,
             camera: initial_camera,
-            scene_center: scene.center,
             size: (width, height),
         };
         renderer.update_camera();
@@ -406,11 +397,6 @@ impl Renderer {
         };
         self.queue
             .write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(&uniform));
-    }
-
-    pub fn reset_camera(&mut self) {
-        self.camera.reset(self.scene_center);
-        self.update_camera();
     }
 
     pub fn set_dynamic_mesh(&mut self, vertices: &[Vertex], indices: &[u32]) {

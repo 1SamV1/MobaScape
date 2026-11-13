@@ -69,6 +69,37 @@ pub struct AnimatedUnit {
     pub lane_index: usize,
     pub respawn_time: f32,
     pub camp_buff: Option<CampBuff>,
+    pub mana: f32,
+    pub max_mana: f32,
+    pub level: u32,
+    pub xp: f32,
+    pub gold: u32,
+    pub shield: f32,
+    pub shield_timer: f32,
+    pub cooldowns: [f32; 4],
+}
+
+#[derive(Clone, Copy)]
+pub struct PlayerStats {
+    pub health: f32,
+    pub max_health: f32,
+    pub mana: f32,
+    pub max_mana: f32,
+    pub level: u32,
+    pub xp: f32,
+    pub xp_next: f32,
+    pub gold: u32,
+    pub cooldowns: [f32; 4],
+    pub shield: f32,
+    pub shield_timer: f32,
+}
+
+pub struct Effect {
+    pub pos: Vec3,
+    pub radius: f32,
+    pub remaining: f32,
+    pub duration: f32,
+    pub color: [u8; 3],
 }
 
 #[derive(Clone, Copy)]
@@ -108,7 +139,7 @@ pub struct AnimatedScene {
     pub indices: Vec<u32>,
     pub marker: Option<(Vec3, f32)>,
     pub projectiles: Vec<Projectile>,
-    pub q_cooldown: f32,
+    pub effects: Vec<Effect>,
     pub wave_timer: f32,
     pub wave_interval: f32,
     pub lanes: Vec<Vec<Vec3>>,
@@ -165,6 +196,12 @@ impl AnimatedScene {
             380.0,
             Vec::new(),
         )?);
+        {
+            let player = &mut units[player_index];
+            player.mana = 200.0;
+            player.max_mana = 200.0;
+            player.level = 1;
+        }
 
         // A training dummy next to the spawn keeps combat testable without
         // waiting for the first wave to meet in the middle.
@@ -315,7 +352,7 @@ impl AnimatedScene {
             indices: Vec::new(),
             marker: None,
             projectiles: Vec::new(),
-            q_cooldown: 0.0,
+            effects: Vec::new(),
             wave_timer: 0.0,
             wave_interval: scene.map.wave_interval,
             lanes: scene
@@ -344,9 +381,21 @@ impl AnimatedScene {
         self.units[self.player_index].pos
     }
 
-    pub fn player_health(&self) -> (f32, f32) {
+    pub fn player_stats(&self) -> PlayerStats {
         let p = &self.units[self.player_index];
-        (p.health, p.max_health)
+        PlayerStats {
+            health: p.health,
+            max_health: p.max_health,
+            mana: p.mana,
+            max_mana: p.max_mana,
+            level: p.level,
+            xp: p.xp,
+            xp_next: xp_for_level(p.level),
+            gold: p.gold,
+            cooldowns: p.cooldowns,
+            shield: p.shield,
+            shield_timer: p.shield_timer,
+        }
     }
 
     pub fn nexus_health(&self, team: u8) -> Option<(f32, f32)> {
@@ -465,25 +514,121 @@ impl AnimatedScene {
     }
 
     pub fn cast_q(&mut self, target: Vec3) -> bool {
-        if self.q_cooldown > 0.0 || self.units[self.player_index].health <= 0.0 {
+        let pi = self.player_index;
+        let player = &mut self.units[pi];
+        if player.health <= 0.0 || player.cooldowns[0] > 0.0 || player.mana < 25.0 {
             return false;
         }
-        let player = &self.units[self.player_index];
         let flat = Vec3::new(target.x - player.pos.x, 0.0, target.z - player.pos.z);
         if flat.length_squared() < 1.0 {
             return false;
         }
         let dir = flat.normalize();
         let pos = player.pos + Vec3::Y * (player.scale * 80.0) + dir * 40.0;
+        let team = player.team;
+        player.mana -= 25.0;
+        player.cooldowns[0] = Q_COOLDOWN;
         self.projectiles.push(Projectile {
             pos,
             dir,
             speed: 950.0,
             life: 1.4,
             damage: Q_DAMAGE,
-            team: player.team,
+            team,
         });
-        self.q_cooldown = Q_COOLDOWN;
+        true
+    }
+
+    pub fn cast_w(
+        &mut self,
+        target: Vec3,
+        collision: &WorldCollision,
+        height: &HeightGrid,
+    ) -> bool {
+        let pi = self.player_index;
+        let player = &mut self.units[pi];
+        if player.health <= 0.0 || player.cooldowns[1] > 0.0 || player.mana < 30.0 {
+            return false;
+        }
+        let flat = Vec3::new(target.x - player.pos.x, 0.0, target.z - player.pos.z);
+        if flat.length_squared() < 1.0 {
+            return false;
+        }
+        let dir = flat.normalize();
+        let start = player.pos;
+        let mut destination = start;
+        for step in (1..=12).rev() {
+            let p = start + dir * (step as f32 * 64.0);
+            if collision.is_walkable_world(p.x, p.z) {
+                destination = Vec3::new(p.x, height.height_at(p.x, p.z), p.z);
+                break;
+            }
+        }
+        if destination.distance(start) < 8.0 {
+            return false;
+        }
+        player.pos = destination;
+        player.mana -= 30.0;
+        player.cooldowns[1] = 8.0;
+        player.path.clear();
+        player.path_index = 0;
+        self.effects.push(Effect {
+            pos: start,
+            radius: 140.0,
+            remaining: 0.35,
+            duration: 0.35,
+            color: [90, 220, 255],
+        });
+        true
+    }
+
+    pub fn cast_e(&mut self) -> bool {
+        let pi = self.player_index;
+        let player = &mut self.units[pi];
+        if player.health <= 0.0 || player.cooldowns[2] > 0.0 || player.mana < 40.0 {
+            return false;
+        }
+        player.mana -= 40.0;
+        player.cooldowns[2] = 12.0;
+        player.health = (player.health + 80.0).min(player.max_health);
+        player.shield = 120.0;
+        player.shield_timer = 4.0;
+        let pos = player.pos;
+        self.effects.push(Effect {
+            pos,
+            radius: 160.0,
+            remaining: 0.5,
+            duration: 0.5,
+            color: [90, 255, 140],
+        });
+        true
+    }
+
+    pub fn cast_r(&mut self, target: Vec3) -> bool {
+        let pi = self.player_index;
+        let player = &mut self.units[pi];
+        if player.health <= 0.0 || player.cooldowns[3] > 0.0 || player.mana < 80.0 {
+            return false;
+        }
+        player.mana -= 80.0;
+        player.cooldowns[3] = 45.0;
+        self.effects.push(Effect {
+            pos: target,
+            radius: 384.0,
+            remaining: 0.6,
+            duration: 0.6,
+            color: [255, 110, 50],
+        });
+        let radius = 384.0;
+        for i in 0..self.units.len() {
+            let unit = &self.units[i];
+            if unit.health <= 0.0 || unit.team == 0 || unit.team == 2 {
+                continue;
+            }
+            if unit.pos.distance(target) <= radius + unit.hit_radius {
+                self.damage_unit(i, 120.0, 0);
+            }
+        }
         true
     }
 
@@ -566,7 +711,24 @@ impl AnimatedScene {
         camera_up: Vec3,
         camera_forward: Vec3,
     ) {
-        self.q_cooldown = (self.q_cooldown - dt).max(0.0);
+        let pi = self.player_index;
+        {
+            let player = &mut self.units[pi];
+            for cd in &mut player.cooldowns {
+                *cd = (*cd - dt).max(0.0);
+            }
+            player.mana = (player.mana + 8.0 * dt).min(player.max_mana);
+            if player.shield_timer > 0.0 {
+                player.shield_timer -= dt;
+                if player.shield_timer <= 0.0 {
+                    player.shield = 0.0;
+                }
+            }
+        }
+        for effect in &mut self.effects {
+            effect.remaining -= dt;
+        }
+        self.effects.retain(|effect| effect.remaining > 0.0);
         if let Some((_, ref mut remaining)) = self.marker {
             *remaining -= dt;
             if *remaining <= 0.0 {
@@ -848,34 +1010,51 @@ impl AnimatedScene {
             return;
         }
         let amount = amount * self.team_damage_mult(attacker_team);
-        let camp_buff = self.units[index].camp_buff;
-        let unit = &mut self.units[index];
-        if unit.health <= 0.0 {
+        let (target_kind, camp_buff, respawn_time, killed) = {
+            let unit = &mut self.units[index];
+            if unit.health <= 0.0 {
+                return;
+            }
+            let mut amount = amount;
+            if unit.kind == UnitKind::Player && unit.shield > 0.0 {
+                let absorbed = unit.shield.min(amount);
+                unit.shield -= absorbed;
+                amount -= absorbed;
+            }
+            unit.health = (unit.health - amount).max(0.0);
+            unit.hit_flash = 0.2;
+            (
+                unit.kind,
+                unit.camp_buff,
+                unit.respawn_time,
+                unit.health <= 0.0,
+            )
+        };
+        if !killed {
             return;
         }
-        unit.health = (unit.health - amount).max(0.0);
-        unit.hit_flash = 0.2;
-        if unit.health > 0.0 {
-            return;
+        if attacker_team == 0 {
+            self.grant_reward(target_kind);
         }
-        match unit.kind {
+        match target_kind {
             UnitKind::Nexus => {
                 self.match_over = Some(attacker_team);
             }
             UnitKind::Player => {
+                let unit = &mut self.units[index];
                 unit.dead_timer = PLAYER_RESPAWN;
                 unit.attack_target = None;
                 unit.path.clear();
                 unit.path_index = 0;
             }
             UnitKind::Tower => {
-                unit.dead_timer = 0.0;
+                self.units[index].dead_timer = 0.0;
             }
             UnitKind::Dummy => {
-                unit.dead_timer = 4.0;
+                self.units[index].dead_timer = 4.0;
             }
             UnitKind::Camp => {
-                unit.dead_timer = unit.respawn_time;
+                self.units[index].dead_timer = respawn_time;
                 if let Some(kind) = camp_buff {
                     let (damage_mult, speed_mult) = match kind {
                         CampBuff::Might => (1.25, 1.0),
@@ -893,6 +1072,33 @@ impl AnimatedScene {
                 }
             }
             _ => {}
+        }
+    }
+
+    fn grant_reward(&mut self, kind: UnitKind) {
+        let (xp, gold) = match kind {
+            UnitKind::MeleeMinion | UnitKind::RangedMinion => (20.0, 10),
+            UnitKind::Tower => (100.0, 100),
+            UnitKind::Inhibitor => (150.0, 150),
+            UnitKind::Camp => (80.0, 50),
+            UnitKind::Dummy => (50.0, 20),
+            _ => (0.0, 0),
+        };
+        if xp <= 0.0 {
+            return;
+        }
+        let pi = self.player_index;
+        let player = &mut self.units[pi];
+        player.gold = player.gold.saturating_add(gold);
+        player.xp += xp;
+        while player.level < 11 && player.xp >= xp_for_level(player.level) {
+            player.xp -= xp_for_level(player.level);
+            player.level += 1;
+            player.max_health += 40.0;
+            player.health = (player.health + 40.0).min(player.max_health);
+            player.max_mana += 20.0;
+            player.mana = (player.mana + 20.0).min(player.max_mana);
+            player.attack_damage += 2.0;
         }
     }
 
@@ -1030,6 +1236,14 @@ impl AnimatedScene {
                 lane_index: 1.min(lane.len()),
                 respawn_time: 0.0,
                 camp_buff: None,
+                mana: 0.0,
+                max_mana: 0.0,
+                level: 1,
+                xp: 0.0,
+                gold: 0,
+                shield: 0.0,
+                shield_timer: 0.0,
+                cooldowns: [0.0; 4],
             };
             self.units.push(unit);
         }
@@ -1142,6 +1356,24 @@ impl AnimatedScene {
             append_ring(self, pos, pos.y + 4.0, 120.0, [230, 180, 70]);
         }
 
+        let effects = self
+            .effects
+            .iter()
+            .map(|e| {
+                let t = 1.0 - e.remaining / e.duration.max(0.01);
+                (e.pos, e.radius * (0.35 + t * 0.65), e.color)
+            })
+            .collect::<Vec<_>>();
+        for (pos, radius, color) in effects {
+            append_ring(self, pos, pos.y + 6.0, radius, color);
+        }
+
+        let shield_pos = self.units[self.player_index].pos;
+        let shield = self.units[self.player_index].shield;
+        if shield > 0.0 {
+            append_ring(self, shield_pos, shield_pos.y + 5.0, 120.0, [90, 255, 140]);
+        }
+
         if let Some((marker, remaining)) = self.marker {
             let pulse = (remaining * 6.0).sin().abs() * 0.25 + 0.75;
             append_ring(self, marker, marker.y + 5.0, 55.0 * pulse, [120, 255, 120]);
@@ -1153,6 +1385,10 @@ impl AnimatedUnit {
     fn is_minion_of(&self, team: u8) -> bool {
         self.kind.is_minion() && self.team == team
     }
+}
+
+fn xp_for_level(level: u32) -> f32 {
+    100.0 + (level.saturating_sub(1) as f32) * 80.0
 }
 
 fn find_nexus(units: &[AnimatedUnit], team: u8) -> Option<Vec3> {
@@ -1225,6 +1461,14 @@ fn load_unit(
         lane_index: 0,
         respawn_time: 0.0,
         camp_buff: None,
+        mana: 0.0,
+        max_mana: 0.0,
+        level: 1,
+        xp: 0.0,
+        gold: 0,
+        shield: 0.0,
+        shield_timer: 0.0,
+        cooldowns: [0.0; 4],
     })
 }
 

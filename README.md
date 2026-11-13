@@ -4,12 +4,13 @@ A 5v5 MOBA built on a custom Rust engine, using modern Old School RuneScape
 cache assets for its visual identity. Server-authoritative, data-driven, and
 designed for fast-paced low-team-count matches.
 
-> Status: **M3.75 jungle + minimap**. The cache reader, terrain/location/model/
+> Status: **M3.9 champion kit**. The cache reader, terrain/location/model/
 > sequence decoders, animated NPCs, a 3x3 Karamja block, A* pathfinding with
-> collision, hold-to-steer, a screen-space HUD, auto-attacks, Q, three lanes with
-> towers/inhibitors/shielded nexus, minion waves, jungle camps with team buffs,
-> a live minimap, and a win condition are working. There is no networking or
-> full champion kit yet. See [docs/STATUS.md](docs/STATUS.md).
+> collision, hold-to-steer, a screen-space HUD, auto-attacks, a Q/W/E/R kit
+> with mana/cooldowns/XP/gold, three lanes with towers/inhibitors/shielded
+> nexus, minion waves, jungle camps with team buffs, a live minimap, and a win
+> condition are working. There is no networking or item shop yet. See
+> [docs/STATUS.md](docs/STATUS.md).
 
 ## What exists
 
@@ -60,6 +61,9 @@ cargo run -p rift-client -- --timescale 20
 
 # Teleport to a jungle camp, kill it, and verify the team buff
 cargo run -p rift-client -- --demo-camp --timescale 4
+
+# Cast W/E/R and print mana/cooldown/XP state
+cargo run -p rift-client -- --demo-kit --timescale 4
 ```
 
 The cache download is not automated yet; see
@@ -70,10 +74,14 @@ Put `keys.json` next to `main_file_cache.dat2`, or pass `--keys`.
 
 - **LMB ground tap**: pathfind to the point
 - **LMB hold**: steer directly toward the cursor with collision sliding
-- **LMB on a dummy**: auto-attack it
-- **Q**: fire blast at the cursor (5 s cooldown)
-- `WASD` / arrows: pan the camera (disables follow)
-- `E` / `R`: rotate / reset camera
+- **LMB on an enemy**: auto-attack it
+- **Q**: fire blast projectile (5 s)
+- **W**: blink/dash toward the cursor (8 s)
+- **E**: heal + shield (12 s)
+- **R**: meteor AoE at the cursor (45 s)
+- **Arrow keys**: pan the camera (disables follow)
+- **Z / X**: rotate camera
+- **Space**: recenter/follow
 - `Ctrl` + wheel: zoom (plain wheel is ignored to avoid accidental zoom)
 - `F`: toggle camera follow
 - `Esc`: quit

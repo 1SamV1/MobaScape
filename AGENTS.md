@@ -87,6 +87,8 @@ cargo run -p rift-tools -- model 1715
 cargo test -p rift-sim
 cargo run -p rift-client
 cargo run -p rift-client -- --demo-combat
+cargo run -p rift-client -- --demo-camp --timescale 4
+cargo run -p rift-client -- --demo-kit --timescale 4
 cargo run -p rift-client -- --timescale 20
 ```
 
@@ -154,7 +156,7 @@ Cache location: `.cache/osrs-235/cache` by default. Pass `--cache` and
 - Renderer changes: include a headless screenshot or a manual visual check note.
 - Performance: 1080p/60 target on the AMD 680M iGPU. Profile before optimizing.
 
-## 8. Known M3.75 limitations
+## 8. Known M3.9 limitations
 
 - Client renders a 3×3 region block (192×192 tiles); there is no terrain skirt
   or streaming beyond it, and the collision grid is approximate (water + object
@@ -163,9 +165,11 @@ Cache location: `.cache/osrs-235/cache` by default. Pass `--cache` and
   nexus per team. Four jungle camps grant Might (+25% damage) or Swift (+20%
   speed) for 60 s. No brush, fog, or items.
 - Nexus is damageable only after at least one enemy inhibitor falls.
-- The HUD is geometry only (bars, Q box, crosshair, nexus/wave bars, minimap,
-  buff bar); all numbers live in the window title. No text renderer yet.
-- Combat has one Q projectile; no passive/Q/W/E/R kit, mana cost, or items.
+- The HUD is geometry only (bars, four ability boxes, crosshair, nexus/wave
+  bars, minimap, buff bar); all numbers live in the window title. No text
+  renderer yet.
+- Champion kit: Q fire blast, W blink, E heal+shield, R meteor, with mana and
+  cooldowns. No passive or item shop; gold/XP are tracked but gold is unspent.
 - Model formats 1 and old-format models are not implemented yet.
 - Textures are not sampled; textured faces and the `0xff00ff` overlay sentinel
   use flat fallback colours. Dead-tree trunks read as pale spikes.

@@ -86,13 +86,15 @@ Done:
 - Four jungle camps (giant, spider, bat, abyssal demon) with respawn and
   Might/Swift team buffs.
 - Live minimap: lanes, structures, camps, minions, player.
+- Q/W/E/R champion kit with mana, cooldowns, heal/shield, dash, AoE meteor.
+- Levels 1–11, XP, gold, shield, and ability HUD boxes.
 - HUD nexus health bars, wave timer, buff bar; title shows full match state.
-- `--timescale` and `--demo-camp` for fast verification.
+- `--timescale`, `--demo-camp`, and `--demo-kit` for fast verification.
 
 Remaining:
 
 - Brush, fog of war, and minimap interaction.
-- Gold/XP/items and five champions with full kits.
+- Item shop, item stats/passives, and five champions with distinct kits.
 - Deterministic 10-bot match at 20× speed with a state hash.
 - Data hot reload for champions/abilities/items/waves.
 - Balance pass v0.

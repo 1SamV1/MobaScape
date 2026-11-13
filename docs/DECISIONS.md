@@ -149,3 +149,13 @@ are passive in v1 (no retaliation) and use single-model NPCs. The minimap is
 drawn with HUD quads from live state (lanes, structures, camps, minions,
 player); it is display-only until click-to-pan lands. Fog of war remains a
 server-side milestone.
+
+## ADR-015 — QWER champion kit and arrow-key camera
+
+**Status:** accepted.
+
+The player now has a four-ability kit: Q projectile, W blink, E heal/shield,
+R meteor. Mana, cooldowns, XP, gold, levels, and shield absorption are tracked.
+To free Q/W/E/R, camera panning moved to the arrow keys, rotation to Z/X, and
+recenter/follow to Space. R is the ultimate, not camera reset. The HUD draws four
+ability boxes with cooldown fills; the title carries the numeric values.
