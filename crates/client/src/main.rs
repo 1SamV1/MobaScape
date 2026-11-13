@@ -26,7 +26,7 @@ use crate::champion::ChampionConfig;
 use crate::hud::{Hud, PlayerHud, minimap_world_at};
 use crate::items::{ItemShop, shop_row_at, shop_row_rect};
 use crate::renderer::{Camera, Renderer};
-use crate::scene::{CampBuff, HeightGrid, SceneData, Vertex, WorldCollision};
+use crate::scene::{CampBuff, HeightGrid, SceneData, SceneVertex, WorldCollision};
 
 #[derive(Parser, Debug)]
 #[command(name = "rift-client", about = "Rift native client (M1 vertical slice)")]
@@ -43,6 +43,9 @@ struct Cli {
     /// Initial camera distance in world units.
     #[arg(long, default_value_t = 4400.0)]
     distance: f32,
+    /// Optional initial camera pitch in radians (dev screenshots).
+    #[arg(long)]
+    pitch: Option<f32>,
     /// Map design data.
     #[arg(long, default_value = "data/maps/karamja_rift/map.json")]
     map: PathBuf,
@@ -70,6 +73,12 @@ struct Cli {
     /// Demo: destroy an inhibitor and verify super minions plus respawn.
     #[arg(long)]
     demo_inhibitor: bool,
+    /// Graphics preset: 117hd or classic.
+    #[arg(long, default_value = "117hd")]
+    graphics: String,
+    /// Debug view: lit, albedo, normal, lighting, fog.
+    #[arg(long, default_value = "lit")]
+    debug_view: String,
     /// Simulation speed multiplier for verification.
     #[arg(long, default_value_t = 1.0)]
     timescale: f32,
@@ -130,6 +139,7 @@ fn main() -> Result<()> {
         lmb_down: false,
         lmb_press: None,
         initial_distance: cli.distance,
+        initial_pitch: cli.pitch,
         demo_target,
         demo_timer: 0.0,
         demo_combat: cli.demo_combat,
@@ -157,6 +167,9 @@ fn main() -> Result<()> {
         demo_combat_cast: false,
         demo_combat_target: None,
         hud: Hud::new(),
+        graphics_classic: cli.graphics.eq_ignore_ascii_case("classic"),
+        debug_view: parse_debug_view(&cli.debug_view),
+        app_time: 0.0,
         fog_timer: 0.0,
         lane_log_timer: 0.0,
         last_frame: Instant::now(),
@@ -181,6 +194,7 @@ struct App {
     lmb_down: bool,
     lmb_press: Option<Instant>,
     initial_distance: f32,
+    initial_pitch: Option<f32>,
     demo_target: Option<(f32, f32)>,
     demo_timer: f32,
     demo_combat: bool,
@@ -208,6 +222,9 @@ struct App {
     demo_combat_cast: bool,
     demo_combat_target: Option<usize>,
     hud: Hud,
+    graphics_classic: bool,
+    debug_view: u32,
+    app_time: f32,
     fog_timer: f32,
     lane_log_timer: f32,
     last_frame: Instant,
@@ -246,6 +263,11 @@ impl ApplicationHandler for App {
         };
 
         renderer.camera.distance = self.initial_distance;
+        if let Some(pitch) = self.initial_pitch {
+            renderer.camera.pitch = pitch;
+        }
+        renderer.set_graphics_mode(!self.graphics_classic);
+        renderer.set_debug_view(self.debug_view);
         renderer.update_camera();
         tracing::info!(
             "camera target {:?}, distance {:.0}; click the ground to move",
@@ -408,6 +430,7 @@ impl App {
         let now = Instant::now();
         let dt = (now - self.last_frame).as_secs_f32().min(0.1);
         self.last_frame = now;
+        self.app_time += dt;
 
         if self.demo_shop {
             self.demo_shop_timer += dt;
@@ -707,6 +730,9 @@ impl App {
                 );
             }
             renderer.set_dynamic_mesh(&animated.vertices, &animated.indices);
+            renderer.set_shadow_mesh(&animated.shadow_vertices, &animated.shadow_indices);
+            renderer.set_lights(&animated.lights());
+            renderer.set_time(self.app_time);
             self.fog_timer += dt;
             if self.fog_timer >= 0.5 {
                 self.fog_timer = 0.0;
@@ -1145,7 +1171,7 @@ fn rebuild_fog(
     let height_tiles = collision.height();
     let mut vertices = Vec::new();
     let mut indices = Vec::new();
-    let color = [8u8, 12, 18];
+    let color = [14u8, 20, 28];
 
     for gy in 0..height_tiles {
         for gx in 0..width {
@@ -1156,16 +1182,27 @@ fn rebuild_fog(
             let z0 = (oy + gy) as f32 * 128.0;
             let x1 = x0 + 128.0;
             let z1 = z0 + 128.0;
-            let y = height.height_at(x0 + 64.0, z0 + 64.0) + 700.0;
+            let y = height.height_at(x0 + 64.0, z0 + 64.0) + 120.0;
             let base = vertices.len() as u32;
-            vertices.push(Vertex::new(Vec3::new(x0, y, z0), color));
-            vertices.push(Vertex::new(Vec3::new(x1, y, z0), color));
-            vertices.push(Vertex::new(Vec3::new(x0, y, z1), color));
-            vertices.push(Vertex::new(Vec3::new(x1, y, z1), color));
+            vertices.push(SceneVertex::unlit(Vec3::new(x0, y, z0), color));
+            vertices.push(SceneVertex::unlit(Vec3::new(x1, y, z0), color));
+            vertices.push(SceneVertex::unlit(Vec3::new(x0, y, z1), color));
+            vertices.push(SceneVertex::unlit(Vec3::new(x1, y, z1), color));
             indices.extend_from_slice(&[base, base + 1, base + 2, base + 2, base + 1, base + 3]);
         }
     }
     renderer.set_fog_mesh(&vertices, &indices);
+}
+
+fn parse_debug_view(name: &str) -> u32 {
+    match name.to_ascii_lowercase().as_str() {
+        "albedo" => 1,
+        "normal" => 2,
+        "lighting" => 3,
+        "fog" => 4,
+        "lights" => 5,
+        _ => 0,
+    }
 }
 
 fn digit_index(code: KeyCode) -> Option<usize> {

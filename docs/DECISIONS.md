@@ -236,3 +236,26 @@ HUD mesh cheap. `minimap_world_at` is a pure screen-to-world conversion, unit
 tested for corners/center/outside clicks. A click inside the minimap pans the
 camera and disables follow. Fog remains client-side until the authoritative
 server owns vision.
+
+## ADR-023 — 117HD Core lighting pipeline
+
+**Status:** accepted.
+
+The scene now uses `SceneVertex` (position, normal, colour, UV, AO, material)
+instead of the old position+colour vertex. Terrain uses smooth heightfield
+normals; models and animated units use flat per-face normals to preserve the
+OSRS faceted look. `SceneGlobals` carries the camera, sun, hemispheric ambient,
+height fog, sky colours, sun screen position, tuning, and a fixed 16-light
+array. `scene.wgsl` applies flat-shaded sun/ambient lighting, optional four-band
+stepping, dynamic point lights, height fog, and debug views. Colours are
+converted sRGB→linear on the CPU because the surface is an sRGB target.
+
+The sky is a full-screen gradient with procedural clouds and a sun disk/glow.
+Blob shadows are rendered with a separate alpha-blended pipeline for static
+scenery and units. Dynamic lights cover the fountain, Q muzzle/impact, E/R
+effects, and projectiles. `--graphics classic` keeps a flat unlit baseline for
+A/B comparison; `--debug-view albedo|normal|lighting|fog|lights` exposes the
+intermediate buffers.
+
+This milestone deliberately does not include textures, HD water, directional
+shadow maps, bloom, MSAA, or draw-distance streaming. Those are M5.1–M5.4.

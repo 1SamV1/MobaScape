@@ -156,7 +156,7 @@ Cache location: `.cache/osrs-235/cache` by default. Pass `--cache` and
 - Renderer changes: include a headless screenshot or a manual visual check note.
 - Performance: 1080p/60 target on the AMD 680M iGPU. Profile before optimizing.
 
-## 8. Known M4.2 limitations
+## 8. Known M5.0 limitations
 
 - Client renders a 3×3 region block (192×192 tiles); there is no terrain skirt
   or streaming beyond it, and the collision grid is approximate (water + object
@@ -171,6 +171,13 @@ Cache location: `.cache/osrs-235/cache` by default. Pass `--cache` and
   font.rs`). HP/MP/XP/gold, nexus values, wave timer, ability labels/cooldowns,
   shop names/costs/tooltips, and match result are on-screen. This is a
   code-defined font, not a cache-native OSRS font atlas.
+- **117HD Core** rendering is in: `SceneVertex` carries position, normal,
+  colour, UV, AO, and material; terrain uses smooth heightfield normals, models
+  use flat per-face normals; the scene shader does sun + hemispheric ambient,
+  height fog, sky/clouds, blob shadows, and up to 16 point lights. `--graphics
+  classic` preserves a flat baseline; `--debug-view albedo|normal|lighting|fog|
+  lights` helps tune it. Textures, HD water, shadow maps, bloom, MSAA, and
+  draw-distance streaming are not implemented yet.
 - Three data-driven champions (`monkey`, `jad`, `kree`) with distinct models,
   stats, and ability numbers. They share the Q/W/E/R shape; Kree has ranged
   auto-attacks. No champion-select UI or passive.
@@ -191,8 +198,12 @@ Cache location: `.cache/osrs-235/cache` by default. Pass `--cache` and
 - No lobby, netcode, audio, or map editor. Ambient NPCs idle only.
 - LZMA groups are implemented but not exercised by the pinned cache.
 - Config archives use real file IDs from the reference table; keep it that way.
-- The viewer follows the player by default. `WASD` disables follow; `F` toggles.
+- The viewer follows the player by default. Arrow keys pan; `F` toggles follow.
 - Use ASCII in window/UI strings until fonts are wired.
+- 117HD Core is still a 3x3 region block; the distant ground plane and fog hide
+  the edge from the default camera, but low pitch views still show the block
+  boundary and the hard fog-of-war mesh. A chunked draw-distance/LOD milestone
+  is required for true 117HD range.
 
 ## 9. Commit / PR style
 

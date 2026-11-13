@@ -4,15 +4,19 @@ A 5v5 MOBA built on a custom Rust engine, using modern Old School RuneScape
 cache assets for its visual identity. Server-authoritative, data-driven, and
 designed for fast-paced low-team-count matches.
 
-> Status: **M4.2 HUD font + base loop**. The cache reader, terrain/location/
-> model/sequence decoders, animated NPCs, a 3x3 Karamja block, A* pathfinding
-> with collision, hold-to-steer, a bitmap-font HUD, auto-attacks, a Q/W/E/R kit
+> Status: **M5.0 117HD Core**. The cache reader, terrain/location/model/
+> sequence decoders, animated NPCs, a 3x3 Karamja block, A* pathfinding with
+> collision, hold-to-steer, a bitmap-font HUD, auto-attacks, a Q/W/E/R kit
 > with mana/cooldowns/XP/gold, three data-driven champions, a six-item shop
 > with tooltips and six inventory slots, passive gold and fountain healing,
 > three lanes with towers/inhibitors/shielded nexus, inhibitor respawn and
 > super minions, minion waves, jungle camps with team buffs, brush/fog of war,
-> a fogged minimap with click-to-pan, and a win condition are working. There is
-> no networking yet. See [docs/STATUS.md](docs/STATUS.md).
+> a fogged minimap with click-to-pan, and a win condition are working.
+> **117HD Core** adds sRGB-correct sun/ambient lighting, per-face model
+> normals, smooth terrain lighting, a sky with clouds, height fog, static and
+> unit blob shadows, and dynamic ability/fountain point lights. Textures, HD
+> water, shadow maps, bloom, and draw-distance streaming are next. See
+> [docs/STATUS.md](docs/STATUS.md).
 
 ## What exists
 
@@ -26,8 +30,8 @@ designed for fast-paced low-team-count matches.
 - `crates/tools` — `rift-tools` CLI for cache inspection and OBJ export
 - `crates/client` — native wgpu client: 3x3 Karamja, animated NPCs, three lanes,
   towers/inhibitors/nexus, minion waves, jungle camps/buffs, brush/fog of war,
-  item shop/inventory, bitmap-font HUD, fogged minimap, click-to-move +
-  hold-to-steer, auto-attacks, Q
+  item shop/inventory, bitmap-font HUD, 117HD Core lighting/atmosphere,
+  fogged minimap, click-to-move + hold-to-steer, auto-attacks, Q
 - `data/maps/karamja_rift/map.json` — lanes, structures, camps, wave timing
 - `docs/reference` — archived Java-era experiments (not built)
 
@@ -71,6 +75,15 @@ cargo run -p rift-client -- --demo-kit --timescale 4
 # Play a different champion
 cargo run -p rift-client -- --champion jad
 cargo run -p rift-client -- --champion kree
+
+# 117HD Core lighting (default) or the flat classic baseline
+cargo run -p rift-client -- --graphics 117hd
+cargo run -p rift-client -- --graphics classic
+
+# Inspect lighting, normals, albedo, or fog
+cargo run -p rift-client -- --graphics 117hd --debug-view lighting
+cargo run -p rift-client -- --graphics 117hd --debug-view normal
+cargo run -p rift-client -- --graphics 117hd --pitch 0.22
 
 # Grant gold, open the shop, and buy all six items
 cargo run -p rift-client -- --demo-shop --timescale 4

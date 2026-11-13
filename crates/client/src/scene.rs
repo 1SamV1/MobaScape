@@ -22,17 +22,73 @@ impl Vertex {
         Self {
             position: position.to_array(),
             color: [
-                color[0] as f32 / 255.0,
-                color[1] as f32 / 255.0,
-                color[2] as f32 / 255.0,
+                srgb_to_linear(color[0] as f32 / 255.0),
+                srgb_to_linear(color[1] as f32 / 255.0),
+                srgb_to_linear(color[2] as f32 / 255.0),
                 1.0,
             ],
         }
     }
 }
 
+/// Convert an sRGB channel to linear light. The surface is an sRGB target, so
+/// shader output must be linear or the palette is double-gamma corrected.
+pub fn srgb_to_linear(c: f32) -> f32 {
+    if c <= 0.04045 {
+        c / 12.92
+    } else {
+        ((c + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct SceneVertex {
+    pub position: [f32; 3],
+    pub normal: [f32; 3],
+    pub color: [f32; 4],
+    pub uv: [f32; 2],
+    pub ao: f32,
+    pub material: u32,
+}
+
+impl SceneVertex {
+    pub fn new(position: Vec3, normal: Vec3, color: [u8; 3]) -> Self {
+        Self {
+            position: position.to_array(),
+            normal: normal.normalize_or_zero().to_array(),
+            color: [
+                srgb_to_linear(color[0] as f32 / 255.0),
+                srgb_to_linear(color[1] as f32 / 255.0),
+                srgb_to_linear(color[2] as f32 / 255.0),
+                1.0,
+            ],
+            uv: [0.0, 0.0],
+            ao: 1.0,
+            material: 0,
+        }
+    }
+
+    pub fn unlit(position: Vec3, color: [u8; 3]) -> Self {
+        let mut vertex = Self::new(position, Vec3::Y, color);
+        vertex.material = 1;
+        vertex
+    }
+
+    pub fn blob(position: Vec3, alpha: f32, uv: [f32; 2]) -> Self {
+        Self {
+            position: position.to_array(),
+            normal: Vec3::Y.to_array(),
+            color: [0.0, 0.0, 0.0, alpha],
+            uv,
+            ao: 1.0,
+            material: 2,
+        }
+    }
+}
+
 pub struct MeshData {
-    pub vertices: Vec<Vertex>,
+    pub vertices: Vec<SceneVertex>,
     pub indices: Vec<u32>,
 }
 
@@ -44,7 +100,7 @@ impl MeshData {
         }
     }
 
-    pub fn push_triangle(&mut self, a: Vertex, b: Vertex, c: Vertex) {
+    pub fn push_triangle(&mut self, a: SceneVertex, b: SceneVertex, c: SceneVertex) {
         let base = self.vertices.len() as u32;
         self.vertices.extend_from_slice(&[a, b, c]);
         self.indices.extend_from_slice(&[base, base + 1, base + 2]);
@@ -219,6 +275,38 @@ struct LaneJson {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct Atmosphere {
+    pub sun_dir: [f32; 3],
+    pub sun_color: [f32; 3],
+    pub ambient_sky: [f32; 3],
+    pub ambient_ground: [f32; 3],
+    pub fog_color: [f32; 3],
+    pub fog_density: f32,
+    pub fog_height: f32,
+    pub sky_top: [f32; 3],
+    pub sky_horizon: [f32; 3],
+    pub ground_fog: f32,
+}
+
+impl Default for Atmosphere {
+    fn default() -> Self {
+        Self {
+            sun_dir: [-0.45, 0.78, 0.35],
+            sun_color: [0.95, 0.82, 0.62],
+            ambient_sky: [0.35, 0.45, 0.60],
+            ambient_ground: [0.20, 0.22, 0.16],
+            fog_color: [0.52, 0.66, 0.78],
+            fog_density: 0.000012,
+            fog_height: 120.0,
+            sky_top: [0.24, 0.42, 0.72],
+            sky_horizon: [0.52, 0.66, 0.78],
+            ground_fog: 0.04,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
 struct MapJson {
     #[serde(default)]
     name: String,
@@ -229,6 +317,8 @@ struct MapJson {
     camps: Vec<CampJson>,
     #[serde(default)]
     brush: Vec<[f32; 4]>,
+    #[serde(default)]
+    atmosphere: Atmosphere,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -277,6 +367,7 @@ pub struct MapLayout {
     pub camps: Vec<CampSpawn>,
     pub brush: Vec<(f32, f32, f32, f32)>,
     pub wave_interval: f32,
+    pub atmosphere: Atmosphere,
 }
 
 impl MapLayout {
@@ -372,6 +463,7 @@ impl MapLayout {
             camps,
             brush,
             wave_interval: map.wave_interval,
+            atmosphere: map.atmosphere,
         })
     }
 
@@ -456,14 +548,14 @@ impl MapLayout {
                     let v2 = Vec3::new(corners[2].x, ys[2], corners[2].y);
                     let v3 = Vec3::new(corners[3].x, ys[3], corners[3].y);
                     mesh.push_triangle(
-                        Vertex::new(v0, color),
-                        Vertex::new(v1, color),
-                        Vertex::new(v2, color),
+                        SceneVertex::new(v0, Vec3::Y, color),
+                        SceneVertex::new(v1, Vec3::Y, color),
+                        SceneVertex::new(v2, Vec3::Y, color),
                     );
                     mesh.push_triangle(
-                        Vertex::new(v2, color),
-                        Vertex::new(v1, color),
-                        Vertex::new(v3, color),
+                        SceneVertex::new(v2, Vec3::Y, color),
+                        SceneVertex::new(v1, Vec3::Y, color),
+                        SceneVertex::new(v3, Vec3::Y, color),
                     );
                 }
             }
@@ -493,12 +585,14 @@ pub struct NpcSpawn {
 pub struct SceneData {
     pub terrain: MeshData,
     pub models: MeshData,
+    pub shadows: MeshData,
     pub placements: usize,
     pub height: HeightGrid,
     pub collision: WorldCollision,
     pub map: MapLayout,
     pub npc_spawns: Vec<NpcSpawn>,
     pub player_spawn: Vec3,
+    pub atmosphere: Atmosphere,
 }
 
 pub fn build(
@@ -590,34 +684,55 @@ pub fn build(
     }
 
     let mut terrain_mesh = MeshData::new();
-    for gy in 0..size {
-        for gx in 0..size {
-            let idx = gy * size + gx;
-            let h = heights[idx];
-            let shade = 0.58 + 0.24 * (h / 800.0).clamp(0.0, 1.0);
-            let c = colors[idx];
-            let color = [
-                (c[0] as f32 * shade * 0.82) as u8,
-                (c[1] as f32 * shade * 0.82) as u8,
-                (c[2] as f32 * shade * 0.82) as u8,
-            ];
-            terrain_mesh.vertices.push(Vertex::new(
-                Vec3::new(
-                    (origin_tile_x + gx as i32) as f32 * 128.0,
-                    h,
-                    (origin_tile_y + gy as i32) as f32 * 128.0,
-                ),
-                color,
-            ));
-        }
-    }
     for gy in 0..size - 1 {
         for gx in 0..size - 1 {
-            let a = (gy * size + gx) as u32;
-            let b = a + 1;
-            let c = a + size as u32;
-            let d = c + 1;
-            terrain_mesh.indices.extend_from_slice(&[a, c, b, b, c, d]);
+            let idx = gy * size + gx;
+            let x0 = (origin_tile_x + gx as i32) as f32 * 128.0;
+            let z0 = (origin_tile_y + gy as i32) as f32 * 128.0;
+            let x1 = x0 + 128.0;
+            let z1 = z0 + 128.0;
+            let p00 = Vec3::new(x0, heights[idx], z0);
+            let p10 = Vec3::new(x1, heights[idx + 1], z0);
+            let p01 = Vec3::new(x0, heights[idx + size], z1);
+            let p11 = Vec3::new(x1, heights[idx + size + 1], z1);
+
+            let mut c = [0u32; 3];
+            for (color, weight) in [
+                (colors[idx], 4u32),
+                (colors[idx + 1], 3),
+                (colors[idx + size], 3),
+                (colors[idx + size + 1], 2),
+            ] {
+                c[0] += color[0] as u32 * weight;
+                c[1] += color[1] as u32 * weight;
+                c[2] += color[2] as u32 * weight;
+            }
+            let color = [(c[0] / 12) as u8, (c[1] / 12) as u8, (c[2] / 12) as u8];
+
+            let normal_at = |vx: usize, vy: usize| {
+                let i = vy * size + vx;
+                let h = heights[i];
+                let hl = if vx > 0 { heights[i - 1] } else { h };
+                let hr = if vx + 1 < size { heights[i + 1] } else { h };
+                let hd = if vy > 0 { heights[i - size] } else { h };
+                let hu = if vy + 1 < size { heights[i + size] } else { h };
+                Vec3::new(hl - hr, 2.0 * 128.0, hd - hu).normalize_or_zero()
+            };
+            let n00 = normal_at(gx, gy);
+            let n10 = normal_at(gx + 1, gy);
+            let n01 = normal_at(gx, gy + 1);
+            let n11 = normal_at(gx + 1, gy + 1);
+
+            terrain_mesh.push_triangle(
+                SceneVertex::new(p00, n00, color),
+                SceneVertex::new(p01, n01, color),
+                SceneVertex::new(p10, n10, color),
+            );
+            terrain_mesh.push_triangle(
+                SceneVertex::new(p10, n10, color),
+                SceneVertex::new(p01, n01, color),
+                SceneVertex::new(p11, n11, color),
+            );
         }
     }
 
@@ -704,6 +819,7 @@ pub fn build(
     candidates.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
 
     let mut model_mesh = MeshData::new();
+    let mut shadow_mesh = MeshData::new();
     let mut model_cache: HashMap<u32, Model> = HashMap::new();
     let mut placements = 0usize;
     const MODEL_LIMIT: usize = 900;
@@ -743,6 +859,8 @@ pub fn build(
         );
         let angle = loc.rotation as f32 * std::f32::consts::FRAC_PI_2;
         append_model(&mut model_mesh, model, base, angle);
+        let shadow_size = (def.size_x.max(def.size_y) as f32 * 128.0 * 0.55).clamp(55.0, 360.0);
+        push_blob_quad(&mut shadow_mesh, base, shadow_size, 0.24);
         placements += 1;
     }
 
@@ -772,12 +890,34 @@ pub fn build(
         center
     );
 
+    // A distant ground plane hides the loaded-block edge and gives the sky a
+    // horizon to meet. It sits below the terrain and fades into fog.
+    let backdrop_y = -24.0;
+    let backdrop = 220_000.0;
+    let bx0 = center.x - backdrop;
+    let bx1 = center.x + backdrop;
+    let bz0 = center.z - backdrop;
+    let bz1 = center.z + backdrop;
+    let bc = [44, 62, 40];
+    model_mesh.push_triangle(
+        SceneVertex::new(Vec3::new(bx0, backdrop_y, bz0), Vec3::Y, bc),
+        SceneVertex::new(Vec3::new(bx1, backdrop_y, bz0), Vec3::Y, bc),
+        SceneVertex::new(Vec3::new(bx0, backdrop_y, bz1), Vec3::Y, bc),
+    );
+    model_mesh.push_triangle(
+        SceneVertex::new(Vec3::new(bx1, backdrop_y, bz0), Vec3::Y, bc),
+        SceneVertex::new(Vec3::new(bx1, backdrop_y, bz1), Vec3::Y, bc),
+        SceneVertex::new(Vec3::new(bx0, backdrop_y, bz1), Vec3::Y, bc),
+    );
+
     Ok(SceneData {
         terrain: terrain_mesh,
         models: model_mesh,
+        shadows: shadow_mesh,
         placements,
         height,
         collision,
+        atmosphere: map.atmosphere.clone(),
         map,
         npc_spawns,
         player_spawn,
@@ -1008,22 +1148,56 @@ fn tile_color(
     }
 }
 
+fn push_blob_quad(mesh: &mut MeshData, center: Vec3, size: f32, alpha: f32) {
+    let y = center.y + 4.0;
+    let base = mesh.vertices.len() as u32;
+    mesh.vertices.push(SceneVertex::blob(
+        Vec3::new(center.x - size, y, center.z - size),
+        alpha,
+        [0.0, 0.0],
+    ));
+    mesh.vertices.push(SceneVertex::blob(
+        Vec3::new(center.x + size, y, center.z - size),
+        alpha,
+        [1.0, 0.0],
+    ));
+    mesh.vertices.push(SceneVertex::blob(
+        Vec3::new(center.x - size, y, center.z + size),
+        alpha,
+        [0.0, 1.0],
+    ));
+    mesh.vertices.push(SceneVertex::blob(
+        Vec3::new(center.x + size, y, center.z + size),
+        alpha,
+        [1.0, 1.0],
+    ));
+    mesh.indices
+        .extend_from_slice(&[base, base + 1, base + 2, base + 2, base + 1, base + 3]);
+}
+
 fn append_model(mesh: &mut MeshData, model: &Model, base: Vec3, angle: f32) {
     append_model_scaled(mesh, model, base, angle, 1.0);
 }
 
 fn append_model_scaled(mesh: &mut MeshData, model: &Model, base: Vec3, angle: f32, scale: f32) {
     let rot = Mat3::from_rotation_y(angle);
-    let light = Vec3::new(0.35, 0.85, 0.4).normalize();
 
     for (face_idx, &[a, b, c]) in model.faces.iter().enumerate() {
         let pa = model_vertex_scaled(model, a as usize, base, rot, scale);
         let pb = model_vertex_scaled(model, b as usize, base, rot, scale);
         let pc = model_vertex_scaled(model, c as usize, base, rot, scale);
 
-        let normal = (pb - pa).cross(pc - pa).normalize_or_zero();
-        let ndotl = normal.dot(light).clamp(0.0, 1.0);
-        let brightness = 0.62 + 0.22 * (1.0 - ndotl);
+        let mut normal = (pb - pa).cross(pc - pa).normalize_or_zero();
+        if normal.length_squared() < 1e-8 {
+            normal = rot
+                * Vec3::from_array(
+                    model
+                        .face_normals
+                        .get(face_idx)
+                        .copied()
+                        .unwrap_or([0.0, 1.0, 0.0]),
+                );
+        }
 
         let textured = model
             .face_textures
@@ -1036,20 +1210,15 @@ fn append_model_scaled(mesh: &mut MeshData, model: &Model, base: Vec3, angle: f3
                 .get(face_idx)
                 .copied()
                 .unwrap_or([0.0, 1.0, 0.0]);
-            let leaf = [38.0 + n[1] * 16.0, 82.0 + n[1] * 22.0, 34.0];
-            [
-                (leaf[0] * brightness) as u8,
-                (leaf[1] * brightness) as u8,
-                (leaf[2] * brightness) as u8,
-            ]
+            [(38.0 + n[1] * 16.0) as u8, (82.0 + n[1] * 22.0) as u8, 34]
         } else {
-            hsl_to_rgb(model.face_colors[face_idx], brightness)
+            hsl_to_rgb(model.face_colors[face_idx], 1.0)
         };
 
         mesh.push_triangle(
-            Vertex::new(pa, rgb),
-            Vertex::new(pb, rgb),
-            Vertex::new(pc, rgb),
+            SceneVertex::new(pa, normal, rgb),
+            SceneVertex::new(pb, normal, rgb),
+            SceneVertex::new(pc, normal, rgb),
         );
     }
 }
@@ -1073,4 +1242,48 @@ pub fn model_vertex_animated(
     let p = positions.get(i).copied().unwrap_or([0.0; 3]);
     let local = Vec3::new(p[0], -p[1], p[2]) * scale;
     base + rot * local
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn srgb_endpoints_are_stable() {
+        assert_eq!(srgb_to_linear(0.0), 0.0);
+        assert!((srgb_to_linear(1.0) - 1.0).abs() < 1e-6);
+        let mid = srgb_to_linear(0.5);
+        assert!(mid > 0.2 && mid < 0.25);
+    }
+
+    #[test]
+    fn scene_vertex_converts_colour_and_normalizes_normal() {
+        let vertex = SceneVertex::new(
+            Vec3::new(1.0, 2.0, 3.0),
+            Vec3::new(0.0, 2.0, 0.0),
+            [255, 0, 0],
+        );
+        assert!((vertex.normal[1] - 1.0).abs() < 1e-6);
+        assert!((vertex.color[0] - 1.0).abs() < 1e-6);
+        assert_eq!(vertex.color[1], 0.0);
+        assert_eq!(vertex.material, 0);
+    }
+
+    #[test]
+    fn unlit_and_blob_materials_are_tagged() {
+        let unlit = SceneVertex::unlit(Vec3::ZERO, [10, 20, 30]);
+        assert_eq!(unlit.material, 1);
+        let blob = SceneVertex::blob(Vec3::ZERO, 0.4, [0.0, 0.0]);
+        assert_eq!(blob.material, 2);
+        assert!((blob.color[3] - 0.4).abs() < 1e-6);
+    }
+
+    #[test]
+    fn atmosphere_defaults_are_sane() {
+        let atmosphere = Atmosphere::default();
+        assert!(atmosphere.fog_density > 0.0);
+        assert!(atmosphere.fog_height > 0.0);
+        assert!(atmosphere.sun_dir[1] > 0.0);
+        assert!(atmosphere.sun_color.iter().all(|c| (0.0..=1.0).contains(c)));
+    }
 }

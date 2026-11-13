@@ -1,6 +1,6 @@
 # Status
 
-Last updated: M4.2 HUD font + base loop, 2026-11-13.
+Last updated: M5.0 117HD Core, 2026-11-13.
 
 ## Working
 
@@ -13,10 +13,10 @@ Last updated: M4.2 HUD font + base loop, 2026-11-13.
 - Sequence/frame/framemap decoding and interpolated CPU vertex animation.
 - `crates/sim`: deterministic 192×192 tile grid, A* with octile heuristic,
   no corner cutting, nearest-walkable fallback, path simplification, LOS.
-- Scene: 3×3 Karamja block, 37,249 terrain vertices, 900 scenery placements,
-  8 ambient animated NPCs, three stone lane ribbons, two fountain rings.
+- Scene: 3×3 Karamja block, 221k terrain verts, 900 scenery placements,
+  8 ambient animated NPCs, three stone lane ribbons, distant backdrop plane.
 - Map: top/mid/bottom lanes, two towers + one inhibitor per lane per team, one
-  nexus per team, four jungle camps, four brush rectangles.
+  nexus per team, four jungle camps, four brush rectangles, atmosphere block.
 - Movement: click-to-move A* path following; hold-to-steer with collision
   sliding; camera follow/pan; selection and click rings; minimap click-to-pan.
 - Lane: three-minion waves per lane every 25 s; minion AI, tower targeting,
@@ -36,72 +36,77 @@ Last updated: M4.2 HUD font + base loop, 2026-11-13.
 - Progression: levels 1–11, XP, gold; level-ups raise health, mana, damage.
 - Economy/base: passive gold 8/s; fountain heals 6% max HP/MP/s within 900
   units of spawn; two persistent rings mark the fountain.
-- Item shop: six data-driven items in `data/items/items.json` (bronze sword,
-  iron platebody, amulet of fury, berserker ring, Ahrim's staff, dragon boots),
-  six inventory slots, fountain-range purchase, gold spending, and flat
-  damage/health/mana/speed/ability-power stats. `B` toggles the shop, `1`–`6`
-  buys, clicking a row buys, clicking outside or `Esc` closes. Hovering a row
-  shows a stat tooltip.
-- HUD font: built-in 5x7 uppercase bitmap font in `crates/client/src/font.rs`.
-  On-screen HP/MP/XP/gold, nexus values, wave timer, ability labels and
-  cooldowns, shop names/costs/tooltips, and victory/defeat.
+- Item shop: six data-driven items, six inventory slots, fountain-range
+  purchase, gold spending, stat/ability-power application, hover tooltips.
+- HUD font: built-in 5x7 uppercase bitmap font; HP/MP/XP/gold, nexus values,
+  wave timer, ability labels/cooldowns, shop names/costs/tooltips, result.
+- **117HD Core renderer**:
+  - `SceneVertex` carries position, normal, colour, UV, AO, and material.
+  - sRGB→linear conversion on the CPU; sRGB target handles final encode.
+  - Smooth terrain normals; flat per-face model and unit normals.
+  - Sun + hemispheric ambient lighting, optional 4-band stepping.
+  - Sky gradient, procedural clouds, sun disk/glow, horizon haze.
+  - Exponential height fog and ground haze.
+  - Static scenery blob shadows + per-unit blob shadows.
+  - Up to 16 dynamic point lights: fountain, Q muzzle/impact, E/R effects,
+    projectiles.
+  - `--graphics 117hd|classic`, `--debug-view albedo|normal|lighting|fog|lights`,
+    `--pitch` for verification.
 - Fog/brush: 192×192 visibility grid; hidden enemies/neutrals; dark fog mesh;
   minimap draws 8×8-tile fog blocks and hides unseen units.
 - HUD: health/mana/XP/shield/buff bars, four ability boxes, six inventory slots,
-  shop panel with item-colour swatches/cost bars/owned markers/tooltips, nexus
-  bars, wave timer, crosshair, fogged live minimap.
+  shop panel, nexus bars, wave timer, crosshair, fogged live minimap.
 - Dev demos: `--demo-target`, `--demo-combat`, `--demo-camp`, `--demo-kit`,
   `--demo-shop`, `--demo-base`, `--demo-inhibitor`, `--champion`, `--timescale`.
 
 ## Verified
 
-- `cargo test --workspace`: 21 tests pass (6 cache, 8 client, 7 sim).
+- `cargo test --workspace`: 25 tests pass (6 cache, 12 client, 7 sim).
 - `cargo clippy --workspace --all-targets`: no warnings.
-- **Item shop demo**: granted 4000 gold; bought all six items; final title
-  `HP 730/730`, `MP 260/260`, `gold 300`, `dmg 45 spd 460`, `items 6/6`,
-  ability power 45%.
-- **Shop UI capture**: item names/costs, owned markers, cost bars, inventory
-  initials, gold header, hovered `IRON PLATEBODY +150 HP CLICK TO BUY` tooltip.
-- **Base demo**: damaged to `200/500` HP; after fountain time `410/500` HP and
-  passive gold `8 -> 64`.
-- **Inhibitor demo**: destroyed lane-0 inhibitor `inhib1=(2,3)`,
-  `vulnerable1=true`; after respawn `state=(700/700, dead_timer=0)`,
-  `inhib1=(3,3)`, `vulnerable1=false`, super minions present.
-- **Minimap**: fogged 8×8 blocks and click-to-pan coordinate tests pass.
-- **JalRek-Jad**: title `HP 700/700`, `MP 191/260`, W/E/R cast true.
-- **Kree'arra Jr.**: title `HP 420/420`, `MP 170/240`, W/E/R cast true.
-- Fog run: `visible_enemies=7–13` while the rest of the map is dark.
-- 20× three-lane run still reaches victory states; jungle Might buff still works.
+- 117HD Core runs at **60 fps at 1280×720** on the dev machine at timescale 1.
+- A/B captures: `--graphics classic` flat/unlit baseline vs `--graphics 117hd`
+  lit terrain/models, sky/clouds, fog, blob shadows, dynamic lights.
+- Debug views confirmed albedo, normals, lighting, fog, and dynamic-light
+  passes; Q impact shows an orange light pool next to the green fountain pool.
+- Shop demo: 6/6 items, `dmg 45`, `HP 730/730`, `MP 260/260`, `spd 460`,
+  `AP 45%`, `gold 300`.
+- Base demo: 200/500 → 410/500 HP; passive gold 8 → 64.
+- Inhibitor demo: 2/3 → respawn 3/3; nexus re-shielded; super minions spawned.
+- Champion runs: Jad 700 HP / 260 mana; Kree 420 HP / 240 mana; W/E/R true.
+- Fog run: visible enemies 7–13; dark fog mesh over unseen tiles.
+- Three-lane 20× run: victory states, towers/inhibitors/nexus live.
+- Jungle demo: camp killed, buff Might 58s.
 
 ## Known issues
 
-- Item purchases and gold/heal/shop-range are client-side in this prototype.
-  The authoritative server must own economy, inventory, and stat application.
-- No item selling, combining, passives, or active item effects; six flat-stat
-  items only.
-- The HUD font is a code-defined 5x7 bitmap, not a cache-native OSRS font; no
-  wrapping, alignment beyond centering, or scoreboard/lobby screens yet.
-- Champions share the Q/W/E/R shape; only stats/models/ability numbers differ.
-  No champion-select UI or passive.
+- 117HD Core has **no textures, HD water, directional shadow maps, bloom,
+  MSAA/FXAA, or draw-distance streaming** yet. These are M5.1–M5.4.
+- The 3×3 region block edge is still visible at low camera pitch. A distant
+  backdrop plane and horizon haze hide it from the default camera, but true
+  117HD draw distance needs chunked streaming/LOD.
+- The fog-of-war mesh is an opaque dark plane. At low pitch it can read as a
+  hard wall; it needs a soft/dithered screen-space treatment.
+- Lighting is tuned for Karamja afternoon sun; other maps still need their own
+  atmosphere presets.
+- Dynamic lights are capped at 16 and have no shadows.
+- Item purchases and gold/heal/shop-range remain client-side.
+- No item selling/combining/passives; champions share the QWER shape.
+- The HUD font is a code-defined 5x7 bitmap, not a cache-native OSRS font.
 - Kree'arra/Jad models are large; scale tuning is ongoing.
-- Fog/brush is client-side only; server-authoritative fog is required for
-  multiplayer. Fog has hard tile edges and the minimap fog is coarse (8×8).
-- No minimap brush differentiation or click-drag ping.
-- Camps are passive and single-model; composite NPCs not assembled.
-- Base/fountain visuals are two rings, not a modeled fountain or shop building.
-- Lane ribbons can clip under steep terrain in a few spots.
-- Collision is approximate; textures are flat fallbacks; Animaya not applied.
+- Fog/brush is client-side only; server-authoritative fog is required.
 - No lobby, netcode, audio, or map editor.
 
 ## Next tasks
 
-1. Item selling/combining/passives and five champions with distinct kits.
-2. Cache-native font atlas and a Tab scoreboard/lobby screen.
-3. Server-authoritative fog, economy, and shop transactions.
-4. Base/fountain model and shop building; brush visuals.
-5. Deterministic 30 Hz sim tick in `crates/sim` + state hash.
-6. Texture sampling and better foliage/trunk colours.
-7. Lobby + QUIC netcode after the sim loop is stable.
+1. **M5.1 117HD Shadows**: directional shadow map, PCF, static/dynamic caching.
+2. **M5.2 117HD Water**: water mesh, fresnel, sky reflection, specular, caustics.
+3. **M5.3 117HD Textures**: texture decoding, atlas, model/ground textures,
+   ground blending, anisotropic filtering.
+4. **M5.4 117HD Post + Draw Distance**: MSAA/FXAA, bloom, color grading,
+   chunked streaming/LOD, model batching.
+5. Item selling/combining/passives and five champions with distinct kits.
+6. Server-authoritative fog, economy, and shop transactions.
+7. Deterministic 30 Hz sim tick in `crates/sim` + state hash.
 
 ## Verification log
 
@@ -109,11 +114,14 @@ Last updated: M4.2 HUD font + base loop, 2026-11-13.
   walkable, no corner cutting, simplification, bounds, LOS).
 - `cargo test -p rift-cache`: 6 tests (smart reads, chained smart, XTEA, HSL,
   group rejection, framemap/frame parse).
-- `cargo test -p rift-client`: 8 tests (4 items, 2 font, 2 minimap).
+- `cargo test -p rift-client`: 12 tests (4 items, 2 font, 2 minimap,
+  4 scene/lighting).
 - Shop demo: 6/6 items, dmg 45, HP 730/730, MP 260/260, speed 460, AP 45%,
   gold 300.
 - Base demo: 200/500 -> 410/500 HP; gold 8 -> 64.
 - Inhibitor demo: 2/3 -> respawn 3/3; nexus re-shielded; super minions spawned.
+- 117HD debug: albedo/normal/lighting/fog views render; dynamic lights show
+  green fountain and orange Q impact pools.
 - Champion runs: Jad 700 HP / 260 mana; Kree 420 HP / 240 mana; W/E/R true.
 - Fog run: visible enemies 7–13; dark fog mesh over unseen tiles.
 - Three-lane 20× run: victory states, towers/inhibitors/nexus live.

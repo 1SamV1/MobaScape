@@ -36,6 +36,10 @@ cargo run -p rift-client -- --demo-combat
 cargo run -p rift-client -- --timescale 20
 cargo run -p rift-client -- --demo-camp --timescale 4
 cargo run -p rift-client -- --demo-kit --timescale 4
+cargo run -p rift-client -- --graphics 117hd
+cargo run -p rift-client -- --graphics classic
+cargo run -p rift-client -- --graphics 117hd --debug-view lighting
+cargo run -p rift-client -- --graphics 117hd --pitch 0.22
 cargo run -p rift-client -- --demo-shop --timescale 4
 cargo run -p rift-client -- --demo-base --timescale 4
 cargo run -p rift-client -- --demo-inhibitor --timescale 20

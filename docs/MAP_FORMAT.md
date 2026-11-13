@@ -33,6 +33,11 @@ The playable map is `data/maps/karamja_rift/map.json`:
   scale. Camps grant a 60 s team buff when killed.
 - `brush`: rectangles `[x0, y0, x1, y1]` in world tiles. Units inside brush are
   hidden from the enemy unless the player is within 500 units.
+- `atmosphere`: optional lighting/atmosphere block:
+  `sun_dir`, `sun_color`, `ambient_sky`, `ambient_ground`, `fog_color`,
+  `fog_density`, `fog_height`, `sky_top`, `sky_horizon`, `ground_fog`.
+  Values are sRGB colours and world-space units; the renderer converts them to
+  linear light.
 - Towers: model 1761, 450 HP, range 640, 18 damage / 1.2 s.
 - Inhibitors: model 1747, 700 HP, no attack. At least one enemy inhibitor must
   fall before the nexus can be damaged.

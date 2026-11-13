@@ -5,13 +5,71 @@ use glam::{Mat4, Vec3, Vec4};
 use wgpu::util::DeviceExt;
 use winit::window::Window;
 
-use crate::scene::{HeightGrid, MeshData, SceneData, Vertex};
+use crate::animated::SceneLight;
+use crate::scene::{
+    Atmosphere, HeightGrid, MeshData, SceneData, SceneVertex, Vertex, srgb_to_linear,
+};
+
+#[repr(C)]
+#[derive(Copy, Clone, Default, bytemuck::Pod, bytemuck::Zeroable)]
+struct GpuLight {
+    position: [f32; 4],
+    color: [f32; 4],
+    params: [f32; 4],
+}
 
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-struct CameraUniform {
+struct SceneGlobals {
     view_proj: [[f32; 4]; 4],
-    position: [f32; 4],
+    camera_pos: [f32; 4],
+    sun_dir: [f32; 4],
+    sun_color: [f32; 4],
+    ambient_sky: [f32; 4],
+    ambient_ground: [f32; 4],
+    fog_color: [f32; 4],
+    fog_params: [f32; 4],
+    sky_top: [f32; 4],
+    sky_horizon: [f32; 4],
+    sun_screen: [f32; 4],
+    tuning: [f32; 4],
+    lights: [GpuLight; 16],
+    light_count: [u32; 4],
+}
+
+impl SceneGlobals {
+    fn from_atmosphere(atmosphere: &Atmosphere) -> Self {
+        let color = |v: [f32; 3]| {
+            [
+                srgb_to_linear(v[0]),
+                srgb_to_linear(v[1]),
+                srgb_to_linear(v[2]),
+                1.0,
+            ]
+        };
+        let sun = Vec3::from_array(atmosphere.sun_dir).normalize_or_zero();
+        Self {
+            view_proj: Mat4::IDENTITY.to_cols_array_2d(),
+            camera_pos: [0.0; 4],
+            sun_dir: [sun.x, sun.y, sun.z, 0.0],
+            sun_color: color(atmosphere.sun_color),
+            ambient_sky: color(atmosphere.ambient_sky),
+            ambient_ground: color(atmosphere.ambient_ground),
+            fog_color: color(atmosphere.fog_color),
+            fog_params: [
+                atmosphere.fog_density,
+                1.0 / atmosphere.fog_height.max(1.0),
+                atmosphere.fog_height,
+                atmosphere.ground_fog,
+            ],
+            sky_top: color(atmosphere.sky_top),
+            sky_horizon: color(atmosphere.sky_horizon),
+            sun_screen: [0.0; 4],
+            tuning: [1.0, 4.0, 0.0, 0.0],
+            lights: [GpuLight::default(); 16],
+            light_count: [0; 4],
+        }
+    }
 }
 
 pub struct Camera {
@@ -78,20 +136,27 @@ pub struct Renderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
-    pipeline: wgpu::RenderPipeline,
+    scene_pipeline: wgpu::RenderPipeline,
     hud_pipeline: wgpu::RenderPipeline,
+    sky_pipeline: wgpu::RenderPipeline,
+    blob_pipeline: wgpu::RenderPipeline,
     bind_group: wgpu::BindGroup,
-    camera_buffer: wgpu::Buffer,
+    scene_buffer: wgpu::Buffer,
+    scene_globals: SceneGlobals,
     depth_view: wgpu::TextureView,
     terrain: GpuMesh,
     models: GpuMesh,
+    static_shadows: GpuMesh,
     dynamic_vertex_buffer: wgpu::Buffer,
     dynamic_index_buffer: wgpu::Buffer,
     dynamic_vertex_capacity: usize,
     dynamic_index_capacity: usize,
     dynamic_index_count: u32,
-    _hud_uniform_buffer: wgpu::Buffer,
-    hud_bind_group: wgpu::BindGroup,
+    shadow_vertex_buffer: wgpu::Buffer,
+    shadow_index_buffer: wgpu::Buffer,
+    shadow_vertex_capacity: usize,
+    shadow_index_capacity: usize,
+    shadow_index_count: u32,
     hud_vertex_buffer: wgpu::Buffer,
     hud_index_buffer: wgpu::Buffer,
     hud_vertex_capacity: usize,
@@ -163,20 +228,34 @@ impl Renderer {
         };
         surface.configure(&device, &config);
 
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        let scene_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("rift scene shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(include_str!("scene.wgsl").into()),
+        });
+        let hud_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("rift hud shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("hud.wgsl").into()),
+        });
+        let sky_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("rift sky shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("sky.wgsl").into()),
+        });
+        let blob_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("rift blob shadow shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("blob.wgsl").into()),
         });
 
-        let camera_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("camera uniform"),
-            size: std::mem::size_of::<CameraUniform>() as u64,
+        let scene_globals = SceneGlobals::from_atmosphere(&scene.atmosphere);
+        let scene_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("scene globals uniform"),
+            size: std::mem::size_of::<SceneGlobals>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        queue.write_buffer(&scene_buffer, 0, bytemuck::bytes_of(&scene_globals));
 
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("camera layout"),
+            label: Some("scene globals layout"),
             entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0,
                 visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
@@ -190,38 +269,52 @@ impl Renderer {
         });
 
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("camera bind group"),
+            label: Some("scene globals bind group"),
             layout: &bind_group_layout,
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
-                resource: camera_buffer.as_entire_binding(),
+                resource: scene_buffer.as_entire_binding(),
             }],
         });
 
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("scene pipeline layout"),
-            bind_group_layouts: &[Some(&bind_group_layout)],
+        let scene_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("scene pipeline layout"),
+                bind_group_layouts: &[Some(&bind_group_layout)],
+                immediate_size: 0,
+            });
+        let hud_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("hud pipeline layout"),
+            bind_group_layouts: &[],
             immediate_size: 0,
         });
 
-        const ATTRS: [wgpu::VertexAttribute; 2] =
+        const SCENE_ATTRS: [wgpu::VertexAttribute; 6] = wgpu::vertex_attr_array![
+            0 => Float32x3,
+            1 => Float32x3,
+            2 => Float32x4,
+            3 => Float32x2,
+            4 => Float32,
+            5 => Uint32
+        ];
+        const HUD_ATTRS: [wgpu::VertexAttribute; 2] =
             wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x4];
 
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let scene_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("scene pipeline"),
-            layout: Some(&pipeline_layout),
+            layout: Some(&scene_pipeline_layout),
             vertex: wgpu::VertexState {
-                module: &shader,
+                module: &scene_shader,
                 entry_point: Some("vs"),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
+                    array_stride: std::mem::size_of::<SceneVertex>() as wgpu::BufferAddress,
                     step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &ATTRS,
+                    attributes: &SCENE_ATTRS,
                 })],
             },
             fragment: Some(wgpu::FragmentState {
-                module: &shader,
+                module: &scene_shader,
                 entry_point: Some("fs"),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 targets: &[Some(wgpu::ColorTargetState {
@@ -253,19 +346,19 @@ impl Renderer {
 
         let hud_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("hud pipeline"),
-            layout: Some(&pipeline_layout),
+            layout: Some(&hud_pipeline_layout),
             vertex: wgpu::VertexState {
-                module: &shader,
+                module: &hud_shader,
                 entry_point: Some("vs"),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 buffers: &[Some(wgpu::VertexBufferLayout {
                     array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
                     step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &ATTRS,
+                    attributes: &HUD_ATTRS,
                 })],
             },
             fragment: Some(wgpu::FragmentState {
-                module: &shader,
+                module: &hud_shader,
                 entry_point: Some("fs"),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 targets: &[Some(wgpu::ColorTargetState {
@@ -295,16 +388,105 @@ impl Renderer {
             cache: None,
         });
 
+        let sky_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("sky pipeline"),
+            layout: Some(&scene_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &sky_shader,
+                entry_point: Some("vs"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                buffers: &[],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &sky_shader,
+                entry_point: Some("fs"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                unclipped_depth: false,
+                conservative: false,
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::Always),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
+        let blob_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("blob shadow pipeline"),
+            layout: Some(&scene_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &blob_shader,
+                entry_point: Some("vs"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                buffers: &[Some(wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<SceneVertex>() as wgpu::BufferAddress,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &SCENE_ATTRS,
+                })],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &blob_shader,
+                entry_point: Some("fs"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                unclipped_depth: false,
+                conservative: false,
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::Less),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState {
+                    constant: -2,
+                    slope_scale: -1.0,
+                    clamp: 0.0,
+                },
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
         let depth_view = create_depth_view(&device, width, height);
         let terrain = GpuMesh::upload(&device, &scene.terrain, "terrain");
         let models = GpuMesh::upload(&device, &scene.models, "models");
+        let static_shadows = GpuMesh::upload(&device, &scene.shadows, "static shadows");
 
         let dynamic_vertex_capacity = 1024;
         let dynamic_index_capacity = 3072;
         let dynamic_vertex_buffer = create_dynamic_buffer(
             &device,
             "dynamic vertices",
-            dynamic_vertex_capacity * std::mem::size_of::<Vertex>(),
+            dynamic_vertex_capacity * std::mem::size_of::<SceneVertex>(),
             wgpu::BufferUsages::VERTEX,
         );
         let dynamic_index_buffer = create_dynamic_buffer(
@@ -314,25 +496,20 @@ impl Renderer {
             wgpu::BufferUsages::INDEX,
         );
 
-        let hud_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("hud camera uniform"),
-            size: std::mem::size_of::<CameraUniform>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let hud_uniform = CameraUniform {
-            view_proj: Mat4::IDENTITY.to_cols_array_2d(),
-            position: [0.0; 4],
-        };
-        queue.write_buffer(&hud_uniform_buffer, 0, bytemuck::bytes_of(&hud_uniform));
-        let hud_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("hud camera bind group"),
-            layout: &bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: hud_uniform_buffer.as_entire_binding(),
-            }],
-        });
+        let shadow_vertex_capacity = 1024;
+        let shadow_index_capacity = 1536;
+        let shadow_vertex_buffer = create_dynamic_buffer(
+            &device,
+            "shadow vertices",
+            shadow_vertex_capacity * std::mem::size_of::<SceneVertex>(),
+            wgpu::BufferUsages::VERTEX,
+        );
+        let shadow_index_buffer = create_dynamic_buffer(
+            &device,
+            "shadow indices",
+            shadow_index_capacity * std::mem::size_of::<u32>(),
+            wgpu::BufferUsages::INDEX,
+        );
 
         let hud_vertex_capacity = 1024;
         let hud_index_capacity = 3072;
@@ -354,7 +531,7 @@ impl Renderer {
         let fog_vertex_buffer = create_dynamic_buffer(
             &device,
             "fog vertices",
-            fog_vertex_capacity * std::mem::size_of::<Vertex>(),
+            fog_vertex_capacity * std::mem::size_of::<SceneVertex>(),
             wgpu::BufferUsages::VERTEX,
         );
         let fog_index_buffer = create_dynamic_buffer(
@@ -369,20 +546,27 @@ impl Renderer {
             device,
             queue,
             config,
-            pipeline,
+            scene_pipeline,
             hud_pipeline,
+            sky_pipeline,
+            blob_pipeline,
             bind_group,
-            camera_buffer,
+            scene_buffer,
+            scene_globals,
             depth_view,
             terrain,
             models,
+            static_shadows,
             dynamic_vertex_buffer,
             dynamic_index_buffer,
             dynamic_vertex_capacity,
             dynamic_index_capacity,
             dynamic_index_count: 0,
-            _hud_uniform_buffer: hud_uniform_buffer,
-            hud_bind_group,
+            shadow_vertex_buffer,
+            shadow_index_buffer,
+            shadow_vertex_capacity,
+            shadow_index_capacity,
+            shadow_index_count: 0,
             hud_vertex_buffer,
             hud_index_buffer,
             hud_vertex_capacity,
@@ -416,21 +600,84 @@ impl Renderer {
         let aspect = self.config.width as f32 / self.config.height as f32;
         let view_proj = self.camera.view_proj(aspect);
         let eye = self.camera.eye();
-        let uniform = CameraUniform {
-            view_proj: view_proj.to_cols_array_2d(),
-            position: [eye.x, eye.y, eye.z, 1.0],
-        };
-        self.queue
-            .write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(&uniform));
+        self.scene_globals.view_proj = view_proj.to_cols_array_2d();
+        self.scene_globals.camera_pos = [eye.x, eye.y, eye.z, 1.0];
+
+        let sun_dir = Vec3::new(
+            self.scene_globals.sun_dir[0],
+            self.scene_globals.sun_dir[1],
+            self.scene_globals.sun_dir[2],
+        )
+        .normalize_or_zero();
+        let sun_world = eye + sun_dir * 10_000.0;
+        let clip = view_proj * Vec4::new(sun_world.x, sun_world.y, sun_world.z, 1.0);
+        if clip.w > 0.0 {
+            let ndc = Vec3::new(clip.x, clip.y, clip.z) / clip.w;
+            self.scene_globals.sun_screen = [ndc.x, ndc.y, 1.0, 0.0];
+        } else {
+            self.scene_globals.sun_screen = [0.0, 0.0, 0.0, 0.0];
+        }
+        self.upload_globals();
     }
 
-    pub fn set_dynamic_mesh(&mut self, vertices: &[Vertex], indices: &[u32]) {
+    fn upload_globals(&mut self) {
+        self.queue.write_buffer(
+            &self.scene_buffer,
+            0,
+            bytemuck::bytes_of(&self.scene_globals),
+        );
+    }
+
+    pub fn set_graphics_mode(&mut self, enhanced: bool) {
+        let debug = self.scene_globals.tuning[3] as u32 & 15;
+        self.scene_globals.tuning[3] = if enhanced {
+            debug as f32
+        } else {
+            (debug | 256) as f32
+        };
+        if !enhanced {
+            self.scene_globals.light_count = [0; 4];
+        }
+        self.upload_globals();
+    }
+
+    pub fn set_debug_view(&mut self, view: u32) {
+        let classic = self.scene_globals.tuning[3] as u32 & 256;
+        self.scene_globals.tuning[3] = (classic | (view & 15)) as f32;
+        self.upload_globals();
+    }
+
+    pub fn set_time(&mut self, time: f32) {
+        self.scene_globals.tuning[2] = time;
+        self.upload_globals();
+    }
+
+    pub fn set_lights(&mut self, lights: &[SceneLight]) {
+        self.scene_globals.lights = [GpuLight::default(); 16];
+        let count = lights.len().min(16);
+        for (index, light) in lights.iter().take(count).enumerate() {
+            self.scene_globals.lights[index] = GpuLight {
+                position: [light.pos.x, light.pos.y, light.pos.z, 1.0],
+                color: [
+                    light.color[0],
+                    light.color[1],
+                    light.color[2],
+                    light.intensity,
+                ],
+                params: [light.radius, 0.0, 0.0, 0.0],
+            };
+        }
+        self.scene_globals.light_count = [count as u32, 0, 0, 0];
+        self.upload_globals();
+    }
+
+    pub fn set_dynamic_mesh(&mut self, vertices: &[SceneVertex], indices: &[u32]) {
         if vertices.len() > self.dynamic_vertex_capacity {
             let capacity = vertices.len().next_power_of_two();
             self.dynamic_vertex_buffer = create_dynamic_buffer(
                 &self.device,
                 "dynamic vertices",
-                capacity * std::mem::size_of::<Vertex>(),
+                capacity * std::mem::size_of::<SceneVertex>(),
                 wgpu::BufferUsages::VERTEX,
             );
             self.dynamic_vertex_capacity = capacity;
@@ -459,6 +706,41 @@ impl Renderer {
         self.dynamic_index_count = indices.len() as u32;
     }
 
+    pub fn set_shadow_mesh(&mut self, vertices: &[SceneVertex], indices: &[u32]) {
+        if vertices.len() > self.shadow_vertex_capacity {
+            let capacity = vertices.len().next_power_of_two();
+            self.shadow_vertex_buffer = create_dynamic_buffer(
+                &self.device,
+                "shadow vertices",
+                capacity * std::mem::size_of::<SceneVertex>(),
+                wgpu::BufferUsages::VERTEX,
+            );
+            self.shadow_vertex_capacity = capacity;
+        }
+        if indices.len() > self.shadow_index_capacity {
+            let capacity = indices.len().next_power_of_two();
+            self.shadow_index_buffer = create_dynamic_buffer(
+                &self.device,
+                "shadow indices",
+                capacity * std::mem::size_of::<u32>(),
+                wgpu::BufferUsages::INDEX,
+            );
+            self.shadow_index_capacity = capacity;
+        }
+        if !vertices.is_empty() {
+            self.queue.write_buffer(
+                &self.shadow_vertex_buffer,
+                0,
+                bytemuck::cast_slice(vertices),
+            );
+        }
+        if !indices.is_empty() {
+            self.queue
+                .write_buffer(&self.shadow_index_buffer, 0, bytemuck::cast_slice(indices));
+        }
+        self.shadow_index_count = indices.len() as u32;
+    }
+
     pub fn screen_ray(&self, cursor_x: f64, cursor_y: f64) -> Option<(Vec3, Vec3)> {
         let aspect = self.config.width as f32 / self.config.height as f32;
         let inv = self.camera.view_proj(aspect).inverse();
@@ -478,13 +760,13 @@ impl Renderer {
         Some((origin, dir))
     }
 
-    pub fn set_fog_mesh(&mut self, vertices: &[Vertex], indices: &[u32]) {
+    pub fn set_fog_mesh(&mut self, vertices: &[SceneVertex], indices: &[u32]) {
         if vertices.len() > self.fog_vertex_capacity {
             let capacity = vertices.len().next_power_of_two();
             self.fog_vertex_buffer = create_dynamic_buffer(
                 &self.device,
                 "fog vertices",
-                capacity * std::mem::size_of::<Vertex>(),
+                capacity * std::mem::size_of::<SceneVertex>(),
                 wgpu::BufferUsages::VERTEX,
             );
             self.fog_vertex_capacity = capacity;
@@ -631,7 +913,11 @@ impl Renderer {
                 multiview_mask: None,
             });
 
-            pass.set_pipeline(&self.pipeline);
+            pass.set_pipeline(&self.sky_pipeline);
+            pass.set_bind_group(0, &self.bind_group, &[]);
+            pass.draw(0..3, 0..1);
+
+            pass.set_pipeline(&self.scene_pipeline);
             pass.set_bind_group(0, &self.bind_group, &[]);
             for mesh in [&self.terrain, &self.models] {
                 if mesh.index_count == 0 {
@@ -654,9 +940,28 @@ impl Renderer {
                 );
                 pass.draw_indexed(0..self.dynamic_index_count, 0, 0..1);
             }
+            if self.static_shadows.index_count > 0 || self.shadow_index_count > 0 {
+                pass.set_pipeline(&self.blob_pipeline);
+                pass.set_bind_group(0, &self.bind_group, &[]);
+            }
+            if self.static_shadows.index_count > 0 {
+                pass.set_vertex_buffer(0, self.static_shadows.vertex_buffer.slice(..));
+                pass.set_index_buffer(
+                    self.static_shadows.index_buffer.slice(..),
+                    wgpu::IndexFormat::Uint32,
+                );
+                pass.draw_indexed(0..self.static_shadows.index_count, 0, 0..1);
+            }
+            if self.shadow_index_count > 0 {
+                pass.set_vertex_buffer(0, self.shadow_vertex_buffer.slice(..));
+                pass.set_index_buffer(
+                    self.shadow_index_buffer.slice(..),
+                    wgpu::IndexFormat::Uint32,
+                );
+                pass.draw_indexed(0..self.shadow_index_count, 0, 0..1);
+            }
             if self.hud_index_count > 0 {
                 pass.set_pipeline(&self.hud_pipeline);
-                pass.set_bind_group(0, &self.hud_bind_group, &[]);
                 pass.set_vertex_buffer(0, self.hud_vertex_buffer.slice(..));
                 pass.set_index_buffer(self.hud_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
                 pass.draw_indexed(0..self.hud_index_count, 0, 0..1);

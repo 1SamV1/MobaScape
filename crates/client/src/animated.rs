@@ -5,7 +5,8 @@ use rift_cache::{AnimationClip, Cache, Model, model::hsl_to_rgb};
 use crate::champion::ChampionConfig;
 use crate::items::ItemConfig;
 use crate::scene::{
-    CampBuff, HeightGrid, SceneData, StructureKind, Vertex, WorldCollision, model_vertex_animated,
+    CampBuff, HeightGrid, SceneData, SceneVertex, StructureKind, WorldCollision,
+    model_vertex_animated,
 };
 
 const Q_COOLDOWN: f32 = 5.0;
@@ -112,6 +113,14 @@ pub struct Effect {
     pub color: [u8; 3],
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct SceneLight {
+    pub pos: Vec3,
+    pub color: [f32; 3],
+    pub radius: f32,
+    pub intensity: f32,
+}
+
 pub struct VisibilityGrid {
     pub width: usize,
     pub height: usize,
@@ -161,8 +170,10 @@ struct MinionTemplate {
 pub struct AnimatedScene {
     pub units: Vec<AnimatedUnit>,
     pub player_index: usize,
-    pub vertices: Vec<Vertex>,
+    pub vertices: Vec<SceneVertex>,
     pub indices: Vec<u32>,
+    pub shadow_vertices: Vec<SceneVertex>,
+    pub shadow_indices: Vec<u32>,
     pub marker: Option<(Vec3, f32)>,
     pub projectiles: Vec<Projectile>,
     pub effects: Vec<Effect>,
@@ -396,6 +407,8 @@ impl AnimatedScene {
             player_index,
             vertices: Vec::new(),
             indices: Vec::new(),
+            shadow_vertices: Vec::new(),
+            shadow_indices: Vec::new(),
             marker: None,
             projectiles: Vec::new(),
             effects: Vec::new(),
@@ -685,6 +698,13 @@ impl AnimatedScene {
             damage,
             team,
         });
+        self.effects.push(Effect {
+            pos,
+            radius: 110.0,
+            remaining: 0.22,
+            duration: 0.22,
+            color: [255, 120, 40],
+        });
         true
     }
 
@@ -963,6 +983,7 @@ impl AnimatedScene {
 
         self.update_projectiles(dt, height);
         self.update_visibility();
+        self.rebuild_shadows(height);
         self.rebuild_mesh(camera_right, camera_up, camera_forward);
     }
 
@@ -1418,6 +1439,13 @@ impl AnimatedScene {
             }
             if let Some(index) = hit {
                 self.damage_unit(index, projectile.damage, projectile.team);
+                self.effects.push(Effect {
+                    pos: projectile.pos,
+                    radius: 180.0,
+                    remaining: 0.7,
+                    duration: 0.7,
+                    color: [255, 120, 40],
+                });
             } else {
                 survivors.push(projectile);
             }
@@ -1548,6 +1576,69 @@ impl AnimatedScene {
             };
             self.units.push(unit);
         }
+    }
+
+    fn rebuild_shadows(&mut self, height: &HeightGrid) {
+        self.shadow_vertices.clear();
+        self.shadow_indices.clear();
+        for unit in &self.units {
+            if unit.health <= 0.0 || !unit.visible {
+                continue;
+            }
+            let size = (unit.hit_radius * 1.15).clamp(55.0, 480.0);
+            let y = height.height_at(unit.pos.x, unit.pos.z) + 4.0;
+            let base = self.shadow_vertices.len() as u32;
+            let p = |x: f32, z: f32, uv: [f32; 2]| SceneVertex::blob(Vec3::new(x, y, z), 0.38, uv);
+            self.shadow_vertices
+                .push(p(unit.pos.x - size, unit.pos.z - size, [0.0, 0.0]));
+            self.shadow_vertices
+                .push(p(unit.pos.x + size, unit.pos.z - size, [1.0, 0.0]));
+            self.shadow_vertices
+                .push(p(unit.pos.x - size, unit.pos.z + size, [0.0, 1.0]));
+            self.shadow_vertices
+                .push(p(unit.pos.x + size, unit.pos.z + size, [1.0, 1.0]));
+            self.shadow_indices.extend_from_slice(&[
+                base,
+                base + 1,
+                base + 2,
+                base + 2,
+                base + 1,
+                base + 3,
+            ]);
+        }
+    }
+
+    pub fn lights(&self) -> Vec<SceneLight> {
+        let mut lights = Vec::new();
+        lights.push(SceneLight {
+            pos: self.player_spawn + Vec3::Y * 60.0,
+            color: [0.25, 1.0, 0.45],
+            radius: 800.0,
+            intensity: 0.35,
+        });
+        for effect in &self.effects {
+            let color = [
+                effect.color[0] as f32 / 255.0,
+                effect.color[1] as f32 / 255.0,
+                effect.color[2] as f32 / 255.0,
+            ];
+            let fade = (effect.remaining / effect.duration.max(0.01)).clamp(0.0, 1.0);
+            lights.push(SceneLight {
+                pos: effect.pos + Vec3::Y * 40.0,
+                color,
+                radius: (effect.radius * 3.0).max(220.0),
+                intensity: 1.2 * fade,
+            });
+        }
+        for projectile in &self.projectiles {
+            lights.push(SceneLight {
+                pos: projectile.pos + Vec3::Y * 30.0,
+                color: [1.0, 0.45, 0.12],
+                radius: 520.0,
+                intensity: 1.6,
+            });
+        }
+        lights
     }
 
     fn rebuild_mesh(&mut self, camera_right: Vec3, camera_up: Vec3, camera_forward: Vec3) {
@@ -1819,16 +1910,23 @@ fn follow_path(unit: &mut AnimatedUnit, dt: f32, height: &HeightGrid, speed_mult
 
 fn append_unit(scene: &mut AnimatedScene, unit: &AnimatedUnit, positions: &[[f32; 3]]) {
     let rot = Mat3::from_rotation_y(unit.yaw);
-    let light = Vec3::new(0.35, 0.85, 0.4).normalize();
 
     for (face_idx, &[a, b, c]) in unit.model.faces.iter().enumerate() {
         let pa = model_vertex_animated(positions, a as usize, unit.pos, rot, unit.scale);
         let pb = model_vertex_animated(positions, b as usize, unit.pos, rot, unit.scale);
         let pc = model_vertex_animated(positions, c as usize, unit.pos, rot, unit.scale);
 
-        let normal = (pb - pa).cross(pc - pa).normalize_or_zero();
-        let ndotl = normal.dot(light).clamp(0.0, 1.0);
-        let brightness = 0.62 + 0.22 * (1.0 - ndotl);
+        let mut normal = (pb - pa).cross(pc - pa).normalize_or_zero();
+        if normal.length_squared() < 1e-8 {
+            normal = rot
+                * Vec3::from_array(
+                    unit.model
+                        .face_normals
+                        .get(face_idx)
+                        .copied()
+                        .unwrap_or([0.0, 1.0, 0.0]),
+                );
+        }
 
         let textured = unit
             .model
@@ -1837,19 +1935,11 @@ fn append_unit(scene: &mut AnimatedScene, unit: &AnimatedUnit, positions: &[[f32
             .and_then(|t| t.get(face_idx))
             .is_some_and(|&t| t >= 0);
         let mut rgb = if unit.kind == UnitKind::Tower {
-            [
-                (125.0 * brightness) as u8,
-                (117.0 * brightness) as u8,
-                (102.0 * brightness) as u8,
-            ]
+            [125, 117, 102]
         } else if textured || unit.model.face_colors[face_idx] == 127 {
-            [
-                (48.0 * brightness) as u8,
-                (95.0 * brightness) as u8,
-                (42.0 * brightness) as u8,
-            ]
+            [48, 95, 42]
         } else {
-            hsl_to_rgb(unit.model.face_colors[face_idx], brightness)
+            hsl_to_rgb(unit.model.face_colors[face_idx], 1.0)
         };
         if matches!(unit.kind, UnitKind::Nexus | UnitKind::Inhibitor) && unit.team == 1 {
             rgb[0] = rgb[0].saturating_add(90);
@@ -1862,10 +1952,16 @@ fn append_unit(scene: &mut AnimatedScene, unit: &AnimatedUnit, positions: &[[f32
             rgb[2] = (rgb[2] as f32 * 0.55) as u8;
         }
 
+        let mut va = SceneVertex::new(pa, normal, rgb);
+        let mut vb = SceneVertex::new(pb, normal, rgb);
+        let mut vc = SceneVertex::new(pc, normal, rgb);
+        va.material = 3;
+        vb.material = 3;
+        vc.material = 3;
         let base = scene.vertices.len() as u32;
-        scene.vertices.push(Vertex::new(pa, rgb));
-        scene.vertices.push(Vertex::new(pb, rgb));
-        scene.vertices.push(Vertex::new(pc, rgb));
+        scene.vertices.push(va);
+        scene.vertices.push(vb);
+        scene.vertices.push(vc);
         scene.indices.extend_from_slice(&[base, base + 1, base + 2]);
     }
 }
@@ -1936,10 +2032,10 @@ fn append_ring(scene: &mut AnimatedScene, center: Vec3, y: f32, radius: f32, col
             y,
             center.z + b.sin() * radius * inner,
         );
-        scene.vertices.push(Vertex::new(p0, color));
-        scene.vertices.push(Vertex::new(p1, color));
-        scene.vertices.push(Vertex::new(p2, color));
-        scene.vertices.push(Vertex::new(p3, color));
+        scene.vertices.push(SceneVertex::unlit(p0, color));
+        scene.vertices.push(SceneVertex::unlit(p1, color));
+        scene.vertices.push(SceneVertex::unlit(p2, color));
+        scene.vertices.push(SceneVertex::unlit(p3, color));
         let o = base + i * 4;
         scene
             .indices
@@ -1949,10 +2045,18 @@ fn append_ring(scene: &mut AnimatedScene, center: Vec3, y: f32, radius: f32, col
 
 fn append_quad(scene: &mut AnimatedScene, center: Vec3, right: Vec3, up: Vec3, color: [u8; 3]) {
     let base = scene.vertices.len() as u32;
-    scene.vertices.push(Vertex::new(center - right - up, color));
-    scene.vertices.push(Vertex::new(center + right - up, color));
-    scene.vertices.push(Vertex::new(center - right + up, color));
-    scene.vertices.push(Vertex::new(center + right + up, color));
+    scene
+        .vertices
+        .push(SceneVertex::unlit(center - right - up, color));
+    scene
+        .vertices
+        .push(SceneVertex::unlit(center + right - up, color));
+    scene
+        .vertices
+        .push(SceneVertex::unlit(center - right + up, color));
+    scene
+        .vertices
+        .push(SceneVertex::unlit(center + right + up, color));
     scene
         .indices
         .extend_from_slice(&[base, base + 1, base + 2, base + 2, base + 1, base + 3]);

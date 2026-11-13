@@ -105,8 +105,25 @@ Done:
 - `--timescale`, `--demo-camp`, `--demo-kit`, `--demo-shop`, `--demo-base`,
   `--demo-inhibitor`, and `--champion` for verification.
 
+### M5 — 117HD-style renderer (in progress)
+
+Done:
+
+- **M5.0 117HD Core**: sRGB-correct scene pipeline, per-face model normals,
+  smooth terrain normals, sun + hemispheric ambient lighting, optional light
+  banding, sky gradient/clouds, height fog, static + unit blob shadows, and up
+  to 16 dynamic ability/fountain lights. `--graphics 117hd|classic`,
+  `--debug-view albedo|normal|lighting|fog|lights`, and `--pitch` for
+  verification.
+
 Remaining:
 
+- **M5.1 117HD Shadows**: directional shadow map, PCF, static/dynamic caching.
+- **M5.2 117HD Water**: water mesh, fresnel, sky reflection, specular, caustics.
+- **M5.3 117HD Textures**: texture decoding, atlas, model/ground textures,
+  ground blending, anisotropic filtering.
+- **M5.4 117HD Post + Draw Distance**: MSAA/FXAA, bloom, color grading,
+  chunked streaming/LOD, model batching.
 - Server-authoritative fog and brush visuals.
 - Item selling/combining/passives and five champions with distinct kits.
 - Cache-native font atlas and richer shop/scoreboard screens.
