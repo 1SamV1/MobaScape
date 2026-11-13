@@ -19,35 +19,24 @@ data/maps/karamja_rift/
 the cache and are **not committed**. `map.json` is committed because it is our
 design data; it references cache IDs, not assets.
 
-## Current `map.json` (v1)
+## Current `map.json` (v1.5)
 
-The first playable lane is `data/maps/karamja_rift/map.json`:
+The playable map is `data/maps/karamja_rift/map.json`:
 
-```json
-{
-  "name": "Karamja Rift - Mid Lane",
-  "lane": [
-    [2800, 3040], [2815, 3045], [2835, 3055], [2850, 3065],
-    [2860, 3065], [2870, 3055], [2885, 3045], [2900, 3040]
-  ],
-  "wave_interval": 25.0,
-  "structures": [
-    { "team": 0, "kind": "nexus", "tile": [2800, 3040], "model": 1747,
-      "health": 1200, "range": 0, "damage": 0, "interval": 0, "scale": 1.4 },
-    { "team": 0, "kind": "tower", "tile": [2820, 3050], "model": 1761,
-      "health": 450, "range": 640, "damage": 18, "interval": 1.2, "scale": 1.5 },
-    { "team": 1, "kind": "tower", "tile": [2880, 3050], "model": 1761,
-      "health": 450, "range": 640, "damage": 18, "interval": 1.2, "scale": 1.5 },
-    { "team": 1, "kind": "nexus", "tile": [2900, 3040], "model": 1747,
-      "health": 1200, "range": 0, "damage": 0, "interval": 0, "scale": 1.4 }
-  ]
-}
-```
+- `nexus`: one structure per team (model 1747, 1500 HP).
+- `lanes`: top, mid, bottom. Each lane has a `waypoints` polyline, four
+  `towers` (two per team), and two `inhibitors` (one per team).
+- `wave_interval`: 25 s. Each lane spawns two melee skeletons and one skeleton
+  mage per team per wave.
+- Towers: model 1761, 450 HP, range 640, 18 damage / 1.2 s.
+- Inhibitors: model 1747, 700 HP, no attack. At least one enemy inhibitor must
+  fall before the nexus can be damaged.
+- Nexus: model 1747, 1500 HP. Destroying it ends the match.
 
-The scene clears collision in a ~4.5-tile corridor around the lane, blocks
-3×3 footprints under structures, skips scenery within 5 tiles of the lane, and
-draws a stone-path ribbon. The runtime spawns three melee skeletons and two
-skeleton mages per team every `wave_interval` seconds.
+The scene clears collision in a ~4.5-tile corridor around every lane, blocks
+3×3 footprints under structures, skips scenery within 5 tiles of any lane, and
+draws a stone-path ribbon per lane. Positions are absolute world tiles (e.g.
+2800, 3040), not region-local coordinates.
 
 ## Future schema
 

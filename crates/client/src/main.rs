@@ -398,12 +398,16 @@ impl App {
             if self.lane_log_timer >= 5.0 {
                 self.lane_log_timer = 0.0;
                 tracing::info!(
-                    "lane: minions={} towers0={:?} towers1={:?} nexus0={:?} nexus1={:?}",
+                    "lane: minions={} towers0={:?} towers1={:?} inhib0={:?} inhib1={:?} nexus0={:?} nexus1={:?} vulnerable0={} vulnerable1={}",
                     animated.minion_count(),
                     animated.tower_healths(0),
                     animated.tower_healths(1),
+                    animated.inhibitor_count(0),
+                    animated.inhibitor_count(1),
                     animated.nexus_health(0),
-                    animated.nexus_health(1)
+                    animated.nexus_health(1),
+                    animated.nexus_vulnerable(0),
+                    animated.nexus_vulnerable(1)
                 );
             }
             self.hud.build(
@@ -442,9 +446,21 @@ impl App {
                     Some(_) => " | DEFEAT",
                     None => "",
                 };
+                let inhib0 = animated.inhibitor_count(0);
+                let inhib1 = animated.inhibitor_count(1);
+                let shield0 = if animated.nexus_vulnerable(0) {
+                    "open"
+                } else {
+                    "shielded"
+                };
+                let shield1 = if animated.nexus_vulnerable(1) {
+                    "open"
+                } else {
+                    "shielded"
+                };
                 if let Some(window) = self.window.as_ref() {
                     window.set_title(&format!(
-                        "Rift - Karamja | tile {:.0},{:.0} | {:.0} fps | HP {:.0}/{:.0} | Q {:.1}s | nexus {:.0}/{:.0} - {:.0}/{:.0} | wave {:.0}s | minions {}{}",
+                        "Rift - Karamja | tile {:.0},{:.0} | {:.0} fps | HP {:.0}/{:.0} | Q {:.1}s | nexus {:.0}/{:.0} ({}) - {:.0}/{:.0} ({}) | inhib {}/{} - {}/{} | wave {:.0}s | minions {}{}",
                         pos.x / 128.0,
                         pos.z / 128.0,
                         fps,
@@ -453,8 +469,14 @@ impl App {
                         q,
                         nexus0.0,
                         nexus0.1,
+                        shield0,
                         nexus1.0,
                         nexus1.1,
+                        shield1,
+                        inhib0.0,
+                        inhib0.1,
+                        inhib1.0,
+                        inhib1.1,
                         animated.wave_timer,
                         animated.minion_count(),
                         result

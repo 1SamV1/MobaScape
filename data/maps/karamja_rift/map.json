@@ -1,22 +1,395 @@
 {
-  "name": "Karamja Rift - Mid Lane",
-  "lane": [
-    [2800, 3040],
-    [2815, 3045],
-    [2835, 3055],
-    [2850, 3065],
-    [2860, 3065],
-    [2870, 3055],
-    [2885, 3045],
-    [2900, 3040]
-  ],
+  "name": "Karamja Rift - Three Lanes",
   "wave_interval": 25.0,
-  "structures": [
-    { "team": 0, "kind": "nexus", "tile": [2800, 3040], "model": 1747, "health": 1200, "range": 0, "damage": 0, "interval": 0, "scale": 1.4 },
-    { "team": 0, "kind": "tower", "tile": [2820, 3050], "model": 1761, "health": 450, "range": 640, "damage": 18, "interval": 1.2, "scale": 1.5 },
-    { "team": 0, "kind": "tower", "tile": [2845, 3060], "model": 1761, "health": 450, "range": 640, "damage": 18, "interval": 1.2, "scale": 1.5 },
-    { "team": 1, "kind": "tower", "tile": [2855, 3060], "model": 1761, "health": 450, "range": 640, "damage": 18, "interval": 1.2, "scale": 1.5 },
-    { "team": 1, "kind": "tower", "tile": [2880, 3050], "model": 1761, "health": 450, "range": 640, "damage": 18, "interval": 1.2, "scale": 1.5 },
-    { "team": 1, "kind": "nexus", "tile": [2900, 3040], "model": 1747, "health": 1200, "range": 0, "damage": 0, "interval": 0, "scale": 1.4 }
+  "nexus": [
+    {
+      "team": 0,
+      "kind": "nexus",
+      "tile": [
+        2800,
+        3040
+      ],
+      "model": 1747,
+      "health": 1500,
+      "range": 0,
+      "damage": 0,
+      "interval": 0,
+      "scale": 1.4
+    },
+    {
+      "team": 1,
+      "kind": "nexus",
+      "tile": [
+        2900,
+        3040
+      ],
+      "model": 1747,
+      "health": 1500,
+      "range": 0,
+      "damage": 0,
+      "interval": 0,
+      "scale": 1.4
+    }
+  ],
+  "lanes": [
+    {
+      "id": "top",
+      "waypoints": [
+        [
+          2800,
+          3040
+        ],
+        [
+          2805,
+          3070
+        ],
+        [
+          2830,
+          3090
+        ],
+        [
+          2860,
+          3090
+        ],
+        [
+          2885,
+          3070
+        ],
+        [
+          2900,
+          3040
+        ]
+      ],
+      "towers": [
+        {
+          "team": 0,
+          "kind": "tower",
+          "tile": [
+            2815,
+            3075
+          ],
+          "model": 1761,
+          "health": 450,
+          "range": 640,
+          "damage": 18,
+          "interval": 1.2,
+          "scale": 1.5
+        },
+        {
+          "team": 0,
+          "kind": "tower",
+          "tile": [
+            2840,
+            3090
+          ],
+          "model": 1761,
+          "health": 450,
+          "range": 640,
+          "damage": 18,
+          "interval": 1.2,
+          "scale": 1.5
+        },
+        {
+          "team": 1,
+          "kind": "tower",
+          "tile": [
+            2860,
+            3090
+          ],
+          "model": 1761,
+          "health": 450,
+          "range": 640,
+          "damage": 18,
+          "interval": 1.2,
+          "scale": 1.5
+        },
+        {
+          "team": 1,
+          "kind": "tower",
+          "tile": [
+            2885,
+            3075
+          ],
+          "model": 1761,
+          "health": 450,
+          "range": 640,
+          "damage": 18,
+          "interval": 1.2,
+          "scale": 1.5
+        }
+      ],
+      "inhibitors": [
+        {
+          "team": 0,
+          "kind": "inhibitor",
+          "tile": [
+            2808,
+            3065
+          ],
+          "model": 1747,
+          "health": 700,
+          "range": 0,
+          "damage": 0,
+          "interval": 0,
+          "scale": 0.9
+        },
+        {
+          "team": 1,
+          "kind": "inhibitor",
+          "tile": [
+            2892,
+            3065
+          ],
+          "model": 1747,
+          "health": 700,
+          "range": 0,
+          "damage": 0,
+          "interval": 0,
+          "scale": 0.9
+        }
+      ]
+    },
+    {
+      "id": "mid",
+      "waypoints": [
+        [
+          2800,
+          3040
+        ],
+        [
+          2815,
+          3045
+        ],
+        [
+          2835,
+          3055
+        ],
+        [
+          2850,
+          3065
+        ],
+        [
+          2860,
+          3065
+        ],
+        [
+          2870,
+          3055
+        ],
+        [
+          2885,
+          3045
+        ],
+        [
+          2900,
+          3040
+        ]
+      ],
+      "towers": [
+        {
+          "team": 0,
+          "kind": "tower",
+          "tile": [
+            2820,
+            3050
+          ],
+          "model": 1761,
+          "health": 450,
+          "range": 640,
+          "damage": 18,
+          "interval": 1.2,
+          "scale": 1.5
+        },
+        {
+          "team": 0,
+          "kind": "tower",
+          "tile": [
+            2845,
+            3060
+          ],
+          "model": 1761,
+          "health": 450,
+          "range": 640,
+          "damage": 18,
+          "interval": 1.2,
+          "scale": 1.5
+        },
+        {
+          "team": 1,
+          "kind": "tower",
+          "tile": [
+            2855,
+            3060
+          ],
+          "model": 1761,
+          "health": 450,
+          "range": 640,
+          "damage": 18,
+          "interval": 1.2,
+          "scale": 1.5
+        },
+        {
+          "team": 1,
+          "kind": "tower",
+          "tile": [
+            2880,
+            3050
+          ],
+          "model": 1761,
+          "health": 450,
+          "range": 640,
+          "damage": 18,
+          "interval": 1.2,
+          "scale": 1.5
+        }
+      ],
+      "inhibitors": [
+        {
+          "team": 0,
+          "kind": "inhibitor",
+          "tile": [
+            2808,
+            3045
+          ],
+          "model": 1747,
+          "health": 700,
+          "range": 0,
+          "damage": 0,
+          "interval": 0,
+          "scale": 0.9
+        },
+        {
+          "team": 1,
+          "kind": "inhibitor",
+          "tile": [
+            2892,
+            3045
+          ],
+          "model": 1747,
+          "health": 700,
+          "range": 0,
+          "damage": 0,
+          "interval": 0,
+          "scale": 0.9
+        }
+      ]
+    },
+    {
+      "id": "bottom",
+      "waypoints": [
+        [
+          2800,
+          3040
+        ],
+        [
+          2805,
+          3010
+        ],
+        [
+          2830,
+          2990
+        ],
+        [
+          2860,
+          2990
+        ],
+        [
+          2885,
+          3010
+        ],
+        [
+          2900,
+          3040
+        ]
+      ],
+      "towers": [
+        {
+          "team": 0,
+          "kind": "tower",
+          "tile": [
+            2815,
+            3005
+          ],
+          "model": 1761,
+          "health": 450,
+          "range": 640,
+          "damage": 18,
+          "interval": 1.2,
+          "scale": 1.5
+        },
+        {
+          "team": 0,
+          "kind": "tower",
+          "tile": [
+            2840,
+            2990
+          ],
+          "model": 1761,
+          "health": 450,
+          "range": 640,
+          "damage": 18,
+          "interval": 1.2,
+          "scale": 1.5
+        },
+        {
+          "team": 1,
+          "kind": "tower",
+          "tile": [
+            2860,
+            2990
+          ],
+          "model": 1761,
+          "health": 450,
+          "range": 640,
+          "damage": 18,
+          "interval": 1.2,
+          "scale": 1.5
+        },
+        {
+          "team": 1,
+          "kind": "tower",
+          "tile": [
+            2885,
+            3005
+          ],
+          "model": 1761,
+          "health": 450,
+          "range": 640,
+          "damage": 18,
+          "interval": 1.2,
+          "scale": 1.5
+        }
+      ],
+      "inhibitors": [
+        {
+          "team": 0,
+          "kind": "inhibitor",
+          "tile": [
+            2808,
+            3015
+          ],
+          "model": 1747,
+          "health": 700,
+          "range": 0,
+          "damage": 0,
+          "interval": 0,
+          "scale": 0.9
+        },
+        {
+          "team": 1,
+          "kind": "inhibitor",
+          "tile": [
+            2892,
+            3015
+          ],
+          "model": 1747,
+          "health": 700,
+          "range": 0,
+          "damage": 0,
+          "interval": 0,
+          "scale": 0.9
+        }
+      ]
+    }
   ]
 }

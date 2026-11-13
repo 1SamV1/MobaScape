@@ -14,7 +14,7 @@ const Q_COOLDOWN: f32 = 5.0;
 const Q_DAMAGE: f32 = 38.0;
 const PLAYER_RESPAWN: f32 = 5.0;
 const MINION_AGGRO: f32 = 520.0;
-const MAX_MINIONS_PER_TEAM: usize = 24;
+const MAX_MINIONS_PER_TEAM: usize = 36;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnitKind {
@@ -24,6 +24,7 @@ pub enum UnitKind {
     MeleeMinion,
     RangedMinion,
     Tower,
+    Inhibitor,
     Nexus,
 }
 
@@ -94,7 +95,7 @@ pub struct AnimatedScene {
     pub q_cooldown: f32,
     pub wave_timer: f32,
     pub wave_interval: f32,
-    pub lane_waypoints: Vec<Vec3>,
+    pub lanes: Vec<Vec<Vec3>>,
     pub nexus_positions: [Vec3; 2],
     pub player_spawn: Vec3,
     pub match_over: Option<u8>,
@@ -175,9 +176,9 @@ impl AnimatedScene {
             )?);
         }
 
-        for structure in &scene.lane.structures {
+        for structure in &scene.map.structures {
             tracing::info!(
-                "lane structure: {:?} team {} model {} pos {:?}",
+                "structure: {:?} team {} model {} pos {:?}",
                 structure.kind,
                 structure.team,
                 structure.model_id,
@@ -185,10 +186,12 @@ impl AnimatedScene {
             );
             let kind = match structure.kind {
                 StructureKind::Tower => UnitKind::Tower,
+                StructureKind::Inhibitor => UnitKind::Inhibitor,
                 StructureKind::Nexus => UnitKind::Nexus,
             };
             let (hit_radius, bar_height) = match kind {
                 UnitKind::Tower => (230.0, 500.0),
+                UnitKind::Inhibitor => (230.0, 430.0),
                 UnitKind::Nexus => (300.0, 400.0),
                 _ => (150.0, 200.0),
             };
@@ -249,16 +252,23 @@ impl AnimatedScene {
             projectiles: Vec::new(),
             q_cooldown: 0.0,
             wave_timer: 0.0,
-            wave_interval: scene.lane.wave_interval,
-            lane_waypoints: scene.lane.waypoints.clone(),
+            wave_interval: scene.map.wave_interval,
+            lanes: scene
+                .map
+                .lanes
+                .iter()
+                .map(|lane| lane.waypoints.clone())
+                .collect(),
             nexus_positions,
             player_spawn: scene.player_spawn,
             match_over: None,
             melee_template,
             ranged_template,
         };
-        animated.spawn_wave(0);
-        animated.spawn_wave(1);
+        for lane_index in 0..animated.lanes.len() {
+            animated.spawn_wave(0, lane_index);
+            animated.spawn_wave(1, lane_index);
+        }
         animated.wave_timer = animated.wave_interval;
         Ok(animated)
     }
@@ -281,6 +291,26 @@ impl AnimatedScene {
 
     pub fn minion_count(&self) -> usize {
         self.units.iter().filter(|u| u.kind.is_minion()).count()
+    }
+
+    pub fn inhibitor_count(&self, team: u8) -> (usize, usize) {
+        let all = self
+            .units
+            .iter()
+            .filter(|u| u.kind == UnitKind::Inhibitor && u.team == team)
+            .count();
+        let alive = self
+            .units
+            .iter()
+            .filter(|u| u.kind == UnitKind::Inhibitor && u.team == team && u.health > 0.0)
+            .count();
+        (alive, all)
+    }
+
+    pub fn nexus_vulnerable(&self, team: u8) -> bool {
+        self.units
+            .iter()
+            .any(|u| u.kind == UnitKind::Inhibitor && u.team == team && u.health <= 0.0)
     }
 
     pub fn tower_healths(&self, team: u8) -> Vec<(f32, f32)> {
@@ -319,6 +349,9 @@ impl AnimatedScene {
         }
         let target = &self.units[index];
         if target.team != 1 || target.health <= 0.0 {
+            return false;
+        }
+        if target.kind == UnitKind::Nexus && !self.nexus_vulnerable(target.team) {
             return false;
         }
         let target_pos = target.pos;
@@ -391,6 +424,9 @@ impl AnimatedScene {
             if unit.team != 1 || unit.health <= 0.0 {
                 continue;
             }
+            if unit.kind == UnitKind::Nexus && !self.nexus_vulnerable(unit.team) {
+                continue;
+            }
             let center = unit.pos + Vec3::Y * (unit.bar_height * 0.45);
             let radius = unit.hit_radius;
             let oc = center - origin;
@@ -448,8 +484,10 @@ impl AnimatedScene {
         if self.match_over.is_none() {
             self.wave_timer -= dt;
             if self.wave_timer <= 0.0 {
-                self.spawn_wave(0);
-                self.spawn_wave(1);
+                for lane_index in 0..self.lanes.len() {
+                    self.spawn_wave(0, lane_index);
+                    self.spawn_wave(1, lane_index);
+                }
                 self.wave_timer = self.wave_interval;
             }
         }
@@ -633,6 +671,9 @@ impl AnimatedScene {
             if i == index || unit.team == team || unit.team == 2 || unit.health <= 0.0 {
                 continue;
             }
+            if unit.kind == UnitKind::Nexus && !self.nexus_vulnerable(unit.team) {
+                continue;
+            }
             let d = pos.distance_squared(unit.pos);
             if d <= range * range && best.is_none_or(|(_, bd)| d < bd) {
                 best = Some((i, d));
@@ -689,6 +730,11 @@ impl AnimatedScene {
 
     fn damage_unit(&mut self, index: usize, amount: f32, attacker_team: u8) {
         if index >= self.units.len() {
+            return;
+        }
+        if self.units[index].kind == UnitKind::Nexus
+            && !self.nexus_vulnerable(self.units[index].team)
+        {
             return;
         }
         let unit = &mut self.units[index];
@@ -755,19 +801,22 @@ impl AnimatedScene {
         self.projectiles = survivors;
     }
 
-    fn spawn_wave(&mut self, team: u8) {
+    fn spawn_wave(&mut self, team: u8, lane_index: usize) {
         if self.match_over.is_some() {
             return;
         }
         if self.units.iter().filter(|u| u.is_minion_of(team)).count() >= MAX_MINIONS_PER_TEAM {
             return;
         }
+        let Some(lane_waypoints) = self.lanes.get(lane_index).cloned() else {
+            return;
+        };
 
         let nexus = self.nexus_positions[team as usize];
         let lane = if team == 0 {
-            self.lane_waypoints.clone()
+            lane_waypoints
         } else {
-            let mut reversed = self.lane_waypoints.clone();
+            let mut reversed = lane_waypoints;
             reversed.reverse();
             reversed
         };
@@ -775,12 +824,10 @@ impl AnimatedScene {
             Vec3::new(70.0, 0.0, 0.0),
             Vec3::new(-70.0, 0.0, 0.0),
             Vec3::new(0.0, 0.0, 70.0),
-            Vec3::new(0.0, 0.0, -70.0),
-            Vec3::new(100.0, 0.0, 40.0),
         ];
 
         for (i, offset) in offsets.iter().enumerate() {
-            let ranged = i >= 3;
+            let ranged = i == 2;
             let template = if ranged {
                 &self.ranged_template
             } else {
@@ -908,7 +955,7 @@ impl AnimatedScene {
         let structure_rings = self
             .units
             .iter()
-            .filter(|u| u.kind == UnitKind::Tower && u.health > 0.0)
+            .filter(|u| matches!(u.kind, UnitKind::Tower | UnitKind::Inhibitor) && u.health > 0.0)
             .map(|u| (u.pos, u.team))
             .collect::<Vec<_>>();
         for (pos, team) in structure_rings {
@@ -1073,7 +1120,7 @@ fn append_unit(scene: &mut AnimatedScene, unit: &AnimatedUnit, positions: &[[f32
         } else {
             hsl_to_rgb(unit.model.face_colors[face_idx], brightness)
         };
-        if unit.kind == UnitKind::Nexus && unit.team == 1 {
+        if matches!(unit.kind, UnitKind::Nexus | UnitKind::Inhibitor) && unit.team == 1 {
             rgb[0] = rgb[0].saturating_add(90);
             rgb[1] = (rgb[1] as f32 * 0.5) as u8;
             rgb[2] = (rgb[2] as f32 * 0.8) as u8;

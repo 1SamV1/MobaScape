@@ -128,3 +128,13 @@ blocks structure footprints, skips scenery near the lane, and emits a stone-path
 ribbon. `AnimatedScene` spawns waves, runs minion/tower AI, and ends the match
 when a nexus dies. Top/bottom lanes, inhibitors, jungle camps, and brush are
 deferred until the loop is stable.
+
+## ADR-013 — Three lanes + inhibitor-gated nexus
+
+**Status:** accepted.
+
+The map now has top/mid/bottom lanes, two towers and one inhibitor per lane per
+team, and one nexus per team. A nexus is damageable only after at least one
+enemy inhibitor is destroyed. Minions spawn per lane (two melee, one ranged) and
+follow that lane's waypoints. This creates a real push/defend loop without
+requiring items or a full champion kit yet.

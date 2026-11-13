@@ -78,15 +78,17 @@ condition, dev bots, headless match runner.
 
 Done:
 
-- One mid lane carved into Karamja, with two towers and one nexus per team.
-- Five-minion waves every 25 s (three melee skeletons, two skeleton mages).
-- Tower targeting/projectiles, minion lane AI, nexus win condition.
-- HUD nexus health bars and wave timer; title shows tower/minion/match state.
+- Three lanes carved into Karamja (top/mid/bottom), two towers and one
+  inhibitor per lane per team, one shielded nexus per team.
+- Three-minion waves per lane every 25 s (two skeletons, one skeleton mage).
+- Tower targeting/projectiles, minion lane AI, inhibitor-gated nexus, win
+  condition, victory/defeat HUD border and title.
+- HUD nexus health bars and wave timer; title shows tower/inhibitor/nexus state.
 - `--timescale` for fast verification.
 
 Remaining:
 
-- Top/bottom lanes, inhibitors, jungle camps/buffs.
+- Jungle camps/buffs, brush, fog.
 - Gold/XP/items and five champions with full kits.
 - Deterministic 10-bot match at 20× speed with a state hash.
 - Data hot reload for champions/abilities/items/waves.

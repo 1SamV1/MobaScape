@@ -154,13 +154,14 @@ Cache location: `.cache/osrs-235/cache` by default. Pass `--cache` and
 - Renderer changes: include a headless screenshot or a manual visual check note.
 - Performance: 1080p/60 target on the AMD 680M iGPU. Profile before optimizing.
 
-## 8. Known M3 limitations
+## 8. Known M3.5 limitations
 
 - Client renders a 3×3 region block (192×192 tiles); there is no terrain skirt
   or streaming beyond it, and the collision grid is approximate (water + object
   footprints, no cliffs/bridges).
-- One mid lane only: two towers and one nexus per team, five minions per wave,
-  25 s wave interval. No top/bottom lanes, inhibitors, jungle camps, or items.
+- Three lanes with two towers and one inhibitor per lane, plus one shielded
+  nexus per team. No jungle camps, brush, fog, or items.
+- Nexus is damageable only after at least one enemy inhibitor falls.
 - The HUD is geometry only (bars, Q box, crosshair, nexus/wave bars); all
   numbers live in the window title. No text renderer yet.
 - Combat has one Q projectile; no passive/Q/W/E/R kit, mana cost, or items.

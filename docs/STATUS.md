@@ -1,6 +1,6 @@
 # Status
 
-Last updated: M3 first lane, 2026-11-13.
+Last updated: M3.5 three-lane map, 2026-11-13.
 
 ## Working
 
@@ -14,41 +14,46 @@ Last updated: M3 first lane, 2026-11-13.
 - `crates/sim`: deterministic 192×192 tile grid, A* with octile heuristic,
   no corner cutting, nearest-walkable fallback, path simplification, LOS.
 - Scene: 3×3 Karamja block, 37,249 terrain vertices, 900 scenery placements,
-  8 ambient animated NPCs, lane path ribbon, two towers + one nexus per team.
+  8 ambient animated NPCs, three stone lane ribbons.
+- Map: `data/maps/karamja_rift/map.json` defines top/mid/bottom lanes,
+  two towers + one inhibitor per lane per team, and one nexus per team.
 - Movement: click-to-move A* path following; hold-to-steer with axis-separated
   collision sliding; camera follow/pan; selection and click rings.
-- Lane: `data/maps/karamja_rift/map.json` defines the mid lane and structures.
-  Five-minion waves every 25 s (3 skeletons, 2 skeleton mages) per team.
-  Minion lane AI, tower targeting/projectiles, nexus health, and a win condition.
+- Lane: three-minion waves per lane every 25 s (two skeletons, one skeleton
+  mage) per team. Minion lane AI, tower targeting/projectiles, inhibitor-gated
+  nexus, victory/defeat.
 - Combat: player auto-attacks, Q fire blast, hit flash, health bars, dummy
-  respawn. Player death/respawn at the spawn point.
+  respawn. Player death/respawn at the spawn point. Towers/minions can damage
+  the player.
 - HUD: screen-space health/mana bars, Q cooldown box, crosshair, team nexus
-  health bars, wave timer; numeric values in the window title.
+  health bars, wave timer; numeric values in the window title. Victory/defeat
+  screen border.
 - Dev demos: `--demo-target X Y`, `--demo-combat`, `--timescale N`.
 
 ## Verified
 
 - `cargo test --workspace`: 13 tests pass (6 cache, 7 sim).
 - `cargo clippy --workspace --all-targets`: no warnings.
-- `--timescale 20` run: 50 minions, west tower at **198/450**, team 0 nexus at
-  **870/1200**, title reports wave timer and nexus health. Tower and nexus
-  damage is live.
+- 20× three-lane run ended in **VICTORY**:
+  - team 1 nexus **0/1500 (open)**, team 0 nexus **1500/1500 (shielded)**
+  - team 1 inhibitors **2/3**, team 0 inhibitors **3/3**
+  - **72 minions**, 6 towers per team, several towers destroyed
+  - player HP dropped to **428/500** from tower/minion damage
 - `--demo-combat`: dummy target health 58/120 after auto-attacks + Q.
-- HUD screenshot check: nexus bars, wave timer, player/dummy/tower health bars,
-  Q box, crosshair, lane ribbon, skeleton minions, obelisk towers.
+- HUD/lane screenshot: three lane ribbons, nexus crystals, obelisk towers,
+  skeleton minions, nexus/wave bars, victory border.
 
 ## Known issues
 
-- One mid lane only. No top/bottom lanes, inhibitors, jungle camps, brush, or
-  fog. No items, gold, XP, or champion kit beyond Q.
-- The lane ribbon can clip under steep terrain in a few spots; it is a display
-  overlay, not authored terrain.
-- Collision is approximate: water (`underlay_id == 0`), object footprints, and
-  3×3 structure footprints. No cliffs, bridges, doors, or authored collision.
-- Minion cap is 24 per team; waves can temporarily exceed it by one wave.
+- Three lanes but no jungle camps, brush, fog, inhibitors respawn, or super
+  minions.
+- No gold/XP/items or full champion kit beyond Q.
 - The HUD has no text/font; numbers live in the window title.
-- Textures are not sampled; textured faces use flat fallbacks. Dead trees read
-  as pale spikes, palms as neon green.
+- Lane ribbons can clip under steep terrain in a few spots.
+- Collision is approximate: water, object footprints, 3×3 structure footprints.
+  No cliffs, bridges, doors, or authored collision.
+- Minion cap is 36 per team; waves can temporarily exceed it.
+- Textures are not sampled; textured faces use flat fallbacks.
 - Animaya is decoded as metadata but not applied.
 - Ambient NPCs idle only. No attack animation for champions.
 - LZMA is implemented but not exercised by cache 2392.
@@ -57,9 +62,9 @@ Last updated: M3 first lane, 2026-11-13.
 
 ## Next tasks
 
-1. Three lanes, inhibitors, and a proper base/fountain layout.
-2. Jungle camps/buffs and gold/XP/items.
-3. Champion kit: passive + Q/W/E/R, mana costs, cooldown UI, VFX.
+1. Jungle camps/buffs, brush, and fog of war.
+2. Gold/XP/items and a champion kit (passive + Q/W/E/R).
+3. Inhibitor respawn / super minions and a proper base/fountain.
 4. HUD text/font atlas and minimap.
 5. Deterministic 30 Hz sim tick in `crates/sim` + state hash.
 6. Texture sampling and better foliage/trunk colours.
@@ -71,6 +76,5 @@ Last updated: M3 first lane, 2026-11-13.
   walkable, no corner cutting, simplification, bounds, LOS).
 - `cargo test -p rift-cache`: 6 tests (smart reads, chained smart, XTEA, HSL,
   group rejection, framemap/frame parse).
-- Lane timescale run: tower 198/450, nexus0 870/1200, 50 minions.
-- Scene: 9 regions, 37,249 terrain verts, 398,526 model verts, 900 placements,
-  8 ambient NPCs, lane structures.
+- Three-lane 20× run: victory, nexus 0/1500 vs 1500/1500, inhibitors 2/3 vs 3/3,
+  72 minions, player 428/500.

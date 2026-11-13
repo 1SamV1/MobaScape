@@ -166,6 +166,7 @@ impl WorldCollision {
 #[serde(rename_all = "lowercase")]
 pub enum StructureKind {
     Tower,
+    Inhibitor,
     Nexus,
 }
 
@@ -197,29 +198,43 @@ struct StructureJson {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+struct LaneJson {
+    id: String,
+    waypoints: Vec<[f32; 2]>,
+    towers: Vec<StructureJson>,
+    inhibitors: Vec<StructureJson>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 struct MapJson {
     #[serde(default)]
     name: String,
-    lane: Vec<[f32; 2]>,
     wave_interval: f32,
-    structures: Vec<StructureJson>,
+    nexus: Vec<StructureJson>,
+    lanes: Vec<LaneJson>,
 }
 
 #[derive(Debug, Clone)]
-pub struct LaneLayout {
-    pub name: String,
+pub struct LaneSpawn {
+    pub id: String,
     pub waypoints: Vec<Vec3>,
+}
+
+#[derive(Debug, Clone)]
+pub struct MapLayout {
+    pub name: String,
+    pub lanes: Vec<LaneSpawn>,
     pub structures: Vec<StructureSpawn>,
     pub wave_interval: f32,
 }
 
-impl LaneLayout {
+impl MapLayout {
     pub fn load(path: &Path, height: &HeightGrid) -> Result<Self> {
         let data = std::fs::read_to_string(path)
             .with_context(|| format!("reading map {}", path.display()))?;
         let map: MapJson = serde_json::from_str(&data)?;
-        if map.lane.len() < 2 {
-            anyhow::bail!("map {} needs at least two lane waypoints", path.display());
+        if map.lanes.is_empty() {
+            anyhow::bail!("map {} needs at least one lane", path.display());
         }
 
         let world_of = |tile: [f32; 2]| {
@@ -227,28 +242,43 @@ impl LaneLayout {
             let z = (tile[1] + 0.5) * 128.0;
             Vec3::new(x, height.height_at(x, z), z)
         };
+        let to_spawn = |s: &StructureJson| StructureSpawn {
+            team: s.team,
+            kind: s.kind,
+            tile: s.tile,
+            model_id: s.model,
+            pos: world_of(s.tile),
+            health: s.health,
+            range: s.range,
+            damage: s.damage,
+            interval: s.interval,
+            scale: s.scale,
+        };
 
-        let waypoints = map.lane.iter().map(|&tile| world_of(tile)).collect();
-        let structures = map
-            .structures
-            .iter()
-            .map(|s| StructureSpawn {
-                team: s.team,
-                kind: s.kind,
-                tile: s.tile,
-                model_id: s.model,
-                pos: world_of(s.tile),
-                health: s.health,
-                range: s.range,
-                damage: s.damage,
-                interval: s.interval,
-                scale: s.scale,
-            })
-            .collect();
+        let mut lanes = Vec::with_capacity(map.lanes.len());
+        let mut structures = Vec::new();
+        for s in &map.nexus {
+            structures.push(to_spawn(s));
+        }
+        for lane in &map.lanes {
+            if lane.waypoints.len() < 2 {
+                anyhow::bail!("lane {} needs at least two waypoints", lane.id);
+            }
+            lanes.push(LaneSpawn {
+                id: lane.id.clone(),
+                waypoints: lane.waypoints.iter().map(|&tile| world_of(tile)).collect(),
+            });
+            for s in &lane.towers {
+                structures.push(to_spawn(s));
+            }
+            for s in &lane.inhibitors {
+                structures.push(to_spawn(s));
+            }
+        }
 
         Ok(Self {
             name: map.name,
-            waypoints,
+            lanes,
             structures,
             wave_interval: map.wave_interval,
         })
@@ -257,10 +287,12 @@ impl LaneLayout {
     pub fn distance_to_lane(&self, x: f32, z: f32) -> f32 {
         let p = Vec2::new(x, z);
         let mut best = f32::MAX;
-        for pair in self.waypoints.windows(2) {
-            let a = Vec2::new(pair[0].x, pair[0].z);
-            let b = Vec2::new(pair[1].x, pair[1].z);
-            best = best.min(point_segment_distance(p, a, b));
+        for lane in &self.lanes {
+            for pair in lane.waypoints.windows(2) {
+                let a = Vec2::new(pair[0].x, pair[0].z);
+                let b = Vec2::new(pair[1].x, pair[1].z);
+                best = best.min(point_segment_distance(p, a, b));
+            }
         }
         best
     }
@@ -272,19 +304,21 @@ impl LaneLayout {
         origin_tile_y: i32,
         radius_tiles: f32,
     ) {
-        for pair in self.waypoints.windows(2) {
-            let a = Vec2::new(pair[0].x, pair[0].z);
-            let b = Vec2::new(pair[1].x, pair[1].z);
-            let steps = ((a.distance(b) / 24.0).ceil() as i32).max(1);
-            for i in 0..=steps {
-                let p = a.lerp(b, i as f32 / steps as f32);
-                let tx = (p.x / 128.0).floor() as i32 - origin_tile_x;
-                let ty = (p.y / 128.0).floor() as i32 - origin_tile_y;
-                let r = radius_tiles.ceil() as i32;
-                for dy in -r..=r {
-                    for dx in -r..=r {
-                        if (dx * dx + dy * dy) as f32 <= radius_tiles * radius_tiles {
-                            grid.set_blocked(tx + dx, ty + dy, false);
+        for lane in &self.lanes {
+            for pair in lane.waypoints.windows(2) {
+                let a = Vec2::new(pair[0].x, pair[0].z);
+                let b = Vec2::new(pair[1].x, pair[1].z);
+                let steps = ((a.distance(b) / 24.0).ceil() as i32).max(1);
+                for i in 0..=steps {
+                    let p = a.lerp(b, i as f32 / steps as f32);
+                    let tx = (p.x / 128.0).floor() as i32 - origin_tile_x;
+                    let ty = (p.y / 128.0).floor() as i32 - origin_tile_y;
+                    let r = radius_tiles.ceil() as i32;
+                    for dy in -r..=r {
+                        for dx in -r..=r {
+                            if (dx * dx + dy * dy) as f32 <= radius_tiles * radius_tiles {
+                                grid.set_blocked(tx + dx, ty + dy, false);
+                            }
                         }
                     }
                 }
@@ -301,44 +335,46 @@ impl LaneLayout {
     }
 
     pub fn build_mesh(&self, mesh: &mut MeshData, height: &HeightGrid, width: f32) {
-        for pair in self.waypoints.windows(2) {
-            let a = Vec2::new(pair[0].x, pair[0].z);
-            let b = Vec2::new(pair[1].x, pair[1].z);
-            let len = a.distance(b);
-            if len < 1.0 {
-                continue;
-            }
-            let steps = ((len / 64.0).ceil() as usize).max(1);
-            let dir = (b - a) / len;
-            let perp = Vec2::new(-dir.y, dir.x) * (width * 0.5);
-            let color = [96, 91, 80];
+        for lane in &self.lanes {
+            for pair in lane.waypoints.windows(2) {
+                let a = Vec2::new(pair[0].x, pair[0].z);
+                let b = Vec2::new(pair[1].x, pair[1].z);
+                let len = a.distance(b);
+                if len < 1.0 {
+                    continue;
+                }
+                let steps = ((len / 64.0).ceil() as usize).max(1);
+                let dir = (b - a) / len;
+                let perp = Vec2::new(-dir.y, dir.x) * (width * 0.5);
+                let color = [96, 91, 80];
 
-            for i in 0..steps {
-                let t0 = i as f32 / steps as f32;
-                let t1 = (i + 1) as f32 / steps as f32;
-                let p0 = a.lerp(b, t0);
-                let p1 = a.lerp(b, t1);
-                let corners = [
-                    Vec2::new(p0.x + perp.x, p0.y + perp.y),
-                    Vec2::new(p1.x + perp.x, p1.y + perp.y),
-                    Vec2::new(p0.x - perp.x, p0.y - perp.y),
-                    Vec2::new(p1.x - perp.x, p1.y - perp.y),
-                ];
-                let ys = corners.map(|p| height.height_at(p.x, p.y) + 40.0);
-                let v0 = Vec3::new(corners[0].x, ys[0], corners[0].y);
-                let v1 = Vec3::new(corners[1].x, ys[1], corners[1].y);
-                let v2 = Vec3::new(corners[2].x, ys[2], corners[2].y);
-                let v3 = Vec3::new(corners[3].x, ys[3], corners[3].y);
-                mesh.push_triangle(
-                    Vertex::new(v0, color),
-                    Vertex::new(v1, color),
-                    Vertex::new(v2, color),
-                );
-                mesh.push_triangle(
-                    Vertex::new(v2, color),
-                    Vertex::new(v1, color),
-                    Vertex::new(v3, color),
-                );
+                for i in 0..steps {
+                    let t0 = i as f32 / steps as f32;
+                    let t1 = (i + 1) as f32 / steps as f32;
+                    let p0 = a.lerp(b, t0);
+                    let p1 = a.lerp(b, t1);
+                    let corners = [
+                        Vec2::new(p0.x + perp.x, p0.y + perp.y),
+                        Vec2::new(p1.x + perp.x, p1.y + perp.y),
+                        Vec2::new(p0.x - perp.x, p0.y - perp.y),
+                        Vec2::new(p1.x - perp.x, p1.y - perp.y),
+                    ];
+                    let ys = corners.map(|p| height.height_at(p.x, p.y) + 40.0);
+                    let v0 = Vec3::new(corners[0].x, ys[0], corners[0].y);
+                    let v1 = Vec3::new(corners[1].x, ys[1], corners[1].y);
+                    let v2 = Vec3::new(corners[2].x, ys[2], corners[2].y);
+                    let v3 = Vec3::new(corners[3].x, ys[3], corners[3].y);
+                    mesh.push_triangle(
+                        Vertex::new(v0, color),
+                        Vertex::new(v1, color),
+                        Vertex::new(v2, color),
+                    );
+                    mesh.push_triangle(
+                        Vertex::new(v2, color),
+                        Vertex::new(v1, color),
+                        Vertex::new(v3, color),
+                    );
+                }
             }
         }
     }
@@ -370,7 +406,7 @@ pub struct SceneData {
     pub placements: usize,
     pub height: HeightGrid,
     pub collision: WorldCollision,
-    pub lane: LaneLayout,
+    pub map: MapLayout,
     pub npc_spawns: Vec<NpcSpawn>,
     pub player_spawn: Vec3,
 }
@@ -546,9 +582,9 @@ pub fn build(
             collision_grid.block_rect(gx, gy, w, h);
         }
     }
-    let lane = LaneLayout::load(map_path, &height)?;
-    lane.clear_collision(&mut collision_grid, origin_tile_x, origin_tile_y, 4.5);
-    lane.block_structures(&mut collision_grid, origin_tile_x, origin_tile_y);
+    let map = MapLayout::load(map_path, &height)?;
+    map.clear_collision(&mut collision_grid, origin_tile_x, origin_tile_y, 4.5);
+    map.block_structures(&mut collision_grid, origin_tile_x, origin_tile_y);
     let collision = WorldCollision::new(collision_grid, origin_tile_x, origin_tile_y);
 
     let center = Vec3::new(
@@ -567,7 +603,7 @@ pub fn build(
         for loc in &locations.locations {
             let wx = ((*rx as f32 * 64.0) + loc.x as f32 + 0.5) * 128.0;
             let wz = ((*ry as f32 * 64.0) + loc.y as f32 + 0.5) * 128.0;
-            if lane.distance_to_lane(wx, wz) < 5.0 * 128.0 {
+            if map.distance_to_lane(wx, wz) < 5.0 * 128.0 {
                 continue;
             }
             let dx = wx - center.x;
@@ -620,20 +656,29 @@ pub fn build(
         placements += 1;
     }
 
-    lane.build_mesh(&mut model_mesh, &height, 3.0 * 128.0);
+    map.build_mesh(&mut model_mesh, &height, 3.0 * 128.0);
 
-    let spawn_hint = lane.waypoints.get(1).copied().unwrap_or(center);
+    let spawn_hint = map
+        .lanes
+        .first()
+        .and_then(|lane| lane.waypoints.get(1))
+        .copied()
+        .unwrap_or(center);
     let player_spawn = find_walkable_spawn(&height, &collision, spawn_hint, &terrains)?;
     let npc_spawns = build_npc_spawns(&height, &collision, center, player_spawn, &terrains);
 
     tracing::info!(
-        "scene: {} regions, {} terrain verts, {} model verts, {} placements, {} npcs, lane {:?}, center {:?}",
+        "scene: {} regions, {} terrain verts, {} model verts, {} placements, {} npcs, map {:?} lanes {:?}, center {:?}",
         terrains.len(),
         terrain_mesh.vertices.len(),
         model_mesh.vertices.len(),
         placements,
         npc_spawns.len(),
-        lane.name,
+        map.name,
+        map.lanes
+            .iter()
+            .map(|lane| lane.id.as_str())
+            .collect::<Vec<_>>(),
         center
     );
 
@@ -644,7 +689,7 @@ pub fn build(
         placements,
         height,
         collision,
-        lane,
+        map,
         npc_spawns,
         player_spawn,
     })

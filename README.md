@@ -4,11 +4,12 @@ A 5v5 MOBA built on a custom Rust engine, using modern Old School RuneScape
 cache assets for its visual identity. Server-authoritative, data-driven, and
 designed for fast-paced low-team-count matches.
 
-> Status: **M3 first lane**. The cache reader, terrain/location/model/sequence
+> Status: **M3.5 three-lane map**. The cache reader, terrain/location/model/sequence
 > decoders, animated NPCs, a 3x3 Karamja block, A* pathfinding with collision,
-> hold-to-steer, a screen-space HUD, auto-attacks, Q, and a live mid lane with
-> towers, a nexus, minion waves, and a win condition are working. There is no
-> networking or full champion kit yet. See [docs/STATUS.md](docs/STATUS.md).
+> hold-to-steer, a screen-space HUD, auto-attacks, Q, and three lanes with
+> towers, inhibitors, a shielded nexus, minion waves, and a win condition are
+> working. There is no networking or full champion kit yet. See
+> [docs/STATUS.md](docs/STATUS.md).
 
 ## What exists
 
@@ -20,9 +21,10 @@ designed for fast-paced low-team-count matches.
   - sequences, frames, framemaps, and interpolated vertex animation
 - `crates/sim` — deterministic tile grid, collision, and A* pathfinding
 - `crates/tools` — `rift-tools` CLI for cache inspection and OBJ export
-- `crates/client` — native wgpu client: 3x3 Karamja, animated NPCs, lane,
-  towers/nexus, minion waves, click-to-move + hold-to-steer, HUD, auto-attacks, Q
-- `data/maps/karamja_rift/map.json` — lane waypoints, structures, wave timing
+- `crates/client` — native wgpu client: 3x3 Karamja, animated NPCs, three lanes,
+  towers/inhibitors/nexus, minion waves, click-to-move + hold-to-steer, HUD,
+  auto-attacks, Q
+- `data/maps/karamja_rift/map.json` — three lanes, structures, wave timing
 - `docs/reference` — archived Java-era experiments (not built)
 
 ## Requirements
