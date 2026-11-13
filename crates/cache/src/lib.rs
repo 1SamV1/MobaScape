@@ -8,8 +8,10 @@ pub mod locations;
 pub mod model;
 pub mod reference;
 pub mod sequence;
+pub mod sprite;
 pub mod store;
 pub mod terrain;
+pub mod texture;
 pub mod xtea;
 
 pub use config::{NpcDefinition, ObjectDefinition, OverlayDefinition, UnderlayDefinition};
@@ -19,5 +21,7 @@ pub use locations::{Location, Locations};
 pub use model::Model;
 pub use reference::IndexData;
 pub use sequence::{AnimationClip, Frame, Framemap, Sequence};
+pub use sprite::{SpriteDefinition, SpriteFrame};
 pub use store::Cache;
 pub use terrain::{Terrain, Tile};
+pub use texture::TextureDefinition;

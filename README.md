@@ -74,6 +74,8 @@ cargo run -p rift-tools -- find-npc monkey --limit 5
 cargo run -p rift-tools -- sequence 222
 cargo run -p rift-tools -- animate 7744 222
 cargo run -p rift-tools -- model 1715
+cargo run -p rift-tools -- sprite 447 /tmp/wood.png
+cargo run -p rift-tools -- texture 60 /tmp/leaves.png
 
 # Render the 5x5 block and open the hero-select screen
 cargo run -p rift-client

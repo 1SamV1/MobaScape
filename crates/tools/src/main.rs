@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
-use rift_cache::{Cache, Model, ObjectDefinition, Terrain};
+use rift_cache::{Cache, Model, ObjectDefinition, SpriteDefinition, Terrain, TextureDefinition};
 
 #[derive(Parser, Debug)]
 #[command(name = "rift-tools", about = "OSRS cache inspection for Rift")]
@@ -58,6 +58,10 @@ enum Command {
     Model { id: u32 },
     /// Export a model as a Wavefront OBJ.
     ExportObj { id: u32, out: PathBuf },
+    /// Export a sprite from index 8 as a PNG.
+    Sprite { id: u32, out: PathBuf },
+    /// Export the sprite behind a texture definition from index 9 as a PNG.
+    Texture { id: u32, out: PathBuf },
     /// Export terrain height/colour data as an OBJ for quick inspection.
     TerrainObj {
         region_x: u32,
@@ -93,6 +97,8 @@ fn main() -> Result<()> {
         Command::Animate { model, sequence } => animate(&cache, model, sequence)?,
         Command::Model { id } => model(&cache, id)?,
         Command::ExportObj { id, out } => export_obj(&cache, id, &out)?,
+        Command::Sprite { id, out } => sprite(&cache, id, &out)?,
+        Command::Texture { id, out } => texture(&cache, id, &out)?,
         Command::TerrainObj {
             region_x,
             region_y,
@@ -448,6 +454,52 @@ fn export_obj(cache: &Cache, id: u32, out: &PathBuf) -> Result<()> {
         out.display(),
         model.vertex_count,
         model.face_count
+    );
+    Ok(())
+}
+
+fn sprite(cache: &Cache, id: u32, out: &PathBuf) -> Result<()> {
+    let group = cache.group(8, id)?;
+    let sprite = SpriteDefinition::load(id, &group.data)?;
+    let Some(frame) = sprite.frames.first() else {
+        bail!("sprite {id} has no frames");
+    };
+    let image = image::RgbaImage::from_raw(frame.width, frame.height, frame.pixels.clone())
+        .context("sprite frame buffer does not match its dimensions")?;
+    image.save(out)?;
+    println!(
+        "sprite {id}: {} frame(s), first {}x{} -> {}",
+        sprite.frames.len(),
+        frame.width,
+        frame.height,
+        out.display()
+    );
+    Ok(())
+}
+
+fn texture(cache: &Cache, id: u32, out: &PathBuf) -> Result<()> {
+    let files = cache.archive_files_with_ids(9, 0)?;
+    let Some((_, data)) = files.iter().find(|(file_id, _)| *file_id == id) else {
+        bail!("texture {id} not found in index 9 archive 0");
+    };
+    let definition = TextureDefinition::load(id, data)?;
+    let group = cache.group(8, definition.sprite_id)?;
+    let sprite = SpriteDefinition::load(definition.sprite_id, &group.data)?;
+    let Some(frame) = sprite.frames.first() else {
+        bail!(
+            "texture {id}: sprite {} has no frames",
+            definition.sprite_id
+        );
+    };
+    let image = image::RgbaImage::from_raw(frame.width, frame.height, frame.pixels.clone())
+        .context("texture frame buffer does not match its dimensions")?;
+    image.save(out)?;
+    println!(
+        "texture {id}: sprite {} {}x{} -> {}",
+        definition.sprite_id,
+        frame.width,
+        frame.height,
+        out.display()
     );
     Ok(())
 }

@@ -104,8 +104,8 @@ bytes of cumulative size deltas, then interleaved file data.
 | Models type 3 | ✅ | positions, faces, colors, textures, groups, v12 normals |
 | Models type 1 / old | ❌ | return a clear error; add if a needed model uses them |
 | Sequences/frames | ✅ | sequence configs 2/12; frame archives 0; framemaps 1; classic vertex animation |
-| Sprites/icons | ❌ | index 8; next milestone |
-| Textures | ❌ | index 9; deferred until flat-shaded content is complete |
+| Sprites/icons | ✅ | index 8 sprite groups; `rift-tools sprite <id> <out.png>` |
+| Textures | ✅ | index 9 definitions → index 8 sprites; `rift-tools texture <id> <out.png>` |
 | Sounds/music | ❌ | indices 4/6; v1 uses placeholder SFX |
 
 Model type detection: last two bytes are `ff fd` (type 3), `ff fe` (type 2),
