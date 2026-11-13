@@ -1,5 +1,7 @@
 {
   "name": "Monkey",
+  "role": "BALANCED FIGHTER",
+  "tagline": "A nimble all-rounder with a reliable spell kit.",
   "model": 7744,
   "idle": 222,
   "walk": 219,

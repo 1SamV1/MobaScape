@@ -1,5 +1,7 @@
 {
   "name": "Kree'arra Jr.",
+  "role": "RANGED SKIRMISHER",
+  "tagline": "Pokes from range and blinks out of trouble.",
   "model": 28019,
   "idle": 7166,
   "walk": 7167,

@@ -1,5 +1,7 @@
 {
   "name": "JalRek-Jad",
+  "role": "TANK MAGE",
+  "tagline": "Heavy health and punishing spell damage.",
   "model": 33012,
   "idle": 7589,
   "walk": 8857,

@@ -55,6 +55,14 @@ impl ItemShop {
         })
     }
 
+    /// Clear the loadout and close the window for a fresh match.
+    pub fn reset(&mut self) {
+        self.owned = [None; 6];
+        self.open = false;
+        self.selected = Some(0);
+        self.category = 0;
+    }
+
     pub fn is_owned(&self, index: usize) -> bool {
         self.owned.iter().flatten().any(|&i| i == index)
     }

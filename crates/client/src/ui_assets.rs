@@ -6,6 +6,10 @@ use image::imageops::FilterType;
 
 const ATLAS_SIZE: u32 = 1024;
 const ITEM_SIZE: u32 = 128;
+/// Reserved shelf below the item/UI rows and above the font/minimap slots.
+const PORTRAIT_ROW_Y: u32 = 428;
+const PORTRAIT_SIZE: u32 = 256;
+const PORTRAIT_GAP: u32 = 4;
 
 /// A small shelf-packed atlas of OSRS item icons and UI sprites.
 ///
@@ -47,6 +51,7 @@ pub struct UiAtlas {
     pub white_uv: [f32; 4],
     item_uv: HashMap<String, [f32; 4]>,
     ui_uv: HashMap<String, [f32; 4]>,
+    hero_uv: HashMap<String, [f32; 4]>,
     minimap_uv: Option<[f32; 4]>,
     font: Option<FontAtlas>,
 }
@@ -60,6 +65,7 @@ impl UiAtlas {
             white_uv: [0.0; 4],
             item_uv: HashMap::new(),
             ui_uv: HashMap::new(),
+            hero_uv: HashMap::new(),
             minimap_uv: None,
             font: None,
         };
@@ -209,6 +215,23 @@ impl UiAtlas {
         self.font.as_ref()
     }
 
+    /// Upload a baked champion portrait into the reserved portrait shelf.
+    pub fn add_hero_portrait(&mut self, key: &str, image: &image::RgbaImage) {
+        let index = self.hero_uv.len() as u32;
+        let x = 2 + index * (PORTRAIT_SIZE + PORTRAIT_GAP);
+        if x + PORTRAIT_SIZE > ATLAS_SIZE {
+            tracing::warn!("hero portrait {key} does not fit in the UI atlas");
+            return;
+        }
+        let fitted = if image.width() == PORTRAIT_SIZE && image.height() == PORTRAIT_SIZE {
+            image.clone()
+        } else {
+            image::imageops::resize(image, PORTRAIT_SIZE, PORTRAIT_SIZE, FilterType::Lanczos3)
+        };
+        let uv = self.copy(&fitted, x, PORTRAIT_ROW_Y);
+        self.hero_uv.insert(key.to_string(), uv);
+    }
+
     /// Upload the baked terrain minimap into a reserved atlas slot.
     pub fn add_minimap(&mut self, image: &image::RgbaImage) {
         let uv = self.copy(image, 2, 760);
@@ -245,6 +268,10 @@ impl UiAtlas {
 
     pub fn ui_uv(&self, name: &str) -> Option<[f32; 4]> {
         self.ui_uv.get(name).copied()
+    }
+
+    pub fn hero_uv(&self, id: &str) -> Option<[f32; 4]> {
+        self.hero_uv.get(id).copied()
     }
 }
 

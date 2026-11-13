@@ -1,9 +1,11 @@
 mod animated;
 mod champion;
 mod font;
+mod hero_select;
 mod hud;
 mod items;
 mod minimap;
+mod portraits;
 mod renderer;
 mod scene;
 mod terrain_textures;
@@ -26,6 +28,7 @@ use winit::window::{Window, WindowId};
 
 use crate::animated::{AnimatedScene, BuyOutcome, UnitKind};
 use crate::champion::ChampionConfig;
+use crate::hero_select::HeroSelect;
 use crate::hud::{HeroMarker, HoverInfo, Hud, PlayerHud, minimap_world_at};
 use crate::items::{
     ItemShop, delivery_button_at, point_in_rect, shop_button_at, shop_buy_at, shop_card_at,
@@ -55,9 +58,12 @@ struct Cli {
     /// Map design data.
     #[arg(long, default_value = "data/maps/karamja_rift/map.json")]
     map: PathBuf,
-    /// Champion config name (monkey, jad, kree).
-    #[arg(long, default_value = "monkey")]
-    champion: String,
+    /// Champion config name (monkey, jad, kree). Skips the hero-select screen.
+    #[arg(long)]
+    champion: Option<String>,
+    /// Start directly in the match with the default champion.
+    #[arg(long)]
+    skip_hero_select: bool,
     /// Demo: walk to this tile coordinate after one second (x y).
     #[arg(long, num_args = 2, value_names = ["X", "Y"])]
     demo_target: Option<Vec<f32>>,
@@ -120,7 +126,21 @@ fn main() -> Result<()> {
         cli.region_x,
         cli.region_y
     );
-    let champion = ChampionConfig::load(&cli.champion)?;
+    let champions = ChampionConfig::load_all()?;
+    let selected_champion = match cli.champion.as_deref() {
+        Some(name) => champions
+            .iter()
+            .position(|champion| {
+                champion.id.eq_ignore_ascii_case(name) || champion.name.eq_ignore_ascii_case(name)
+            })
+            .with_context(|| format!("unknown champion '{name}'"))?,
+        None => champions
+            .iter()
+            .position(|champion| champion.id == "monkey")
+            .unwrap_or(0),
+    };
+    let champion = champions[selected_champion].clone();
+    let hero_select_open = cli.champion.is_none() && !cli.skip_hero_select && !has_demo_flags(&cli);
     let shop = ItemShop::load()?;
     let scene = scene::build(&cache, cli.region_x, cli.region_y, cli.radius, &cli.map)?;
     let animated = AnimatedScene::new(&cache, &scene, &champion)?;
@@ -152,15 +172,25 @@ fn main() -> Result<()> {
     });
 
     let mut ui_atlas = ui_assets::UiAtlas::load()?;
+    if hero_select_open {
+        for champion in &champions {
+            match portraits::bake_portrait(&cache, champion.model, champion.idle) {
+                Ok(image) => ui_atlas.add_hero_portrait(&champion.id, &image),
+                Err(err) => tracing::warn!("hero portrait {}: {err:#}", champion.id),
+            }
+        }
+    }
     // Bake a real terrain map for the minimap from the scene colours.
     let minimap_image = minimap::render(&scene, animated.minimap_bounds, minimap::MINIMAP_SIZE);
     ui_atlas.add_minimap(&minimap_image);
     let ui_atlas = Arc::new(ui_atlas);
     let mut app = App {
+        cache,
         scene: Some(scene),
         animated: Some(animated),
         height: Some(height),
         collision: Some(collision),
+        hero_select: HeroSelect::new(champions, selected_champion, hero_select_open),
         window: None,
         renderer: None,
         held: HashSet::new(),
@@ -228,10 +258,12 @@ fn main() -> Result<()> {
 }
 
 struct App {
+    cache: Cache,
     scene: Option<SceneData>,
     animated: Option<AnimatedScene>,
     height: Option<HeightGrid>,
     collision: Option<WorldCollision>,
+    hero_select: HeroSelect,
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
     held: HashSet<KeyCode>,
@@ -326,9 +358,13 @@ impl ApplicationHandler for App {
             }
         };
 
+        self.scene = Some(scene);
         renderer.camera.distance = self.initial_distance;
         if let Some(pitch) = self.initial_pitch {
             renderer.camera.pitch = pitch;
+        }
+        if self.hero_select.open {
+            window.set_title("Rift - Choose Your Hero");
         }
         renderer.set_graphics_mode(!self.graphics_classic);
         renderer.set_shadow_mode(parse_shadow_mode(&self.shadow_mode));
@@ -363,8 +399,25 @@ impl ApplicationHandler for App {
                 self.mouse_pos = (position.x, position.y);
             }
             WindowEvent::MouseInput { state, button, .. } => {
-                if button != MouseButton::Left
-                    || self.demo_camp
+                if button != MouseButton::Left {
+                    return;
+                }
+                let (w, h) = self
+                    .renderer
+                    .as_ref()
+                    .map(|r| (r.size.0 as f32, r.size.1 as f32))
+                    .unwrap_or((1280.0, 720.0));
+                if self.hero_select.open {
+                    if state == ElementState::Pressed {
+                        if let Some(index) = hero_select::card_at(w, h, self.mouse_pos) {
+                            self.hero_select.selected = index;
+                        } else if hero_select::confirm_at(w, h, self.mouse_pos) {
+                            self.start_match();
+                        }
+                    }
+                    return;
+                }
+                if self.demo_camp
                     || self.demo_combat
                     || self.demo_kit
                     || self.demo_shop
@@ -373,11 +426,6 @@ impl ApplicationHandler for App {
                 {
                     return;
                 }
-                let (w, h) = self
-                    .renderer
-                    .as_ref()
-                    .map(|r| (r.size.0 as f32, r.size.1 as f32))
-                    .unwrap_or((1280.0, 720.0));
                 if state == ElementState::Pressed && self.shop.open {
                     if shop_close_at(w, h, self.mouse_pos) {
                         self.shop.open = false;
@@ -451,6 +499,24 @@ impl ApplicationHandler for App {
                 let PhysicalKey::Code(code) = event.physical_key else {
                     return;
                 };
+
+                if self.hero_select.open {
+                    if event.state == ElementState::Pressed {
+                        match code {
+                            KeyCode::Escape => event_loop.exit(),
+                            KeyCode::ArrowLeft | KeyCode::KeyA => self.hero_select.cycle(-1),
+                            KeyCode::ArrowRight | KeyCode::KeyD => self.hero_select.cycle(1),
+                            KeyCode::Digit1 => self.hero_select.selected = 0,
+                            KeyCode::Digit2 => self.hero_select.selected = 1,
+                            KeyCode::Digit3 => self.hero_select.selected = 2,
+                            KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Space => {
+                                self.start_match()
+                            }
+                            _ => {}
+                        }
+                    }
+                    return;
+                }
 
                 if event.state == ElementState::Pressed {
                     self.held.insert(code);
@@ -543,6 +609,13 @@ impl App {
         let dt = (now - self.last_frame).as_secs_f32().min(0.1);
         self.last_frame = now;
         self.app_time += dt;
+
+        if self.hero_select.open {
+            if self.renderer.is_some() {
+                self.tick_hero_select(dt);
+            }
+            return;
+        }
 
         if self.demo_shop {
             self.demo_shop_timer += dt;
@@ -1220,6 +1293,111 @@ impl App {
         self.update_camera(dt);
     }
 
+    /// Render the paused world behind the champion picker.
+    fn tick_hero_select(&mut self, dt: f32) {
+        self.hero_select.time += dt;
+        let (w, h) = self
+            .renderer
+            .as_ref()
+            .map(|r| (r.size.0 as f32, r.size.1 as f32))
+            .unwrap_or((1280.0, 720.0));
+        self.hero_select.hover = hero_select::card_at(w, h, self.mouse_pos);
+
+        if let (Some(renderer), Some(animated), Some(height), Some(collision)) = (
+            self.renderer.as_mut(),
+            self.animated.as_mut(),
+            self.height.as_ref(),
+            self.collision.as_ref(),
+        ) {
+            let eye = renderer.camera.eye();
+            let forward = (eye - renderer.camera.target).normalize_or_zero();
+            let right = forward.cross(Vec3::Y).normalize_or_zero();
+            let up = right.cross(forward).normalize_or_zero();
+            animated.refresh_visibility(dt.min(0.05), collision);
+            animated.prepare_render(height, right, up, forward);
+            renderer.set_dynamic_mesh(&animated.vertices, &animated.indices);
+            renderer.set_shadow_mesh(&animated.shadow_vertices, &animated.shadow_indices);
+            renderer.set_caster_mesh(&animated.caster_vertices, &animated.caster_indices);
+            renderer.set_lights(&animated.lights());
+            renderer.set_time(self.app_time);
+            renderer.set_vision(animated.player_pos(), 1500.0);
+            animated.visibility_dirty = false;
+            if self.follow {
+                renderer.camera.target = animated.player_pos() + Vec3::Y * 140.0;
+                renderer.update_camera();
+            }
+        }
+
+        self.hud
+            .build_hero_select(w, h, &self.hero_select, self.mouse_pos);
+        if let Some(renderer) = self.renderer.as_mut() {
+            renderer.set_hud_mesh(&self.hud.vertices, &self.hud.indices);
+        }
+    }
+
+    /// Lock in the highlighted champion and start a clean match.
+    fn start_match(&mut self) {
+        let index = self.hero_select.selected;
+        let Some(champion) = self.hero_select.champions.get(index).cloned() else {
+            return;
+        };
+        let Some(scene) = self.scene.as_ref() else {
+            return;
+        };
+        let animated = match AnimatedScene::new(&self.cache, scene, &champion) {
+            Ok(animated) => animated,
+            Err(err) => {
+                tracing::error!("failed to start match as {}: {err:#}", champion.name);
+                return;
+            }
+        };
+
+        self.animated = Some(animated);
+        self.hero_select.open = false;
+        self.hero_select.hover = None;
+        self.shop.reset();
+        self.event_log = vec![
+            format!("{} READY", champion.name.to_uppercase()),
+            "PRESS B FOR SHOP".to_string(),
+            "WAVE INBOUND".to_string(),
+        ];
+        self.last_level = 1;
+        self.last_buff_label = None;
+        self.last_inhib0 = (3, 3);
+        self.last_inhib1 = (3, 3);
+        self.lane_log_timer = 0.0;
+        self.title_timer = 0.0;
+        self.title_frames = 0;
+        self.app_time = 0.0;
+        self.lmb_down = false;
+        self.lmb_press = None;
+        self.held.clear();
+        self.follow = true;
+        self.last_frame = Instant::now();
+
+        if let (Some(renderer), Some(animated)) = (self.renderer.as_mut(), self.animated.as_ref()) {
+            renderer.camera.target = animated.player_pos() + Vec3::Y * 140.0;
+            renderer.camera.distance = self.initial_distance;
+            renderer.update_camera();
+        }
+        if let Some(window) = self.window.as_ref() {
+            window.set_title(&format!("Rift - Karamja | {}", champion.name));
+        }
+        tracing::info!(
+            "hero select: locked in {} ({}) at tile {:.0},{:.0}",
+            champion.name,
+            champion.id,
+            self.animated
+                .as_ref()
+                .map(|animated| animated.player_pos().x / 128.0)
+                .unwrap_or(0.0),
+            self.animated
+                .as_ref()
+                .map(|animated| animated.player_pos().z / 128.0)
+                .unwrap_or(0.0)
+        );
+    }
+
     fn click_minimap(&mut self) -> bool {
         let Some(renderer) = self.renderer.as_mut() else {
             return false;
@@ -1501,6 +1679,21 @@ impl App {
             renderer.update_camera();
         }
     }
+}
+
+/// Dev demos and explicit spawn requests boot straight into the match instead
+/// of stopping at the champion picker.
+fn has_demo_flags(cli: &Cli) -> bool {
+    cli.demo_target.is_some()
+        || cli.spawn.is_some()
+        || cli.demo_combat
+        || cli.demo_camp
+        || cli.demo_watchtower
+        || cli.demo_delivery
+        || cli.demo_kit
+        || cli.demo_shop
+        || cli.demo_base
+        || cli.demo_inhibitor
 }
 
 fn log_event(events: &mut Vec<String>, message: String) {
