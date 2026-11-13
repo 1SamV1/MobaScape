@@ -1169,12 +1169,24 @@ pub fn build(
 
     // Sort scenery by distance to the player so the near field looks dense and
     // the 900-model budget is spent where it is visible.
+    let base_keep_clear: Vec<Vec3> = map
+        .camps
+        .iter()
+        .map(|camp| camp.pos)
+        .chain(map.structures.iter().map(|structure| structure.pos))
+        .collect();
     let mut candidates = Vec::new();
     for (rx, ry, locations) in &all_locations {
         for loc in &locations.locations {
             let wx = ((*rx as f32 * 64.0) + loc.x as f32 + 0.5) * 128.0;
             let wz = ((*ry as f32 * 64.0) + loc.y as f32 + 0.5) * 128.0;
             if map.distance_to_lane(wx, wz) < 6.5 * 128.0 {
+                continue;
+            }
+            if base_keep_clear
+                .iter()
+                .any(|p| p.distance(Vec3::new(wx, p.y, wz)) < 6.0 * 128.0)
+            {
                 continue;
             }
             let dx = wx - center.x;
@@ -1244,6 +1256,12 @@ pub fn build(
     // Biome pocket scenery: real OSRS objects taken from each pocket's
     // source region and transplanted into the map.
     // ------------------------------------------------------------------
+    let keep_clear: Vec<Vec3> = map
+        .camps
+        .iter()
+        .map(|camp| camp.pos)
+        .chain(map.structures.iter().map(|structure| structure.pos))
+        .collect();
     for biome in &map.biomes {
         let Some((_, locations)) = pocket_data.get(&biome.id) else {
             continue;
@@ -1315,8 +1333,15 @@ pub fn build(
                 continue;
             }
             // Pockets can overlap a lane; never drop a door or a wall in the
-            // middle of the road.
+            // middle of the road, and keep camps/towers free of props so a
+            // chair never ends up glued to a jungle creature.
             if map.distance_to_lane(wx, wz) < 6.5 * 128.0 {
+                continue;
+            }
+            if keep_clear
+                .iter()
+                .any(|p| p.distance(Vec3::new(wx, p.y, wz)) < 6.0 * 128.0)
+            {
                 continue;
             }
             let base = Vec3::new(wx, height.height_at(wx, wz), wz);

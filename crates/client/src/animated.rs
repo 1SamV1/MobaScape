@@ -2063,7 +2063,7 @@ impl AnimatedScene {
         camera_forward: Vec3,
     ) {
         self.rebuild_shadows(height);
-        self.rebuild_mesh(camera_right, camera_up, camera_forward);
+        self.rebuild_mesh(height, camera_right, camera_up, camera_forward);
     }
 
     /// True when a world position is inside the team's line of sight.
@@ -2357,7 +2357,13 @@ impl AnimatedScene {
         lights
     }
 
-    fn rebuild_mesh(&mut self, camera_right: Vec3, camera_up: Vec3, camera_forward: Vec3) {
+    fn rebuild_mesh(
+        &mut self,
+        height: &HeightGrid,
+        camera_right: Vec3,
+        camera_up: Vec3,
+        camera_forward: Vec3,
+    ) {
         self.vertices.clear();
         self.indices.clear();
         // The sun-shadow caster mesh is rebuilt every frame as well. Without
@@ -2438,7 +2444,7 @@ impl AnimatedScene {
 
         let player = &self.units[self.player_index];
         if player.health > 0.0 {
-            append_ring(self, player.pos, player.pos.y + 3.0, 95.0, [90, 180, 255]);
+            append_ring(self, height, player.pos, 95.0, [90, 180, 255]);
         }
 
         let structure_rings = self
@@ -2454,8 +2460,8 @@ impl AnimatedScene {
         for (pos, team) in structure_rings {
             append_ring(
                 self,
+                height,
                 pos,
-                pos.y + 4.0,
                 140.0,
                 if team == 0 {
                     [90, 160, 255]
@@ -2472,11 +2478,11 @@ impl AnimatedScene {
             .map(|u| u.pos)
             .collect::<Vec<_>>();
         for pos in camp_rings {
-            append_ring(self, pos, pos.y + 4.0, 120.0, [230, 180, 70]);
+            append_ring(self, height, pos, 120.0, [230, 180, 70]);
         }
         if !self.delivery_pending.is_empty() {
             if let Some(chest) = self.delivery_chest.and_then(|index| self.units.get(index)) {
-                append_ring(self, chest.pos, chest.pos.y + 4.0, 150.0, [255, 210, 80]);
+                append_ring(self, height, chest.pos, 150.0, [255, 210, 80]);
             }
         }
 
@@ -2489,18 +2495,18 @@ impl AnimatedScene {
             })
             .collect::<Vec<_>>();
         for (pos, radius, color) in effects {
-            append_ring(self, pos, pos.y + 6.0, radius, color);
+            append_ring(self, height, pos, radius, color);
         }
 
         let shield_pos = self.units[self.player_index].pos;
         let shield = self.units[self.player_index].shield;
         if shield > 0.0 {
-            append_ring(self, shield_pos, shield_pos.y + 5.0, 120.0, [90, 255, 140]);
+            append_ring(self, height, shield_pos, 120.0, [90, 255, 140]);
         }
 
         if let Some((marker, remaining)) = self.marker {
             let pulse = (remaining * 6.0).sin().abs() * 0.25 + 0.75;
-            append_ring(self, marker, marker.y + 5.0, 55.0 * pulse, [120, 255, 120]);
+            append_ring(self, height, marker, 55.0 * pulse, [120, 255, 120]);
         }
     }
 }
@@ -2809,25 +2815,36 @@ fn append_billboard(
     );
 }
 
-fn append_ring(scene: &mut AnimatedScene, center: Vec3, y: f32, radius: f32, color: [u8; 3]) {
+fn append_ring(
+    scene: &mut AnimatedScene,
+    height: &HeightGrid,
+    center: Vec3,
+    radius: f32,
+    color: [u8; 3],
+) {
     let segments = 32u32;
     let base = scene.vertices.len() as u32;
+    // Sample the terrain per vertex so the band hugs slopes instead of
+    // slicing through them.
+    let lift = |x: f32, z: f32| height.height_at(x, z) + 6.0;
     for i in 0..segments {
         let a = i as f32 / segments as f32 * std::f32::consts::TAU;
         let b = (i + 1) as f32 / segments as f32 * std::f32::consts::TAU;
         let inner = 0.78;
-        let p0 = Vec3::new(center.x + a.cos() * radius, y, center.z + a.sin() * radius);
-        let p1 = Vec3::new(center.x + b.cos() * radius, y, center.z + b.sin() * radius);
-        let p2 = Vec3::new(
+        let (ax, az) = (center.x + a.cos() * radius, center.z + a.sin() * radius);
+        let (bx, bz) = (center.x + b.cos() * radius, center.z + b.sin() * radius);
+        let (cx, cz) = (
             center.x + a.cos() * radius * inner,
-            y,
             center.z + a.sin() * radius * inner,
         );
-        let p3 = Vec3::new(
+        let (dx, dz) = (
             center.x + b.cos() * radius * inner,
-            y,
             center.z + b.sin() * radius * inner,
         );
+        let p0 = Vec3::new(ax, lift(ax, az), az);
+        let p1 = Vec3::new(bx, lift(bx, bz), bz);
+        let p2 = Vec3::new(cx, lift(cx, cz), cz);
+        let p3 = Vec3::new(dx, lift(dx, dz), dz);
         scene.vertices.push(SceneVertex::unlit(p0, color));
         scene.vertices.push(SceneVertex::unlit(p1, color));
         scene.vertices.push(SceneVertex::unlit(p2, color));

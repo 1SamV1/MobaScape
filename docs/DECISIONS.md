@@ -479,3 +479,18 @@ world units, independent of brush and line of sight; their minimap dots follow
 the same rule. Two camps had been configured with model 16238, which is a
 table prop rather than a creature, and were swapped to General Graardor Jr.
 (27660) and Zilyana Jr. (27989).
+
+
+## ADR-037 — Terrain-hugging selection rings and prop clearings
+
+**Status:** accepted for M5.14.
+
+Selection rings, camp rings, structure rings and effect rings were flat
+annuli at a fixed height, so they sliced through slopes. `append_ring` now
+samples the height grid per vertex (lifted 6 units) and rebuilds the ring as a
+terrain-following band.
+
+Scenery props are also kept six tiles clear of every camp and structure, in
+both the base region and the biome pockets. This is what glued a pocket chair
+to the Graardor camp: the dark-magic pocket (region 48,52) contains chairs,
+and one landed on the camp tile.

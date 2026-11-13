@@ -1,6 +1,6 @@
 # Status
 
-Last updated: M5.13 camp visibility + creature models, 2026-11-13.
+Last updated: M5.14 terrain-hugging rings, prop clearings, 2026-11-13.
 
 ## Working
 
@@ -65,6 +65,9 @@ Last updated: M5.13 camp visibility + creature models, 2026-11-13.
 - Collision: only rendered props block movement (base scenery, pocket props,
   lane trees and ruins), so there are no invisible walls; the pathfinder snaps
   start/goal up to 20 tiles so a hero pushed onto a blocked tile can escape.
+- Selection/camp/structure rings sample the height grid per vertex, so the
+  bands follow slopes instead of clipping through them. Scenery props keep six
+  tiles clear of every camp and structure.
 - Shop: purchases work anywhere (the fountain still heals and respawns).
   Remote purchases go to the storage chest beside the team spawn; a HUD button
   dispatches the flying Armadylean guard, which delivers the stored items to
