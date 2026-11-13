@@ -26,6 +26,10 @@ pub enum UnitKind {
     Nexus,
     Camp,
     Watchtower,
+    /// Chest near the team spawn that holds remotely purchased items.
+    StorageChest,
+    /// Flying Armadylean courier that delivers stored purchases.
+    DeliveryGuard,
 }
 
 impl UnitKind {
@@ -93,6 +97,22 @@ pub struct AnimatedUnit {
     pub camp_wander_timer: f32,
     /// Range at which a watchtower acquires its first target.
     pub lock_range: f32,
+}
+
+/// What the shop does with a purchase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuyOutcome {
+    /// The hero was at the fountain, so the item went straight to the bag.
+    Delivered,
+    /// The hero was away from base, so the item is waiting in the chest.
+    Stored,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeliveryState {
+    Idle,
+    FlyingToHero,
+    Returning,
 }
 
 #[derive(Clone, Copy)]
@@ -207,6 +227,13 @@ pub struct AnimatedScene {
     pub brush: Vec<(f32, f32, f32, f32)>,
     /// Biome pockets the map is built from, used for the HUD label.
     pub biomes: Vec<crate::scene::BiomePocket>,
+    /// Items bought away from base, waiting in the chest.
+    pub delivery_pending: Vec<(usize, ItemConfig)>,
+    pub delivery_state: DeliveryState,
+    delivery_guard: Option<usize>,
+    delivery_chest: Option<usize>,
+    delivery_home: Vec3,
+    delivered_queue: Vec<usize>,
     pub vision_origin: (i32, i32),
     pub team_buffs: [Option<TeamBuff>; 2],
     pub champion_name: String,
@@ -380,6 +407,54 @@ impl AnimatedScene {
             units.push(unit);
         }
 
+        // Storage chest and the flying Armadylean courier at the team base.
+        let chest_hint = scene.player_spawn + Vec3::new(4.0 * 128.0, 0.0, 13.0 * 128.0);
+        let chest_pos = Vec3::new(
+            chest_hint.x,
+            scene.height.height_at(chest_hint.x, chest_hint.z),
+            chest_hint.z,
+        );
+        let chest_index = units.len();
+        units.push(load_unit(
+            cache,
+            1249,
+            None,
+            None,
+            chest_pos,
+            1.3,
+            UnitKind::StorageChest,
+            0,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            90.0,
+            180.0,
+            Vec::new(),
+        )?);
+        tracing::info!("delivery: chest at {:?}", chest_pos);
+        let guard_home = chest_pos + Vec3::new(2.6 * 128.0, 0.0, 0.0);
+        let guard_index = units.len();
+        units.push(load_unit(
+            cache,
+            28019,
+            Some(7166),
+            Some(7167),
+            guard_home,
+            0.85,
+            UnitKind::DeliveryGuard,
+            0,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            1100.0,
+            80.0,
+            240.0,
+            Vec::new(),
+        )?);
+
         let nexus_positions = [
             find_nexus(&units, 0).unwrap_or(scene.player_spawn),
             find_nexus(&units, 1).unwrap_or(scene.player_spawn),
@@ -464,6 +539,12 @@ impl AnimatedScene {
             visibility_dirty: true,
             brush: scene.map.brush.clone(),
             biomes: scene.map.biomes.clone(),
+            delivery_pending: Vec::new(),
+            delivery_state: DeliveryState::Idle,
+            delivery_guard: Some(guard_index),
+            delivery_chest: Some(chest_index),
+            delivery_home: guard_home,
+            delivered_queue: Vec::new(),
             vision_origin: (vision_origin_x, vision_origin_y),
             team_buffs: [None, None],
             champion_name: champion.name.clone(),
@@ -585,19 +666,34 @@ impl AnimatedScene {
 
     /// Buy an item at the fountain. The client applies stats locally for the
     /// prototype; the authoritative server will own this transaction later.
-    pub fn buy_item(&mut self, item: &ItemConfig) -> Result<(), &'static str> {
+    /// Buy an item. At the fountain it goes straight into the bag; anywhere
+    /// else it is stored in the chest and must be delivered by the guard.
+    pub fn buy_item(
+        &mut self,
+        shop_index: usize,
+        item: &ItemConfig,
+    ) -> Result<BuyOutcome, &'static str> {
         let pi = self.player_index;
         let player = &mut self.units[pi];
         if player.health <= 0.0 {
             return Err("dead");
         }
-        if player.pos.distance(self.player_spawn) > 900.0 {
-            return Err("out of fountain range");
-        }
         if player.gold < item.cost {
             return Err("not enough gold");
         }
         player.gold -= item.cost;
+        let at_base = player.pos.distance(self.player_spawn) <= 900.0;
+        if at_base {
+            self.apply_item(item);
+            Ok(BuyOutcome::Delivered)
+        } else {
+            self.delivery_pending.push((shop_index, item.clone()));
+            Ok(BuyOutcome::Stored)
+        }
+    }
+
+    fn apply_item(&mut self, item: &ItemConfig) {
+        let player = &mut self.units[self.player_index];
         player.attack_damage += item.damage;
         if item.health > 0.0 {
             player.max_health += item.health;
@@ -609,7 +705,101 @@ impl AnimatedScene {
         }
         player.speed += item.speed;
         player.ability_power += item.ability;
-        Ok(())
+    }
+
+    /// Send the guard to fetch the stored items.
+    pub fn call_delivery(&mut self) -> bool {
+        if self.delivery_pending.is_empty() || self.delivery_state != DeliveryState::Idle {
+            return false;
+        }
+        self.delivery_state = DeliveryState::FlyingToHero;
+        true
+    }
+
+    /// Shop indices of items the guard has just handed over.
+    pub fn take_delivered(&mut self) -> Vec<usize> {
+        std::mem::take(&mut self.delivered_queue)
+    }
+
+    pub fn delivery_count(&self) -> usize {
+        self.delivery_pending.len()
+    }
+
+    fn deliver_pending(&mut self) {
+        let pending = std::mem::take(&mut self.delivery_pending);
+        if pending.is_empty() {
+            return;
+        }
+        for (index, item) in pending {
+            self.apply_item(&item);
+            self.delivered_queue.push(index);
+        }
+        let pos = self.player_pos();
+        self.effects.push(Effect {
+            pos,
+            radius: 240.0,
+            remaining: 1.2,
+            duration: 1.2,
+            color: [255, 220, 90],
+        });
+    }
+
+    fn update_delivery(&mut self, dt: f32, height: &HeightGrid) {
+        let Some(guard_index) = self.delivery_guard else {
+            return;
+        };
+        let player_pos = self.player_pos();
+        let home = self.delivery_home;
+        match self.delivery_state {
+            DeliveryState::Idle => {
+                let ground = height.height_at(home.x, home.z);
+                let guard = &mut self.units[guard_index];
+                guard.pos = Vec3::new(home.x, ground + 190.0, home.z);
+                guard.moving = false;
+            }
+            DeliveryState::FlyingToHero => {
+                let target = Vec3::new(player_pos.x, player_pos.y + 150.0, player_pos.z);
+                let guard_pos = self.units[guard_index].pos;
+                let delta = target - guard_pos;
+                let distance = delta.length();
+                let step = 1100.0 * dt;
+                if distance <= step.max(170.0) {
+                    self.units[guard_index].pos = target;
+                    self.units[guard_index].moving = false;
+                    self.deliver_pending();
+                    self.delivery_state = DeliveryState::Returning;
+                } else {
+                    let dir = delta / distance;
+                    let guard = &mut self.units[guard_index];
+                    guard.pos += dir * step;
+                    guard.yaw = dir.x.atan2(dir.z);
+                    guard.moving = true;
+                }
+                let guard = &mut self.units[guard_index];
+                let floor = height.height_at(guard.pos.x, guard.pos.z) + 190.0;
+                guard.pos.y = guard.pos.y.max(floor);
+            }
+            DeliveryState::Returning => {
+                let ground = height.height_at(home.x, home.z);
+                let target = Vec3::new(home.x, ground + 190.0, home.z);
+                let guard_pos = self.units[guard_index].pos;
+                let delta = target - guard_pos;
+                let distance = delta.length();
+                let step = 1100.0 * dt;
+                if distance <= step.max(40.0) {
+                    let guard = &mut self.units[guard_index];
+                    guard.pos = target;
+                    guard.moving = false;
+                    self.delivery_state = DeliveryState::Idle;
+                } else {
+                    let dir = delta / distance;
+                    let guard = &mut self.units[guard_index];
+                    guard.pos += dir * step;
+                    guard.yaw = dir.x.atan2(dir.z);
+                    guard.moving = true;
+                }
+            }
+        }
     }
 
     pub fn nexus_health(&self, team: u8) -> Option<(f32, f32)> {
@@ -1010,6 +1200,8 @@ impl AnimatedScene {
                     "RED WATCHTOWER".to_string()
                 }
             }
+            UnitKind::StorageChest => "ITEM STORAGE".to_string(),
+            UnitKind::DeliveryGuard => "ARMADYLEAN GUARD".to_string(),
         };
         let level = match unit.kind {
             UnitKind::Player => unit.level,
@@ -1029,6 +1221,10 @@ impl AnimatedScene {
             UnitKind::Ambient => "A PASSER BY OF THE RIFT.",
             UnitKind::Watchtower => {
                 "FIRES A SLOW BOLT AT THE FIRST ENEMY IN RANGE AND KEEPS FIRING UNTIL IT LEAVES."
+            }
+            UnitKind::StorageChest => "REMOTE PURCHASES WAIT HERE. CALL THE GUARD TO DELIVER THEM.",
+            UnitKind::DeliveryGuard => {
+                "FLIES YOUR STORED ITEMS OUT TO YOU, THEN RETURNS TO THE CHEST."
             }
         };
         Some((name, level, description))
@@ -1148,6 +1344,7 @@ impl AnimatedScene {
         }
 
         self.update_player(dt, height, collision);
+        self.update_delivery(dt, height);
 
         let unit_count = self.units.len();
         for i in 0..unit_count {
@@ -1527,7 +1724,12 @@ impl AnimatedScene {
         let pos = self.units[index].pos;
         let mut best: Option<(usize, f32)> = None;
         for (i, unit) in self.units.iter().enumerate() {
-            if i == index || unit.team == team || unit.team == 2 || unit.health <= 0.0 {
+            if i == index
+                || unit.team == team
+                || unit.team == 2
+                || unit.health <= 0.0
+                || matches!(unit.kind, UnitKind::DeliveryGuard | UnitKind::StorageChest)
+            {
                 continue;
             }
             if unit.kind == UnitKind::Nexus && !self.nexus_vulnerable(unit.team) {
@@ -1609,6 +1811,12 @@ impl AnimatedScene {
         aggressor: Option<usize>,
     ) {
         if index >= self.units.len() {
+            return;
+        }
+        if matches!(
+            self.units[index].kind,
+            UnitKind::DeliveryGuard | UnitKind::StorageChest
+        ) {
             return;
         }
         if self.units[index].kind == UnitKind::Nexus
@@ -2157,7 +2365,11 @@ impl AnimatedScene {
         let bars = self
             .units
             .iter()
-            .filter(|unit| unit.health > 0.0 && (unit.team != 2 || unit.kind == UnitKind::Camp))
+            .filter(|unit| {
+                unit.health > 0.0
+                    && (unit.team != 2 || unit.kind == UnitKind::Camp)
+                    && !matches!(unit.kind, UnitKind::DeliveryGuard | UnitKind::StorageChest)
+            })
             .map(|unit| {
                 let width = match unit.kind {
                     UnitKind::Nexus => 190.0,
@@ -2242,6 +2454,11 @@ impl AnimatedScene {
             .collect::<Vec<_>>();
         for pos in camp_rings {
             append_ring(self, pos, pos.y + 4.0, 120.0, [230, 180, 70]);
+        }
+        if !self.delivery_pending.is_empty() {
+            if let Some(chest) = self.delivery_chest.and_then(|index| self.units.get(index)) {
+                append_ring(self, chest.pos, chest.pos.y + 4.0, 150.0, [255, 210, 80]);
+            }
         }
 
         let effects = self

@@ -164,3 +164,11 @@ Fog is not authored in the map. The renderer receives the hero position and a
 1500 world unit vision radius every frame and darkens the scene by horizontal
 distance in `scene.wgsl`. The visibility grid (used for unit/projectile
 culling and the minimap) is still built from team line of sight.
+
+
+## Delivery
+
+The storage chest and the Armadylean guard are runtime units spawned by the
+client next to `player_spawn` (chest at +4/+13 tiles, guard at +2.6 tiles).
+They are not authored in `map.json`; only their models are fixed (chest 1249,
+guard 28019).

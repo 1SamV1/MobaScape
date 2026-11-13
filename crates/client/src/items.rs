@@ -112,6 +112,15 @@ impl ItemShop {
     }
 }
 
+/// HUD button that calls the Armadylean delivery guard.
+pub fn delivery_button_rect(width: f32, height: f32) -> (f32, f32, f32, f32) {
+    (width - 338.0, height - 132.0, 160.0, 24.0)
+}
+
+pub fn delivery_button_at(width: f32, height: f32, cursor: (f64, f64)) -> bool {
+    point_in_rect(delivery_button_rect(width, height), cursor)
+}
+
 pub fn point_in_rect(rect: (f32, f32, f32, f32), cursor: (f64, f64)) -> bool {
     let (x, y, w, h) = rect;
     let mx = cursor.0 as f32;

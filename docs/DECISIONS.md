@@ -445,3 +445,24 @@ player can see is what blocks. Pathfinding also snaps the start and goal up to
 The fountain-only purchase rule was removed. The shop opens with `B` and any
 affordable item can be bought anywhere; the fountain still heals and is still
 the respawn point.
+
+
+## ADR-035 — Remote purchases and the Armadylean delivery guard
+
+**Status:** accepted for M5.11.
+
+Buying away from the fountain no longer fails. The shop takes the gold and the
+item is stored in a chest next to the team spawn instead of the bag. The chest
+is a real OSRS chest model (1249) with a gold ring while anything is waiting.
+
+A HUD button next to the shop button calls the Armadylean guard — an aviansie
+using the Kree'arra Jr. model (28019), since the full Armadylean guard is not
+present in this cache build. The guard flies from its post beside the chest to
+the hero at 1100 u/s, hovers, hands over every stored item (applying the stats
+at that moment), plays a delivery ring and flies back to its post. While it is
+out the button reads `GUARD IN FLIGHT`, then `GUARD RETURNING`.
+
+The shop shows `IN TRANSIT` on items that are waiting in the chest, and the
+inventory limit counts pending items so a player cannot over-order past six
+slots. Couriers and the chest are not targetable, cannot be damaged, do not
+block clicks and never show health bars.

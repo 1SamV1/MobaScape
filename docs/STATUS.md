@@ -1,6 +1,6 @@
 # Status
 
-Last updated: M5.10 collision consistency, 2026-11-13.
+Last updated: M5.11 remote purchases + delivery guard, 2026-11-13.
 
 ## Working
 
@@ -62,6 +62,12 @@ Last updated: M5.10 collision consistency, 2026-11-13.
   lane trees and ruins), so there are no invisible walls; the pathfinder snaps
   start/goal up to 20 tiles so a hero pushed onto a blocked tile can escape.
 - Shop: purchases work anywhere (the fountain still heals and respawns).
+  Remote purchases go to the storage chest beside the team spawn; a HUD button
+  dispatches the flying Armadylean guard, which delivers the stored items to
+  the hero and returns to its post. The shop marks waiting items `IN TRANSIT`.
+- Delivery: chest model 1249 with a gold ring while loaded; guard model 28019
+  (Kree'arra Jr., the closest Armadylean model in this cache) at 1100 u/s.
+  `--demo-delivery` verifies buy-away-from-base -> dispatch -> handover.
 - Lane: three-minion waves per lane every 25 s; minion AI, tower targeting,
   inhibitor-gated nexus, victory/defeat.
 - Inhibitors: destroyed inhibitors respawn after 120 s. While an enemy

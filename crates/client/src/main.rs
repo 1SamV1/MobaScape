@@ -24,12 +24,12 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
-use crate::animated::{AnimatedScene, UnitKind};
+use crate::animated::{AnimatedScene, BuyOutcome, UnitKind};
 use crate::champion::ChampionConfig;
 use crate::hud::{HeroMarker, HoverInfo, Hud, PlayerHud, minimap_world_at};
 use crate::items::{
-    ItemShop, point_in_rect, shop_button_at, shop_buy_at, shop_card_at, shop_card_rect,
-    shop_category_at, shop_close_at, shop_sell_at, shop_window_rect,
+    ItemShop, delivery_button_at, point_in_rect, shop_button_at, shop_buy_at, shop_card_at,
+    shop_card_rect, shop_category_at, shop_close_at, shop_sell_at, shop_window_rect,
 };
 use crate::renderer::{Camera, Renderer};
 use crate::scene::{CampBuff, HeightGrid, SceneData, WorldCollision};
@@ -73,6 +73,9 @@ struct Cli {
     /// Demo: verify watchtower aggro, lock range and target reset.
     #[arg(long)]
     demo_watchtower: bool,
+    /// Demo: buy away from base, call the guard and verify delivery.
+    #[arg(long)]
+    demo_delivery: bool,
     /// Demo: cast W/E/R and print the resulting player stats.
     #[arg(long)]
     demo_kit: bool,
@@ -176,6 +179,9 @@ fn main() -> Result<()> {
         demo_watchtower_timer: 0.0,
         demo_watchtower_stage: 0,
         demo_watchtower_target: None,
+        demo_delivery: cli.demo_delivery,
+        demo_delivery_timer: 0.0,
+        demo_delivery_stage: 0,
         demo_kit: cli.demo_kit,
         demo_kit_timer: 0.0,
         demo_kit_stage: 0,
@@ -244,6 +250,9 @@ struct App {
     demo_watchtower_timer: f32,
     demo_watchtower_stage: u8,
     demo_watchtower_target: Option<usize>,
+    demo_delivery: bool,
+    demo_delivery_timer: f32,
+    demo_delivery_stage: u8,
     demo_kit: bool,
     demo_kit_timer: f32,
     demo_kit_stage: u8,
@@ -399,6 +408,18 @@ impl ApplicationHandler for App {
                         return;
                     }
                     self.shop.open = false;
+                    return;
+                }
+                if state == ElementState::Pressed && delivery_button_at(w, h, self.mouse_pos) {
+                    if let Some(animated) = self.animated.as_mut() {
+                        if animated.call_delivery() {
+                            log_event(
+                                &mut self.event_log,
+                                "ARMADYLEAN GUARD DISPATCHED".to_string(),
+                            );
+                            tracing::info!("delivery: guard dispatched");
+                        }
+                    }
                     return;
                 }
                 if state == ElementState::Pressed
@@ -755,6 +776,42 @@ impl App {
                     self.demo_camp_done = true;
                 }
             }
+            if self.demo_delivery {
+                self.demo_delivery_timer += dt;
+                if self.demo_delivery_stage == 0 && self.demo_delivery_timer >= 1.0 {
+                    let away = animated.player_pos() + Vec3::new(26.0 * 128.0, 0.0, 0.0);
+                    animated.teleport_player(away);
+                    animated.debug_grant_gold(4000);
+                    let first = self.shop.items[0].clone();
+                    let second = self.shop.items[1].clone();
+                    let _ = animated.buy_item(0, &first);
+                    let _ = animated.buy_item(1, &second);
+                    tracing::info!(
+                        "demo delivery: pending {}, shop items {}",
+                        animated.delivery_count(),
+                        self.shop.item_count()
+                    );
+                    self.demo_delivery_stage = 1;
+                }
+                if self.demo_delivery_stage == 1 && self.demo_delivery_timer >= 2.0 {
+                    let ok = animated.call_delivery();
+                    tracing::info!("demo delivery: guard dispatched={ok}");
+                    self.demo_delivery_stage = 2;
+                }
+                if self.demo_delivery_stage == 2 && self.demo_delivery_timer >= 9.0 {
+                    let stats = animated.player_stats();
+                    tracing::info!(
+                        "demo delivery: pending {}, shop items {}, damage {:.0}, hp {:.0}/{:.0}, state {:?}",
+                        animated.delivery_count(),
+                        self.shop.item_count(),
+                        stats.attack_damage,
+                        stats.health,
+                        stats.max_health,
+                        animated.delivery_state
+                    );
+                    self.demo_delivery = false;
+                }
+            }
             if self.demo_watchtower {
                 self.demo_watchtower_timer += dt;
                 if self.demo_watchtower_stage == 0 && self.demo_watchtower_timer >= 1.0 {
@@ -957,6 +1014,13 @@ impl App {
                 let alive = healths.iter().filter(|(hp, _)| *hp > 0.0).count();
                 (alive, healths.len())
             };
+            for index in animated.take_delivered() {
+                self.shop.add_owned(index);
+                if let Some(item) = self.shop.items.get(index) {
+                    log_event(&mut self.event_log, format!("DELIVERED {}", item.name));
+                    tracing::info!("delivery: handed over {}", item.name);
+                }
+            }
             let scores = animated.team_scores();
             let heroes: Vec<HeroMarker> = animated
                 .units
@@ -1025,6 +1089,17 @@ impl App {
                 hover,
                 biome: animated.current_biome(),
                 heroes: heroes.clone(),
+                delivery_pending: animated.delivery_count(),
+                delivery_state: match animated.delivery_state {
+                    crate::animated::DeliveryState::Idle => 0,
+                    crate::animated::DeliveryState::FlyingToHero => 1,
+                    crate::animated::DeliveryState::Returning => 2,
+                },
+                pending_ids: animated
+                    .delivery_pending
+                    .iter()
+                    .map(|(_, item)| item.id.clone())
+                    .collect(),
             };
             self.hud.build(
                 renderer.size.0 as f32,
@@ -1175,15 +1250,21 @@ impl App {
         let Some(item) = self.shop.items.get(index).cloned() else {
             return;
         };
-        if !self.shop.has_free_slot() {
-            tracing::info!("shop: inventory full");
+        let pending = self
+            .animated
+            .as_ref()
+            .map(|animated| animated.delivery_count())
+            .unwrap_or(0);
+        if !self.shop.has_free_slot() || self.shop.item_count() + pending >= 6 {
+            tracing::info!("shop: inventory full (including items in transit)");
+            log_event(&mut self.event_log, "INVENTORY FULL".to_string());
             return;
         }
         let Some(animated) = self.animated.as_mut() else {
             return;
         };
-        match animated.buy_item(&item) {
-            Ok(()) => {
+        match animated.buy_item(index, &item) {
+            Ok(BuyOutcome::Delivered) => {
                 self.shop.add_owned(index);
                 tracing::info!(
                     "shop: bought {} ({}) for {}g ({} slots used)",
@@ -1193,6 +1274,10 @@ impl App {
                     self.shop.item_count()
                 );
                 log_event(&mut self.event_log, format!("BOUGHT {}", item.name));
+            }
+            Ok(BuyOutcome::Stored) => {
+                tracing::info!("shop: {} stored in the chest for delivery", item.name);
+                log_event(&mut self.event_log, format!("STORED {}", item.name));
             }
             Err(err) => tracing::info!("shop: {} failed: {err}", item.name),
         }

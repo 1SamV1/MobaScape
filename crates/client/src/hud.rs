@@ -76,6 +76,12 @@ pub struct PlayerHud {
     pub biome: Option<String>,
     /// Team heroes for the minimap and the hero profile card.
     pub heroes: Vec<HeroMarker>,
+    /// Number of purchases waiting in the storage chest.
+    pub delivery_pending: usize,
+    /// 0 = idle, 1 = flying to the hero, 2 = returning.
+    pub delivery_state: u8,
+    /// Item ids currently in transit.
+    pub pending_ids: Vec<String>,
 }
 
 /// One team hero shown on the minimap and in the hero profile card.
@@ -363,6 +369,12 @@ impl Hud {
                         [255, 150, 120]
                     };
                     self.quad(width, height, ux - 2.0, uy - 2.0, 4.0, 4.0, color);
+                }
+                UnitKind::StorageChest => {
+                    self.quad(width, height, ux - 2.0, uy - 2.0, 4.0, 4.0, [255, 205, 80]);
+                }
+                UnitKind::DeliveryGuard => {
+                    self.quad(width, height, ux - 2.0, uy - 2.0, 4.0, 4.0, [250, 240, 180]);
                 }
                 UnitKind::Ambient => {}
             }
@@ -1099,6 +1111,48 @@ impl Hud {
             [230, 235, 255],
         );
 
+        // Delivery guard button, bottom-right next to the shop button.
+        {
+            let (bx, by, bw, bh) = crate::items::delivery_button_rect(width, height);
+            let ready = player.delivery_pending > 0 && player.delivery_state == 0;
+            let label = match player.delivery_state {
+                1 => "GUARD IN FLIGHT".to_string(),
+                2 => "GUARD RETURNING".to_string(),
+                _ => format!("DELIVER ({})", player.delivery_pending),
+            };
+            self.quad(
+                width,
+                height,
+                bx - 1.0,
+                by - 1.0,
+                bw + 2.0,
+                bh + 2.0,
+                [82, 76, 58],
+            );
+            self.quad(
+                width,
+                height,
+                bx,
+                by,
+                bw,
+                bh,
+                if ready { [48, 74, 42] } else { [28, 28, 32] },
+            );
+            self.text_centered(
+                width,
+                height,
+                bx + bw * 0.5,
+                by + 6.0,
+                1.0,
+                &label,
+                if ready {
+                    [200, 255, 170]
+                } else {
+                    [150, 150, 150]
+                },
+            );
+        }
+
         // Inventory and shop button, bottom-right.
         let inv_x = width - 454.0;
         let inv_y = height - 96.0;
@@ -1488,7 +1542,13 @@ impl Hud {
                 }
 
                 let owned = shop.owned_count(index);
-                let status = if owned > 0 {
+                let in_transit = player
+                    .pending_ids
+                    .iter()
+                    .any(|id| shop.items.get(index).is_some_and(|item| &item.id == id));
+                let status = if in_transit && owned == 0 {
+                    "IN TRANSIT"
+                } else if owned > 0 {
                     "OWNED"
                 } else if !affordable[index] {
                     "NEED GOLD"
