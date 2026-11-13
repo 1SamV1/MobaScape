@@ -1,6 +1,6 @@
 # Status
 
-Last updated: M5.7 baked lanes, watchtowers and full minimap, 2026-11-13.
+Last updated: M5.8 deterministic procedural scattering, 2026-11-13.
 
 ## Working
 
@@ -46,6 +46,10 @@ Last updated: M5.7 baked lanes, watchtowers and full minimap, 2026-11-13.
   the lock range.
 - Castle wall ruins: broken OSRS walls and ruin clusters line the outside of
   every lane.
+- Scattering: trees and ruins are placed by a fixed-seed xorshift RNG with
+  variable spacing, offsets, scales, species and clearings, so the world is
+  varied but identical every match. Dire species are dead and dark, radiant
+  species stay green. Pocket props are kept 6.5 tiles clear of every lane.
 - Visibility: structures (towers, inhibitors, nexus, watchtowers) are always
   visible; projectiles are only drawn inside the team's line of sight.
 - Movement: click-to-move A* path following; hold-to-steer with collision

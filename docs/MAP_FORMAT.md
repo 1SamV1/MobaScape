@@ -75,10 +75,16 @@ under structures, skips scenery within 5 tiles of any lane, and draws a dirt
 path ribbon per lane. Positions are absolute world tiles (e.g. 2800, 3040),
 not region-local coordinates.
 
-Lane sides are lined with OSRS tree models: a dense row 5.7 tiles from the
-lane centre and a sparser row 8.4 tiles out, tinted by which side of the
-river they stand on. Broken OSRS castle walls and ruin clusters (models
-16918, 9233 and 9625) ring the outside of every lane at ~11.5 tiles.
+Lane sides are scattered procedurally with OSRS tree models: a deterministic
+xorshift RNG (fixed seed `0x5EED9E3779B97F4A`) walks each lane with variable
+spacing (170–470 units), random offsets (4.9–9.8 tiles), random scales and
+occasional clusters and gaps. Species depend on the side of the river: dead
+and dark trees on the dire side, lush green canopy on the radiant side.
+Broken OSRS castle walls and ruin clusters (models 16918, 9233 and 9625) are
+scattered the same way 10.5–15 tiles out. The seed is fixed, so every match
+starts from the identical world. Pocket scenery is never placed within 6.5
+tiles of a lane, so a door or a wall can never end up in the middle of the
+road.
 
 Lanes are **baked into the terrain**, not drawn as a ribbon. The scene
 computes a smooth lane mask with a noise-wobbled edge, stores it in the

@@ -395,3 +395,17 @@ uploads it into the UI atlas. It shows the whole rift plus both teams'
 structures and the team's heroes; enemy heroes are never drawn and enemy mobs
 only appear while inside team line of sight. Projectiles follow the same rule:
 structures are always visible, attacks are not.
+
+
+## ADR-032 — Deterministic procedural scattering
+
+**Status:** accepted for M5.8.
+
+Hand placing every tree and ruin does not scale to a 220-tile map, but a fixed
+grid looks repetitive. The scene now uses a small xorshift RNG seeded with a
+constant, so the world is procedurally scattered yet identical every match.
+Tree spacing, distance from the lane, scale, rotation, species and clusters
+are all drawn from the RNG, with occasional gaps that read as clearings. The
+dire side of the river gets dead and dark species, the radiant side keeps the
+green canopy. Ruins use the same walk with wider spacing. Pocket scenery is
+excluded from the lane corridor so town props never block or clutter a lane.

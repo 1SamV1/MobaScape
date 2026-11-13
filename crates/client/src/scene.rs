@@ -1333,6 +1333,11 @@ pub fn build(
             if !height.contains(wx, wz) {
                 continue;
             }
+            // Pockets can overlap a lane; never drop a door or a wall in the
+            // middle of the road.
+            if map.distance_to_lane(wx, wz) < 6.5 * 128.0 {
+                continue;
+            }
             let base = Vec3::new(wx, height.height_at(wx, wz), wz);
             let angle = rotation as f32 * std::f32::consts::FRAC_PI_2;
             append_model_scaled_tinted(
@@ -1379,13 +1384,10 @@ pub fn build(
 
     // ------------------------------------------------------------------
     // Tree lines: OSRS tree models form a natural barrier along both sides
-    // of every lane, with a sparser second row behind them.
+    // of every lane. Spacing, distance, scale and species are seeded from a
+    // fixed RNG so the forest looks hand scattered but every match is the
+    // same world.
     // ------------------------------------------------------------------
-    // OSRS tree models: green canopy trees, tropical palms, and bare dead
-    // trees for the dire side.
-    const TREE_MODELS: &[u32] = &[
-        1570, 1637, 1681, 1683, 1611, 1611, 1611, 1611, 1676, 1687, 1605, 1715, 1716, 1621,
-    ];
     let structure_positions: Vec<Vec3> = map.structures.iter().map(|s| s.pos).collect();
     let tree_context = TreeContext {
         cache,
@@ -1394,10 +1396,9 @@ pub fn build(
         structures: &structure_positions,
         river_blocked: &river_blocked,
         origin: (origin_tile_x, origin_tile_y),
-        models: TREE_MODELS,
     };
     let mut tree_count = 0usize;
-    let mut tree_seed = 1u32;
+    let mut rng = Rng::new(0x5EED_9E37_79B9_7F4A);
     {
         let mut sink = ScenerySink {
             model_cache: &mut model_cache,
@@ -1416,37 +1417,35 @@ pub fn build(
                 }
                 let dir = delta / length;
                 let perp = Vec3::new(-dir.z, 0.0, dir.x);
-                let steps = (length / (128.0 * 2.4)).ceil().max(1.0) as usize;
-                for step in 0..=steps {
-                    let t = step as f32 / steps as f32;
-                    let point = a + delta * t;
-                    for side in [-1.0f32, 1.0f32] {
-                        tree_seed = tree_seed.wrapping_mul(1664525).wrapping_add(1013904223);
-                        let jitter = (hash01(tree_seed) - 0.5) * 1.8;
-                        let offset = (5.7 + jitter) * 128.0;
-                        place_tree(
-                            &tree_context,
-                            &mut sink,
-                            point + perp * (offset * side),
-                            tree_seed,
-                            &mut tree_count,
-                        );
-                    }
-                    // Sparser outer row for depth.
-                    if step % 3 == 0 {
-                        for side in [-1.0f32, 1.0f32] {
-                            tree_seed = tree_seed.wrapping_mul(1664525).wrapping_add(1013904223);
-                            let jitter = (hash01(tree_seed) - 0.5) * 2.6;
-                            let offset = (8.4 + jitter) * 128.0;
+                let mut travelled = rng.range(0.0, 220.0);
+                while travelled < length {
+                    let point = a + dir * travelled;
+                    for side in [-1.0f32, 1.0] {
+                        // Leave occasional gaps so the tree wall is not a
+                        // perfect hedge.
+                        if rng.chance(0.12) {
+                            continue;
+                        }
+                        let offset = rng.range(4.9, 9.8) * 128.0;
+                        let along = rng.range(-1.1, 1.1) * 128.0;
+                        let pos = point + perp * (offset * side) + dir * along;
+                        let seed = rng.next_u32();
+                        place_tree(&tree_context, &mut sink, pos, seed, &mut tree_count);
+                        // Occasional cluster behind the first tree.
+                        if rng.chance(0.24) {
+                            let extra = point
+                                + perp * (rng.range(6.5, 12.0) * 128.0 * side)
+                                + dir * rng.range(-1.6, 1.6) * 128.0;
                             place_tree(
                                 &tree_context,
                                 &mut sink,
-                                point + perp * (offset * side),
-                                tree_seed,
+                                extra,
+                                rng.next_u32(),
                                 &mut tree_count,
                             );
                         }
                     }
+                    travelled += rng.range(170.0, 470.0);
                 }
             }
         }
@@ -1455,7 +1454,7 @@ pub fn build(
 
     // ------------------------------------------------------------------
     // Castle wall ruins: broken OSRS walls and ruin clusters ring the
-    // outside of every lane, behind the tree line.
+    // outside of every lane, scattered with the same fixed seed.
     // ------------------------------------------------------------------
     const RUIN_MODELS: &[(u32, i32)] = &[(16918, 2), (16918, 2), (9233, 2), (9625, 3)];
     let mut ruin_count = 0usize;
@@ -1477,29 +1476,32 @@ pub fn build(
                 }
                 let dir = delta / length;
                 let perp = Vec3::new(-dir.z, 0.0, dir.x);
-                let steps = (length / (128.0 * 19.0)).ceil().max(1.0) as usize;
-                for step in 0..=steps {
-                    let t = step as f32 / steps as f32;
-                    let point = a + delta * t;
-                    tree_seed = tree_seed.wrapping_mul(1664525).wrapping_add(1013904223);
-                    let side = if (step + lane_index) % 2 == 0 {
+                let mut travelled = rng.range(0.0, 900.0);
+                while travelled < length {
+                    let point = a + dir * travelled;
+                    if rng.chance(0.28) {
+                        travelled += rng.range(700.0, 1800.0);
+                        continue;
+                    }
+                    let side = if (rng.next_u32() as usize + lane_index) % 2 == 0 {
                         -1.0
                     } else {
                         1.0
                     };
-                    let jitter = (hash01(tree_seed) - 0.5) * 3.0;
-                    let offset = (11.5 + jitter) * 128.0;
+                    let offset = rng.range(10.5, 15.0) * 128.0;
+                    let along = rng.range(-2.0, 2.0) * 128.0;
                     let (model_id, footprint) =
-                        RUIN_MODELS[(tree_seed as usize) % RUIN_MODELS.len()];
+                        RUIN_MODELS[rng.next_u32() as usize % RUIN_MODELS.len()];
                     place_ruin(
                         &tree_context,
                         &mut sink,
-                        point + perp * (offset * side),
-                        tree_seed,
+                        point + perp * (offset * side) + dir * along,
+                        rng.next_u32(),
                         model_id,
                         footprint,
                         &mut ruin_count,
                     );
+                    travelled += rng.range(650.0, 1900.0);
                 }
             }
         }
@@ -1840,6 +1842,37 @@ fn tile_color(
     }
 }
 
+/// Small deterministic xorshift RNG. The map is generated from a fixed seed
+/// so every match starts from the same world.
+struct Rng(u64);
+
+impl Rng {
+    fn new(seed: u64) -> Self {
+        Self(seed | 1)
+    }
+
+    fn next_u32(&mut self) -> u32 {
+        let mut x = self.0;
+        x ^= x >> 12;
+        x ^= x << 25;
+        x ^= x >> 27;
+        self.0 = x;
+        (x.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 32) as u32
+    }
+
+    fn f32(&mut self) -> f32 {
+        self.next_u32() as f32 / u32::MAX as f32
+    }
+
+    fn range(&mut self, lo: f32, hi: f32) -> f32 {
+        lo + (hi - lo) * self.f32()
+    }
+
+    fn chance(&mut self, p: f32) -> bool {
+        self.f32() < p
+    }
+}
+
 /// Smooth value noise used to wobble the lane edges.
 fn value_noise(x: f32, z: f32) -> f32 {
     let ix = x.floor();
@@ -1959,7 +1992,6 @@ struct TreeContext<'a> {
     structures: &'a [Vec3],
     river_blocked: &'a [(i32, i32)],
     origin: (i32, i32),
-    models: &'a [u32],
 }
 
 /// Place one broken castle wall or ruin cluster. Ruins sit behind the tree
@@ -2058,7 +2090,15 @@ fn place_tree(
         return;
     }
 
-    let model_id = ctx.models[(seed as usize) % ctx.models.len()];
+    // Dire side gets dead and dark species, the radiant side keeps the lush
+    // green canopy.
+    let side = ctx.map.river_side(tile_x as f32, tile_y as f32);
+    let pool: &[u32] = if side < 0.0 {
+        &[1715, 1716, 1621, 1676, 1687, 1605, 1611, 1715]
+    } else {
+        &[1570, 1637, 1681, 1683, 1611, 1611, 1611, 1605, 1676]
+    };
+    let model_id = pool[(seed as usize) % pool.len()];
     let model = if let Some(model) = sink.model_cache.get(&model_id) {
         model
     } else {
@@ -2074,8 +2114,7 @@ fn place_tree(
 
     let base = Vec3::new(pos.x, ctx.height.height_at(pos.x, pos.z), pos.z);
     let angle = hash01(seed ^ 0x5bf0_3635) * std::f32::consts::TAU;
-    let scale = 0.78 + hash01(seed.wrapping_add(7)) * 0.26;
-    let side = ctx.map.river_side(tile_x as f32, tile_y as f32);
+    let scale = 0.72 + hash01(seed.wrapping_add(7)) * 0.46;
     let tint = if side < 0.0 {
         [0.86f32, 0.90, 0.80]
     } else {
