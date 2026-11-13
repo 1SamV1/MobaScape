@@ -159,3 +159,13 @@ R meteor. Mana, cooldowns, XP, gold, levels, and shield absorption are tracked.
 To free Q/W/E/R, camera panning moved to the arrow keys, rotation to Z/X, and
 recenter/follow to Space. R is the ultimate, not camera reset. The HUD draws four
 ability boxes with cooldown fills; the title carries the numeric values.
+
+## ADR-016 — Client-side fog/brush prototype
+
+**Status:** accepted for the prototype.
+
+A 192×192 visibility grid is computed from allied units and structures. Enemy
+and neutral units outside vision are hidden; brush rectangles hide units unless
+the player is within 500 units; an opaque dark mesh covers unseen tiles. This is
+client-side only and must move to the authoritative server before multiplayer.
+The minimap hides unseen units but does not yet draw fog or support click-to-pan.

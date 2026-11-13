@@ -97,6 +97,11 @@ pub struct Renderer {
     hud_vertex_capacity: usize,
     hud_index_capacity: usize,
     hud_index_count: u32,
+    fog_vertex_buffer: wgpu::Buffer,
+    fog_index_buffer: wgpu::Buffer,
+    fog_vertex_capacity: usize,
+    fog_index_capacity: usize,
+    fog_index_count: u32,
     pub camera: Camera,
     pub size: (u32, u32),
 }
@@ -344,6 +349,21 @@ impl Renderer {
             wgpu::BufferUsages::INDEX,
         );
 
+        let fog_vertex_capacity = 1024;
+        let fog_index_capacity = 1536;
+        let fog_vertex_buffer = create_dynamic_buffer(
+            &device,
+            "fog vertices",
+            fog_vertex_capacity * std::mem::size_of::<Vertex>(),
+            wgpu::BufferUsages::VERTEX,
+        );
+        let fog_index_buffer = create_dynamic_buffer(
+            &device,
+            "fog indices",
+            fog_index_capacity * std::mem::size_of::<u32>(),
+            wgpu::BufferUsages::INDEX,
+        );
+
         let mut renderer = Self {
             surface,
             device,
@@ -368,6 +388,11 @@ impl Renderer {
             hud_vertex_capacity,
             hud_index_capacity,
             hud_index_count: 0,
+            fog_vertex_buffer,
+            fog_index_buffer,
+            fog_vertex_capacity,
+            fog_index_capacity,
+            fog_index_count: 0,
             camera: initial_camera,
             size: (width, height),
         };
@@ -451,6 +476,38 @@ impl Renderer {
             return None;
         }
         Some((origin, dir))
+    }
+
+    pub fn set_fog_mesh(&mut self, vertices: &[Vertex], indices: &[u32]) {
+        if vertices.len() > self.fog_vertex_capacity {
+            let capacity = vertices.len().next_power_of_two();
+            self.fog_vertex_buffer = create_dynamic_buffer(
+                &self.device,
+                "fog vertices",
+                capacity * std::mem::size_of::<Vertex>(),
+                wgpu::BufferUsages::VERTEX,
+            );
+            self.fog_vertex_capacity = capacity;
+        }
+        if indices.len() > self.fog_index_capacity {
+            let capacity = indices.len().next_power_of_two();
+            self.fog_index_buffer = create_dynamic_buffer(
+                &self.device,
+                "fog indices",
+                capacity * std::mem::size_of::<u32>(),
+                wgpu::BufferUsages::INDEX,
+            );
+            self.fog_index_capacity = capacity;
+        }
+        if !vertices.is_empty() {
+            self.queue
+                .write_buffer(&self.fog_vertex_buffer, 0, bytemuck::cast_slice(vertices));
+        }
+        if !indices.is_empty() {
+            self.queue
+                .write_buffer(&self.fog_index_buffer, 0, bytemuck::cast_slice(indices));
+        }
+        self.fog_index_count = indices.len() as u32;
     }
 
     pub fn set_hud_mesh(&mut self, vertices: &[Vertex], indices: &[u32]) {
@@ -583,6 +640,11 @@ impl Renderer {
                 pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
                 pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
                 pass.draw_indexed(0..mesh.index_count, 0, 0..1);
+            }
+            if self.fog_index_count > 0 {
+                pass.set_vertex_buffer(0, self.fog_vertex_buffer.slice(..));
+                pass.set_index_buffer(self.fog_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..self.fog_index_count, 0, 0..1);
             }
             if self.dynamic_index_count > 0 {
                 pass.set_vertex_buffer(0, self.dynamic_vertex_buffer.slice(..));

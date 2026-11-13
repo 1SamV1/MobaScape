@@ -31,6 +31,8 @@ The playable map is `data/maps/karamja_rift/map.json`:
 - `camps`: four neutral jungle camps. Each camp has a tile, model, optional
   idle/walk sequence, health, respawn time, buff (`might` or `swift`), and
   scale. Camps grant a 60 s team buff when killed.
+- `brush`: rectangles `[x0, y0, x1, y1]` in world tiles. Units inside brush are
+  hidden from the enemy unless the player is within 500 units.
 - Towers: model 1761, 450 HP, range 640, 18 damage / 1.2 s.
 - Inhibitors: model 1747, 700 HP, no attack. At least one enemy inhibitor must
   fall before the nexus can be damaged.

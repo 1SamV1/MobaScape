@@ -88,12 +88,14 @@ Done:
 - Live minimap: lanes, structures, camps, minions, player.
 - Q/W/E/R champion kit with mana, cooldowns, heal/shield, dash, AoE meteor.
 - Levels 1–11, XP, gold, shield, and ability HUD boxes.
+- Client-side fog of war: allied vision grid, hidden enemy/neutral units, brush
+  zones, and a dark fog mesh over unseen tiles.
 - HUD nexus health bars, wave timer, buff bar; title shows full match state.
 - `--timescale`, `--demo-camp`, and `--demo-kit` for fast verification.
 
 Remaining:
 
-- Brush, fog of war, and minimap interaction.
+- Server-authoritative fog, minimap click-to-pan, and brush visuals.
 - Item shop, item stats/passives, and five champions with distinct kits.
 - Deterministic 10-bot match at 20× speed with a state hash.
 - Data hot reload for champions/abilities/items/waves.

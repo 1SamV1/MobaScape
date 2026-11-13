@@ -156,7 +156,7 @@ Cache location: `.cache/osrs-235/cache` by default. Pass `--cache` and
 - Renderer changes: include a headless screenshot or a manual visual check note.
 - Performance: 1080p/60 target on the AMD 680M iGPU. Profile before optimizing.
 
-## 8. Known M3.9 limitations
+## 8. Known M3.95 limitations
 
 - Client renders a 3×3 region block (192×192 tiles); there is no terrain skirt
   or streaming beyond it, and the collision grid is approximate (water + object
@@ -170,6 +170,10 @@ Cache location: `.cache/osrs-235/cache` by default. Pass `--cache` and
   renderer yet.
 - Champion kit: Q fire blast, W blink, E heal+shield, R meteor, with mana and
   cooldowns. No passive or item shop; gold/XP are tracked but gold is unspent.
+- Fog/brush is **client-side** in this prototype. A 192×192 visibility grid is
+  computed from allied units/structures, enemy/neutral units outside vision are
+  hidden, brush rectangles hide units unless the player is close, and a dark fog
+  mesh covers unseen tiles. Server-authoritative fog is still required.
 - Model formats 1 and old-format models are not implemented yet.
 - Textures are not sampled; textured faces and the `0xff00ff` overlay sentinel
   use flat fallback colours. Dead-tree trunks read as pale spikes.

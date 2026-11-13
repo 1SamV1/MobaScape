@@ -4,13 +4,13 @@ A 5v5 MOBA built on a custom Rust engine, using modern Old School RuneScape
 cache assets for its visual identity. Server-authoritative, data-driven, and
 designed for fast-paced low-team-count matches.
 
-> Status: **M3.9 champion kit**. The cache reader, terrain/location/model/
+> Status: **M3.95 fog + brush**. The cache reader, terrain/location/model/
 > sequence decoders, animated NPCs, a 3x3 Karamja block, A* pathfinding with
 > collision, hold-to-steer, a screen-space HUD, auto-attacks, a Q/W/E/R kit
 > with mana/cooldowns/XP/gold, three lanes with towers/inhibitors/shielded
-> nexus, minion waves, jungle camps with team buffs, a live minimap, and a win
-> condition are working. There is no networking or item shop yet. See
-> [docs/STATUS.md](docs/STATUS.md).
+> nexus, minion waves, jungle camps with team buffs, brush/fog of war, a live
+> minimap, and a win condition are working. There is no networking or item shop
+> yet. See [docs/STATUS.md](docs/STATUS.md).
 
 ## What exists
 
@@ -23,8 +23,8 @@ designed for fast-paced low-team-count matches.
 - `crates/sim` — deterministic tile grid, collision, and A* pathfinding
 - `crates/tools` — `rift-tools` CLI for cache inspection and OBJ export
 - `crates/client` — native wgpu client: 3x3 Karamja, animated NPCs, three lanes,
-  towers/inhibitors/nexus, minion waves, jungle camps/buffs, live minimap,
-  click-to-move + hold-to-steer, HUD, auto-attacks, Q
+  towers/inhibitors/nexus, minion waves, jungle camps/buffs, brush/fog of war,
+  live minimap, click-to-move + hold-to-steer, HUD, auto-attacks, Q
 - `data/maps/karamja_rift/map.json` — lanes, structures, camps, wave timing
 - `docs/reference` — archived Java-era experiments (not built)
 

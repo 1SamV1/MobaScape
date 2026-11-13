@@ -70,6 +70,9 @@ impl Hud {
         }
 
         for unit in &scene.units {
+            if !unit.visible {
+                continue;
+            }
             let (ux, uy) = to_map(unit.pos);
             if unit.health <= 0.0 {
                 if unit.kind.is_structure() {

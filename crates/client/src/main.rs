@@ -21,7 +21,7 @@ use winit::window::{Window, WindowId};
 use crate::animated::AnimatedScene;
 use crate::hud::{Hud, PlayerHud};
 use crate::renderer::{Camera, Renderer};
-use crate::scene::{CampBuff, HeightGrid, SceneData, WorldCollision};
+use crate::scene::{CampBuff, HeightGrid, SceneData, Vertex, WorldCollision};
 
 #[derive(Parser, Debug)]
 #[command(name = "rift-client", about = "Rift native client (M1 vertical slice)")]
@@ -128,6 +128,7 @@ fn main() -> Result<()> {
         demo_combat_cast: false,
         demo_combat_target: None,
         hud: Hud::new(),
+        fog_timer: 0.0,
         lane_log_timer: 0.0,
         last_frame: Instant::now(),
         title_timer: 0.0,
@@ -168,6 +169,7 @@ struct App {
     demo_combat_cast: bool,
     demo_combat_target: Option<usize>,
     hud: Hud,
+    fog_timer: f32,
     lane_log_timer: f32,
     last_frame: Instant,
     title_timer: f32,
@@ -498,6 +500,11 @@ impl App {
                 );
             }
             renderer.set_dynamic_mesh(&animated.vertices, &animated.indices);
+            self.fog_timer += dt;
+            if self.fog_timer >= 0.5 {
+                self.fog_timer = 0.0;
+                rebuild_fog(renderer, animated, height, collision);
+            }
 
             let nexus0 = animated.nexus_health(0).unwrap_or((0.0, 1.0));
             let nexus1 = animated.nexus_health(1).unwrap_or((0.0, 1.0));
@@ -505,8 +512,9 @@ impl App {
             if self.lane_log_timer >= 5.0 {
                 self.lane_log_timer = 0.0;
                 tracing::info!(
-                    "lane: minions={} towers0={:?} towers1={:?} inhib0={:?} inhib1={:?} nexus0={:?} nexus1={:?} vulnerable0={} vulnerable1={}",
+                    "lane: minions={} visible_enemies={} towers0={:?} towers1={:?} inhib0={:?} inhib1={:?} nexus0={:?} nexus1={:?} vulnerable0={} vulnerable1={}",
                     animated.minion_count(),
+                    animated.visible_enemy_count(),
                     animated.tower_healths(0),
                     animated.tower_healths(1),
                     animated.inhibitor_count(0),
@@ -747,6 +755,40 @@ impl App {
             renderer.update_camera();
         }
     }
+}
+
+fn rebuild_fog(
+    renderer: &mut Renderer,
+    animated: &AnimatedScene,
+    height: &HeightGrid,
+    collision: &WorldCollision,
+) {
+    let (ox, oy) = collision.origin_tile();
+    let width = collision.width();
+    let height_tiles = collision.height();
+    let mut vertices = Vec::new();
+    let mut indices = Vec::new();
+    let color = [8u8, 12, 18];
+
+    for gy in 0..height_tiles {
+        for gx in 0..width {
+            if animated.visibility.is_visible(gx, gy) {
+                continue;
+            }
+            let x0 = (ox + gx) as f32 * 128.0;
+            let z0 = (oy + gy) as f32 * 128.0;
+            let x1 = x0 + 128.0;
+            let z1 = z0 + 128.0;
+            let y = height.height_at(x0 + 64.0, z0 + 64.0) + 700.0;
+            let base = vertices.len() as u32;
+            vertices.push(Vertex::new(Vec3::new(x0, y, z0), color));
+            vertices.push(Vertex::new(Vec3::new(x1, y, z0), color));
+            vertices.push(Vertex::new(Vec3::new(x0, y, z1), color));
+            vertices.push(Vertex::new(Vec3::new(x1, y, z1), color));
+            indices.extend_from_slice(&[base, base + 1, base + 2, base + 2, base + 1, base + 3]);
+        }
+    }
+    renderer.set_fog_mesh(&vertices, &indices);
 }
 
 fn print_camera(renderer: &Renderer) {

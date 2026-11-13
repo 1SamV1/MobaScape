@@ -77,6 +77,7 @@ pub struct AnimatedUnit {
     pub shield: f32,
     pub shield_timer: f32,
     pub cooldowns: [f32; 4],
+    pub visible: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -100,6 +101,22 @@ pub struct Effect {
     pub remaining: f32,
     pub duration: f32,
     pub color: [u8; 3],
+}
+
+pub struct VisibilityGrid {
+    pub width: usize,
+    pub height: usize,
+    pub tiles: Vec<bool>,
+}
+
+impl VisibilityGrid {
+    pub fn is_visible(&self, tx: i32, ty: i32) -> bool {
+        tx >= 0
+            && ty >= 0
+            && (tx as usize) < self.width
+            && (ty as usize) < self.height
+            && self.tiles[ty as usize * self.width + tx as usize]
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -147,6 +164,9 @@ pub struct AnimatedScene {
     pub player_spawn: Vec3,
     pub match_over: Option<u8>,
     pub minimap_bounds: (glam::Vec2, glam::Vec2),
+    pub visibility: VisibilityGrid,
+    pub brush: Vec<(f32, f32, f32, f32)>,
+    pub vision_origin: (i32, i32),
     pub team_buffs: [Option<TeamBuff>; 2],
     melee_template: MinionTemplate,
     ranged_template: MinionTemplate,
@@ -345,6 +365,13 @@ impl AnimatedScene {
         let pad = glam::Vec2::splat(3.0 * 128.0);
         let minimap_bounds = (min - pad, max + pad);
 
+        let (vision_origin_x, vision_origin_y) = scene.collision.origin_tile();
+        let visibility = VisibilityGrid {
+            width: scene.collision.width() as usize,
+            height: scene.collision.height() as usize,
+            tiles: vec![false; (scene.collision.width() * scene.collision.height()) as usize],
+        };
+
         let mut animated = Self {
             units,
             player_index,
@@ -365,6 +392,9 @@ impl AnimatedScene {
             player_spawn: scene.player_spawn,
             match_over: None,
             minimap_bounds,
+            visibility,
+            brush: scene.map.brush.clone(),
+            vision_origin: (vision_origin_x, vision_origin_y),
             team_buffs: [None, None],
             melee_template,
             ranged_template,
@@ -465,7 +495,7 @@ impl AnimatedScene {
         }
         let target = &self.units[index];
         let targetable = target.team == 1 || (target.team == 2 && target.kind == UnitKind::Camp);
-        if !targetable || target.health <= 0.0 {
+        if !targetable || target.health <= 0.0 || !target.visible {
             return false;
         }
         if target.kind == UnitKind::Nexus && !self.nexus_vulnerable(target.team) {
@@ -637,6 +667,7 @@ impl AnimatedScene {
         for (i, unit) in self.units.iter().enumerate() {
             if !(unit.team == 1 || (unit.team == 2 && unit.kind == UnitKind::Camp))
                 || unit.health <= 0.0
+                || !unit.visible
             {
                 continue;
             }
@@ -788,6 +819,7 @@ impl AnimatedScene {
         }
 
         self.update_projectiles(dt, height);
+        self.update_visibility();
         self.rebuild_mesh(camera_right, camera_up, camera_forward);
     }
 
@@ -1102,6 +1134,75 @@ impl AnimatedScene {
         }
     }
 
+    fn update_visibility(&mut self) {
+        self.visibility.tiles.fill(false);
+        for unit in &mut self.units {
+            unit.visible = unit.team == 0;
+        }
+
+        let sources = self
+            .units
+            .iter()
+            .filter(|u| u.team == 0 && u.health > 0.0)
+            .map(|u| {
+                let radius: f32 = match u.kind {
+                    UnitKind::Player => 1500.0,
+                    UnitKind::MeleeMinion | UnitKind::RangedMinion => 700.0,
+                    _ => 1000.0,
+                };
+                (u.pos, radius)
+            })
+            .collect::<Vec<_>>();
+
+        let (ox, oy) = self.vision_origin;
+        for (pos, radius) in &sources {
+            let rt = (*radius / 128.0).ceil() as i32;
+            let ctx = (pos.x / 128.0).floor() as i32 - ox;
+            let cty = (pos.z / 128.0).floor() as i32 - oy;
+            for dy in -rt..=rt {
+                for dx in -rt..=rt {
+                    if dx * dx + dy * dy > rt * rt {
+                        continue;
+                    }
+                    let tx = ctx + dx;
+                    let ty = cty + dy;
+                    if tx >= 0
+                        && ty >= 0
+                        && (tx as usize) < self.visibility.width
+                        && (ty as usize) < self.visibility.height
+                    {
+                        self.visibility.tiles[ty as usize * self.visibility.width + tx as usize] =
+                            true;
+                    }
+                }
+            }
+        }
+
+        let player_pos = self.player_pos();
+        let brush = self.brush.clone();
+        for unit in &mut self.units {
+            if unit.team == 0 {
+                continue;
+            }
+            let tx = (unit.pos.x / 128.0).floor() as i32 - ox;
+            let ty = (unit.pos.z / 128.0).floor() as i32 - oy;
+            if !self.visibility.is_visible(tx, ty) {
+                continue;
+            }
+            if point_in_brush(&brush, unit.pos) && player_pos.distance(unit.pos) > 500.0 {
+                continue;
+            }
+            unit.visible = true;
+        }
+    }
+
+    pub fn visible_enemy_count(&self) -> usize {
+        self.units
+            .iter()
+            .filter(|u| u.team != 0 && u.health > 0.0 && u.visible)
+            .count()
+    }
+
     fn team_damage_mult(&self, team: u8) -> f32 {
         self.team_buffs
             .get(team as usize)
@@ -1244,6 +1345,7 @@ impl AnimatedScene {
                 shield: 0.0,
                 shield_timer: 0.0,
                 cooldowns: [0.0; 4],
+                visible: true,
             };
             self.units.push(unit);
         }
@@ -1255,7 +1357,7 @@ impl AnimatedScene {
 
         let units = std::mem::take(&mut self.units);
         for unit in &units {
-            if unit.health > 0.0 {
+            if unit.health > 0.0 && unit.visible {
                 let clip = if unit.moving {
                     unit.walk.as_ref().unwrap_or(&unit.idle)
                 } else {
@@ -1329,7 +1431,11 @@ impl AnimatedScene {
         let structure_rings = self
             .units
             .iter()
-            .filter(|u| matches!(u.kind, UnitKind::Tower | UnitKind::Inhibitor) && u.health > 0.0)
+            .filter(|u| {
+                u.visible
+                    && matches!(u.kind, UnitKind::Tower | UnitKind::Inhibitor)
+                    && u.health > 0.0
+            })
             .map(|u| (u.pos, u.team))
             .collect::<Vec<_>>();
         for (pos, team) in structure_rings {
@@ -1349,7 +1455,7 @@ impl AnimatedScene {
         let camp_rings = self
             .units
             .iter()
-            .filter(|u| u.kind == UnitKind::Camp && u.health > 0.0)
+            .filter(|u| u.visible && u.kind == UnitKind::Camp && u.health > 0.0)
             .map(|u| u.pos)
             .collect::<Vec<_>>();
         for pos in camp_rings {
@@ -1385,6 +1491,12 @@ impl AnimatedUnit {
     fn is_minion_of(&self, team: u8) -> bool {
         self.kind.is_minion() && self.team == team
     }
+}
+
+fn point_in_brush(brush: &[(f32, f32, f32, f32)], pos: Vec3) -> bool {
+    brush.iter().any(|&(x0, z0, x1, z1)| {
+        pos.x >= x0.min(x1) && pos.x <= x0.max(x1) && pos.z >= z0.min(z1) && pos.z <= z0.max(z1)
+    })
 }
 
 fn xp_for_level(level: u32) -> f32 {
@@ -1469,6 +1581,7 @@ fn load_unit(
         shield: 0.0,
         shield_timer: 0.0,
         cooldowns: [0.0; 4],
+        visible: true,
     })
 }
 

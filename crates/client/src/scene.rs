@@ -104,6 +104,18 @@ impl WorldCollision {
         }
     }
 
+    pub fn width(&self) -> i32 {
+        self.grid.width()
+    }
+
+    pub fn height(&self) -> i32 {
+        self.grid.height()
+    }
+
+    pub fn origin_tile(&self) -> (i32, i32) {
+        (self.origin_tile_x, self.origin_tile_y)
+    }
+
     pub fn tile_of(&self, world_x: f32, world_z: f32) -> (i32, i32) {
         (
             (world_x / 128.0).floor() as i32 - self.origin_tile_x,
@@ -214,6 +226,8 @@ struct MapJson {
     lanes: Vec<LaneJson>,
     #[serde(default)]
     camps: Vec<CampJson>,
+    #[serde(default)]
+    brush: Vec<[f32; 4]>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -260,6 +274,7 @@ pub struct MapLayout {
     pub lanes: Vec<LaneSpawn>,
     pub structures: Vec<StructureSpawn>,
     pub camps: Vec<CampSpawn>,
+    pub brush: Vec<(f32, f32, f32, f32)>,
     pub wave_interval: f32,
 }
 
@@ -331,11 +346,25 @@ impl MapLayout {
             })
             .collect();
 
+        let brush = map
+            .brush
+            .iter()
+            .map(|b| {
+                (
+                    (b[0] + 0.5) * 128.0,
+                    (b[1] + 0.5) * 128.0,
+                    (b[2] + 0.5) * 128.0,
+                    (b[3] + 0.5) * 128.0,
+                )
+            })
+            .collect();
+
         Ok(Self {
             name: map.name,
             lanes,
             structures,
             camps,
+            brush,
             wave_interval: map.wave_interval,
         })
     }
