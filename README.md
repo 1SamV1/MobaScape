@@ -19,9 +19,12 @@ designed for fast-paced low-team-count matches.
 > alternating shadow updates, and baked contact AO. The **UI pass** adds an
 > OSRS-style Fountain Shop window with categories, item cards, detail/buy/sell
 > panes, real item icons and tab sprites, plus HUD objectives, team, resource,
-> event-log, inventory, and shop-button panels. Textures, HD water, bloom,
-> full SSAO, and draw-distance streaming are next. See
-> [docs/STATUS.md](docs/STATUS.md) and [docs/UI_ASSETS.md](docs/UI_ASSETS.md).
+> event-log, inventory, and shop-button panels. **M5.3/M5.4 partial** adds
+> seamless terrain color smoothing, procedural ground detail, and an offscreen
+> post pass with FXAA, cheap bloom, color grading, and dithering. Cache-native
+> ground textures, HD water, MSAA, full SSAO, and draw-distance streaming are
+> next. See [docs/STATUS.md](docs/STATUS.md) and
+> [docs/UI_ASSETS.md](docs/UI_ASSETS.md).
 
 ## What exists
 

@@ -127,9 +127,12 @@ Remaining:
 
 - **M5.2 117HD Water**: water mesh, fresnel, sky reflection, specular, caustics.
 - **M5.3 117HD Textures**: texture decoding, atlas, model/ground textures,
-  ground blending, anisotropic filtering.
+  ground blending, anisotropic filtering. *Partial:* seamless terrain color
+  smoothing + procedural ground detail shipped; cache-native textures pending.
 - **M5.4 117HD Post + Draw Distance**: full SSAO, MSAA/FXAA, bloom, color
-  grading, chunked streaming/LOD, model batching.
+  grading, chunked streaming/LOD, model batching. *Partial:* offscreen post
+  pass with FXAA, cheap bloom, color grading, dithering shipped; MSAA, full
+  SSAO, and draw-distance streaming pending.
 - Static scenery shadow caching for the sun shadow map.
 - Server-authoritative fog and brush visuals.
 - Item selling/combining/passives and five champions with distinct kits.

@@ -1,6 +1,6 @@
 # Status
 
-Last updated: M5.1 Shadows + contact AO + OSRS UI pass, 2026-11-13.
+Last updated: M5.3a/M5.4a ground smoothing + post pass, 2026-11-13.
 
 ## Working
 
@@ -38,6 +38,12 @@ Last updated: M5.1 Shadows + contact AO + OSRS UI pass, 2026-11-13.
   units of spawn; two persistent rings mark the fountain.
 - Item shop: six data-driven items, six inventory slots, fountain-range
   purchase, gold spending, stat/ability-power application, hover tooltips.
+- **Terrain smoothing/detail (M5.3a)**: the per-tile color field is box-blurred
+  twice and assigned to shared grid-corner vertices; `scene.wgsl` adds
+  procedural ground detail for terrain. Tile outlines are gone.
+- **Post pass (M5.4a)**: scene renders to an offscreen sRGB target; `post.wgsl`
+  applies FXAA, cheap bloom, gamma-space color grading, and dithering. HUD
+  renders after post, so text/icons stay crisp.
 - **OSRS-style UI**: centered Fountain Shop window with category tabs, item-card
   grid, detail pane, Buy/Sell buttons, inventory row, gold, close button, and
   real item icons/tab sprites from the gitignored `assets/osrs-ui` tree. HUD
@@ -92,8 +98,11 @@ Last updated: M5.1 Shadows + contact AO + OSRS UI pass, 2026-11-13.
 
 ## Known issues
 
-- 117HD Core has **no textures, HD water, bloom, MSAA/FXAA, full SSAO, or
-  draw-distance streaming** yet. These are M5.2–M5.4.
+- 117HD Core has **no cache-native textures, HD water, MSAA, full SSAO, or
+  draw-distance streaming** yet. M5.3a/M5.4a ship terrain smoothing, procedural
+  ground detail, FXAA, cheap bloom, color grading, and dithering.
+- The post bloom is a cheap 8-tap screen-space glow, not a full HDR bloom chain.
+- Draw-distance streaming/LOD is still pending; the map remains a 3×3 block.
 - The shadow map covers dynamic units/structures/camps only; static scenery
   still uses blob shadows. Static shadow caching/chunked casters are pending.
 - The shadow map is 1024px and updates every other frame; fast camera movement
@@ -120,10 +129,10 @@ Last updated: M5.1 Shadows + contact AO + OSRS UI pass, 2026-11-13.
 ## Next tasks
 
 1. **M5.2 117HD Water**: water mesh, fresnel, sky reflection, specular, caustics.
-2. **M5.3 117HD Textures**: texture decoding, atlas, model/ground textures,
+2. **M5.3b cache textures**: texture decoding, atlas, model/ground textures,
    ground blending, anisotropic filtering.
-3. **M5.4 117HD Post + Draw Distance**: full SSAO, MSAA/FXAA, bloom, color
-   grading, chunked streaming/LOD, model batching.
+3. **M5.4b post + draw distance**: full SSAO, MSAA, proper HDR bloom,
+   chunked streaming/LOD, model batching.
 4. Static scenery shadow caching/chunked casters.
 5. Item selling/combining/passives and five champions with distinct kits.
 6. Server-authoritative fog, economy, and shop transactions.
@@ -145,6 +154,9 @@ Last updated: M5.1 Shadows + contact AO + OSRS UI pass, 2026-11-13.
   green fountain and orange Q impact pools; shadow/AO debug views render.
 - Shadow modes: off 67 fps, blob 68 fps, map 66 fps at 1280×720.
 - UI run: real item icons/tab sprites render; shop open at 58–60 fps.
+- Ground: A/B FOW-disabled capture is seamless; continuous fog mesh removes
+  per-tile grid lines.
+- Post: FXAA/grade/bloom at 59–60 fps; HUD crisp after post.
 - Champion runs: Jad 700 HP / 260 mana; Kree 420 HP / 240 mana; W/E/R true.
 - Fog run: visible enemies 7–13; dark fog mesh over unseen tiles.
 - Three-lane 20× run: victory states, towers/inhibitors/nexus live.

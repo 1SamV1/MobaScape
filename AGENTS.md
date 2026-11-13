@@ -156,7 +156,7 @@ Cache location: `.cache/osrs-235/cache` by default. Pass `--cache` and
 - Renderer changes: include a headless screenshot or a manual visual check note.
 - Performance: 1080p/60 target on the AMD 680M iGPU. Profile before optimizing.
 
-## 8. Known M5.1 UI limitations
+## 8. Known M5.4 limitations
 
 - Client renders a 3×3 region block (192×192 tiles); there is no terrain skirt
   or streaming beyond it, and the collision grid is approximate (water + object
@@ -214,6 +214,14 @@ Cache location: `.cache/osrs-235/cache` by default. Pass `--cache` and
   available under the expected wiki name.
 - Baked numbers/icons in the tab sprites are covered by dark overlays; faint
   traces can still show through at some scales.
+- Terrain color is blurred per vertex (two separable box-blur passes) and the
+  scene shader adds procedural ground detail. This removes tile seams but is
+  **not** cache-native ground texture blending yet; real texture decoding and
+  UV/ground-layer blending remain M5.3b.
+- M5.4 currently ships an offscreen post pass with FXAA, cheap bloom, color
+  grading, and dithering. MSAA, full SSAO, and chunked draw-distance/LOD are
+  still pending. The post pass samples the scene with corrected NDC UVs and the
+  HUD is rendered after post so text/icons stay crisp.
 - LZMA groups are implemented but not exercised by the pinned cache.
 - Config archives use real file IDs from the reference table; keep it that way.
 - The viewer follows the player by default. Arrow keys pan; `F` toggles follow.

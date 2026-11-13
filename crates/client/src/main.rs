@@ -1294,15 +1294,13 @@ fn rebuild_fog(
     let (ox, oy) = collision.origin_tile();
     let width = collision.width();
     let height_tiles = collision.height();
-    let mut vertices = Vec::new();
-    let mut indices = Vec::new();
-    let color = [36u8, 46, 60];
-    let max_alpha = 0.65;
-
-    // Smoothed visibility at tile corners gives soft fog edges instead of
-    // hard 128-unit blocks.
     let stride = (width + 1) as usize;
     let mut smooth = vec![0.0f32; stride * (height_tiles + 1) as usize];
+    let color = [24u8, 32, 44];
+    let max_alpha = 0.55;
+
+    // Smoothed visibility at grid corners. A single continuous mesh shares
+    // these corners, so the fog has no per-tile height/alpha seams.
     for gy in 0..=height_tiles {
         for gx in 0..=width {
             let mut sum = 0.0;
@@ -1326,36 +1324,32 @@ fn rebuild_fog(
         }
     }
 
+    let mut vertices = Vec::with_capacity(stride * (height_tiles + 1) as usize);
+    let mut indices = Vec::new();
+    for gy in 0..=height_tiles {
+        for gx in 0..=width {
+            let v = smooth[gy as usize * stride + gx as usize];
+            let alpha = (1.0 - v) * max_alpha;
+            let x = (ox + gx) as f32 * 128.0;
+            let z = (oy + gy) as f32 * 128.0;
+            let y = height.height_at(x, z) + 60.0;
+            vertices.push(SceneVertex::unlit_alpha(Vec3::new(x, y, z), color, alpha));
+        }
+    }
     for gy in 0..height_tiles {
         for gx in 0..width {
+            let a = (gy as usize * stride + gx as usize) as u32;
+            let b = a + 1;
+            let c = a + stride as u32;
+            let d = c + 1;
             let v00 = smooth[gy as usize * stride + gx as usize];
             let v10 = smooth[gy as usize * stride + gx as usize + 1];
             let v01 = smooth[(gy as usize + 1) * stride + gx as usize];
             let v11 = smooth[(gy as usize + 1) * stride + gx as usize + 1];
-            let a00 = (1.0 - v00) * max_alpha;
-            let a10 = (1.0 - v10) * max_alpha;
-            let a01 = (1.0 - v01) * max_alpha;
-            let a11 = (1.0 - v11) * max_alpha;
-            if a00.max(a10).max(a01).max(a11) < 0.01 {
+            if (1.0 - v00).max(1.0 - v10).max(1.0 - v01).max(1.0 - v11) < 0.01 {
                 continue;
             }
-
-            let x0 = (ox + gx) as f32 * 128.0;
-            let z0 = (oy + gy) as f32 * 128.0;
-            let x1 = x0 + 128.0;
-            let z1 = z0 + 128.0;
-            let y = height
-                .height_at(x0 + 64.0, z0 + 64.0)
-                .max(height.height_at(x1 - 64.0, z0 + 64.0))
-                .max(height.height_at(x0 + 64.0, z1 - 64.0))
-                .max(height.height_at(x1 - 64.0, z1 - 64.0))
-                + 90.0;
-            let base = vertices.len() as u32;
-            vertices.push(SceneVertex::unlit_alpha(Vec3::new(x0, y, z0), color, a00));
-            vertices.push(SceneVertex::unlit_alpha(Vec3::new(x1, y, z0), color, a10));
-            vertices.push(SceneVertex::unlit_alpha(Vec3::new(x0, y, z1), color, a01));
-            vertices.push(SceneVertex::unlit_alpha(Vec3::new(x1, y, z1), color, a11));
-            indices.extend_from_slice(&[base, base + 1, base + 2, base + 2, base + 1, base + 3]);
+            indices.extend_from_slice(&[a, c, b, b, c, d]);
         }
     }
     renderer.set_fog_mesh(&vertices, &indices);

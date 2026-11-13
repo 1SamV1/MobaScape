@@ -156,6 +156,12 @@ pub struct Renderer {
     hud_bind_group: wgpu::BindGroup,
     _ui_texture: wgpu::Texture,
     _ui_sampler: wgpu::Sampler,
+    post_pipeline: wgpu::RenderPipeline,
+    post_bind_group: wgpu::BindGroup,
+    post_bind_group_layout: wgpu::BindGroupLayout,
+    _post_sampler: wgpu::Sampler,
+    scene_color_view: wgpu::TextureView,
+    _scene_color_texture: wgpu::Texture,
     sky_pipeline: wgpu::RenderPipeline,
     blob_pipeline: wgpu::RenderPipeline,
     fog_pipeline: wgpu::RenderPipeline,
@@ -266,6 +272,10 @@ impl Renderer {
         let ui_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("rift ui shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("ui.wgsl").into()),
+        });
+        let post_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("rift post shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("post.wgsl").into()),
         });
         let sky_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("rift sky shader"),
@@ -749,6 +759,76 @@ impl Renderer {
             cache: None,
         });
 
+        let post_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("post scene layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            });
+        let post_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("post pipeline layout"),
+            bind_group_layouts: &[Some(&post_bind_group_layout)],
+            immediate_size: 0,
+        });
+        let post_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("post pipeline"),
+            layout: Some(&post_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &post_shader,
+                entry_point: Some("vs"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                buffers: &[],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &post_shader,
+                entry_point: Some("fs"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                unclipped_depth: false,
+                conservative: false,
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+        let post_sampler = create_post_sampler(&device);
+        let (scene_color_texture, scene_color_view) =
+            create_scene_color(&device, width, height, format);
+        let post_bind_group = create_post_bind_group(
+            &device,
+            &post_bind_group_layout,
+            &scene_color_view,
+            &post_sampler,
+        );
+
         let depth_view = create_depth_view(&device, width, height);
         let terrain = GpuMesh::upload(&device, &scene.terrain, "terrain");
         let models = GpuMesh::upload(&device, &scene.models, "models");
@@ -839,6 +919,12 @@ impl Renderer {
             hud_bind_group,
             _ui_texture: ui_texture,
             _ui_sampler: ui_sampler,
+            post_pipeline,
+            post_bind_group,
+            post_bind_group_layout,
+            _post_sampler: post_sampler,
+            scene_color_view,
+            _scene_color_texture: scene_color_texture,
             sky_pipeline,
             blob_pipeline,
             fog_pipeline,
@@ -897,6 +983,15 @@ impl Renderer {
         self.config.height = height;
         self.surface.configure(&self.device, &self.config);
         self.depth_view = create_depth_view(&self.device, width, height);
+        let (texture, view) = create_scene_color(&self.device, width, height, self.config.format);
+        self._scene_color_texture = texture;
+        self.scene_color_view = view;
+        self.post_bind_group = create_post_bind_group(
+            &self.device,
+            &self.post_bind_group_layout,
+            &self.scene_color_view,
+            &self._post_sampler,
+        );
     }
 
     pub fn update_camera(&mut self) {
@@ -1270,7 +1365,7 @@ impl Renderer {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("scene pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
+                    view: &self.scene_color_view,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
@@ -1347,12 +1442,61 @@ impl Renderer {
                 );
                 pass.draw_indexed(0..self.shadow_index_count, 0, 0..1);
             }
+        }
+
+        {
+            let mut post_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("post pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            post_pass.set_pipeline(&self.post_pipeline);
+            post_pass.set_bind_group(0, &self.post_bind_group, &[]);
+            post_pass.draw(0..3, 0..1);
+        }
+
+        {
+            let mut hud_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("hud pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
             if self.hud_index_count > 0 {
-                pass.set_pipeline(&self.hud_pipeline);
-                pass.set_bind_group(0, &self.hud_bind_group, &[]);
-                pass.set_vertex_buffer(0, self.hud_vertex_buffer.slice(..));
-                pass.set_index_buffer(self.hud_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-                pass.draw_indexed(0..self.hud_index_count, 0, 0..1);
+                hud_pass.set_pipeline(&self.hud_pipeline);
+                hud_pass.set_bind_group(0, &self.hud_bind_group, &[]);
+                hud_pass.set_vertex_buffer(0, self.hud_vertex_buffer.slice(..));
+                hud_pass
+                    .set_index_buffer(self.hud_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                hud_pass.draw_indexed(0..self.hud_index_count, 0, 0..1);
             }
         }
 
@@ -1373,6 +1517,65 @@ fn create_dynamic_buffer(
         size: size.max(4) as u64,
         usage: usage | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
+    })
+}
+
+fn create_scene_color(
+    device: &wgpu::Device,
+    width: u32,
+    height: u32,
+    format: wgpu::TextureFormat,
+) -> (wgpu::Texture, wgpu::TextureView) {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("scene color"),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    (texture, view)
+}
+
+fn create_post_sampler(device: &wgpu::Device) -> wgpu::Sampler {
+    device.create_sampler(&wgpu::SamplerDescriptor {
+        label: Some("post sampler"),
+        address_mode_u: wgpu::AddressMode::ClampToEdge,
+        address_mode_v: wgpu::AddressMode::ClampToEdge,
+        address_mode_w: wgpu::AddressMode::ClampToEdge,
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+        ..Default::default()
+    })
+}
+
+fn create_post_bind_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    view: &wgpu::TextureView,
+    sampler: &wgpu::Sampler,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("post scene bind group"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            },
+        ],
     })
 }
 

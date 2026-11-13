@@ -287,3 +287,26 @@ atlas and packs the UI sprites. `ui.wgsl` samples the atlas with nearest
 filtering; untextured HUD quads sample a white texel so one textured pipeline
 handles all HUD geometry. Missing assets fall back to procedural icons, so the
 game still runs from a clean checkout. No Jagex-derived assets are committed.
+
+
+## ADR-026 — Terrain color smoothing + procedural ground detail
+
+**Status:** accepted for M5.3a.
+
+The terrain color field is box-blurred twice with a separable radius-2 kernel
+and assigned to shared grid-corner vertices. Adjacent tiles interpolate the
+same corner colors, so flat square color blocks disappear. `scene.wgsl` adds
+procedural high/low-frequency detail for terrain (`material == 4`). This is a
+visual ground-blending step, not cache-native texture blending; real ground
+texture decoding/UVs remain M5.3b.
+
+## ADR-027 — Offscreen post pass with FXAA/grade/cheap bloom
+
+**Status:** accepted for M5.4a.
+
+The scene renders to an offscreen sRGB texture, then `post.wgsl` applies
+console-style FXAA, an 8-tap cheap bloom, gamma-space color grading, and
+dithering. The HUD renders in a separate pass after post so text and icons stay
+crisp. The full-screen UV uses `p * vec2(0.5, -0.5) + 0.5` to match wgpu NDC
+orientation. MSAA, full HDR bloom, full SSAO, and draw-distance streaming remain
+future work.

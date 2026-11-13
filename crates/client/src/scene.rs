@@ -675,6 +675,14 @@ pub fn build(
         }
     }
 
+    // Smooth the per-tile color field before triangulating. Two box-blur
+    // passes remove the hard square boundaries between adjacent tiles; the
+    // resulting per-corner colors interpolate across the terrain mesh.
+    let mut smooth_colors = colors.clone();
+    for _ in 0..2 {
+        smooth_colors = box_blur_colors(&smooth_colors, size, 2);
+    }
+
     let mut terrain_mesh = MeshData::new();
     for gy in 0..size - 1 {
         for gx in 0..size - 1 {
@@ -688,18 +696,10 @@ pub fn build(
             let p01 = Vec3::new(x0, heights[idx + size], z1);
             let p11 = Vec3::new(x1, heights[idx + size + 1], z1);
 
-            let mut c = [0u32; 3];
-            for (color, weight) in [
-                (colors[idx], 4u32),
-                (colors[idx + 1], 3),
-                (colors[idx + size], 3),
-                (colors[idx + size + 1], 2),
-            ] {
-                c[0] += color[0] as u32 * weight;
-                c[1] += color[1] as u32 * weight;
-                c[2] += color[2] as u32 * weight;
-            }
-            let color = [(c[0] / 12) as u8, (c[1] / 12) as u8, (c[2] / 12) as u8];
+            let c00 = smooth_colors[idx];
+            let c10 = smooth_colors[idx + 1];
+            let c01 = smooth_colors[idx + size];
+            let c11 = smooth_colors[idx + size + 1];
 
             let normal_at = |vx: usize, vy: usize| {
                 let i = vy * size + vx;
@@ -729,14 +729,18 @@ pub fn build(
             let ao01 = ao_at(gx, gy + 1);
             let ao11 = ao_at(gx + 1, gy + 1);
 
-            let mut v00 = SceneVertex::new(p00, n00, color);
-            let mut v10 = SceneVertex::new(p10, n10, color);
-            let mut v01 = SceneVertex::new(p01, n01, color);
-            let mut v11 = SceneVertex::new(p11, n11, color);
+            let mut v00 = SceneVertex::new(p00, n00, c00);
+            let mut v10 = SceneVertex::new(p10, n10, c10);
+            let mut v01 = SceneVertex::new(p01, n01, c01);
+            let mut v11 = SceneVertex::new(p11, n11, c11);
             v00.ao = ao00;
             v10.ao = ao10;
             v01.ao = ao01;
             v11.ao = ao11;
+            v00.material = 4;
+            v10.material = 4;
+            v01.material = 4;
+            v11.material = 4;
             terrain_mesh.push_triangle(v00, v01, v10);
             terrain_mesh.push_triangle(v10, v01, v11);
         }
@@ -1121,6 +1125,56 @@ fn load_overlays(cache: &Cache) -> Result<HashMap<u32, OverlayDefinition>> {
         }
     }
     Ok(out)
+}
+
+fn box_blur_colors(colors: &[[u8; 3]], size: usize, radius: i32) -> Vec<[u8; 3]> {
+    let mut horizontal = vec![[0u8; 3]; colors.len()];
+    for y in 0..size {
+        for x in 0..size {
+            let mut sum = [0u32; 3];
+            let mut count = 0u32;
+            for dx in -radius..=radius {
+                let sx = x as i32 + dx;
+                if sx < 0 || sx >= size as i32 {
+                    continue;
+                }
+                let c = colors[y * size + sx as usize];
+                sum[0] += c[0] as u32;
+                sum[1] += c[1] as u32;
+                sum[2] += c[2] as u32;
+                count += 1;
+            }
+            horizontal[y * size + x] = [
+                (sum[0] / count) as u8,
+                (sum[1] / count) as u8,
+                (sum[2] / count) as u8,
+            ];
+        }
+    }
+    let mut out = vec![[0u8; 3]; colors.len()];
+    for y in 0..size {
+        for x in 0..size {
+            let mut sum = [0u32; 3];
+            let mut count = 0u32;
+            for dy in -radius..=radius {
+                let sy = y as i32 + dy;
+                if sy < 0 || sy >= size as i32 {
+                    continue;
+                }
+                let c = horizontal[sy as usize * size + x];
+                sum[0] += c[0] as u32;
+                sum[1] += c[1] as u32;
+                sum[2] += c[2] as u32;
+                count += 1;
+            }
+            out[y * size + x] = [
+                (sum[0] / count) as u8,
+                (sum[1] / count) as u8,
+                (sum[2] / count) as u8,
+            ];
+        }
+    }
+    out
 }
 
 fn tile_color(

@@ -110,7 +110,7 @@ fn lighting(input: VsOut) -> vec3<f32> {
     let unit_fill = select(0.10, 0.45, input.material == 3u);
     let fill = max(dot(N, normalize(scene.camera_pos.xyz - input.world)), 0.0) * unit_fill;
     let ambient = select(0.86, 1.10, input.material == 3u);
-    var lit = input.color.rgb * (hemi * ambient + sun * ndotl + fill) * input.ao * 1.04;
+    var lit = albedo(input) * (hemi * ambient + sun * ndotl + fill) * input.ao * 1.04;
 
     lit += input.color.rgb * dynamic_lighting(input);
     return lit;
@@ -125,13 +125,41 @@ fn fog_factor(input: VsOut) -> f32 {
     return clamp(base + height * scene.fog_params.w, 0.0, 0.9);
 }
 
+fn hash21(p: vec2<f32>) -> f32 {
+    var p3 = fract(vec3<f32>(p.x, p.y, p.x) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
+}
+
+fn noise2(p: vec2<f32>) -> f32 {
+    let i = floor(p);
+    let f = fract(p);
+    let u = f * f * (3.0 - 2.0 * f);
+    return mix(
+        mix(hash21(i), hash21(i + vec2<f32>(1.0, 0.0)), u.x),
+        mix(hash21(i + vec2<f32>(0.0, 1.0)), hash21(i + vec2<f32>(1.0, 1.0)), u.x),
+        u.y
+    );
+}
+
+fn albedo(input: VsOut) -> vec3<f32> {
+    var c = input.color.rgb;
+    if (input.material == 4u) {
+        let p = input.world.xz / 128.0;
+        let fine = noise2(p * 7.0) * 0.55 + noise2(p * 19.0) * 0.30;
+        let large = noise2(p * 0.7) * 0.5 + 0.5;
+        c *= 0.84 + fine * 0.22 + large * 0.12;
+    }
+    return c;
+}
+
 @fragment
 fn fs(input: VsOut) -> @location(0) vec4<f32> {
     let flags = u32(scene.tuning.w);
     let debug_view = flags & 15u;
 
     if (debug_view == 1u) {
-        return vec4<f32>(input.color.rgb, 1.0);
+        return vec4<f32>(albedo(input), 1.0);
     }
     if (debug_view == 2u) {
         return vec4<f32>(normalize(input.normal) * 0.5 + 0.5, 1.0);
