@@ -16,9 +16,12 @@ designed for fast-paced low-team-count matches.
 > normals, smooth terrain lighting, a sky with clouds, height fog, static and
 > unit blob shadows, and dynamic ability/fountain point lights. **M5.1** adds a
 > 1024px sun shadow map with PCF, dynamic player/structure/camp casters,
-> alternating shadow updates, and baked contact AO. Textures, HD water, bloom,
+> alternating shadow updates, and baked contact AO. The **UI pass** adds an
+> OSRS-style Fountain Shop window with categories, item cards, detail/buy/sell
+> panes, real item icons and tab sprites, plus HUD objectives, team, resource,
+> event-log, inventory, and shop-button panels. Textures, HD water, bloom,
 > full SSAO, and draw-distance streaming are next. See
-> [docs/STATUS.md](docs/STATUS.md).
+> [docs/STATUS.md](docs/STATUS.md) and [docs/UI_ASSETS.md](docs/UI_ASSETS.md).
 
 ## What exists
 
@@ -90,6 +93,9 @@ cargo run -p rift-client -- --graphics 117hd --debug-view ao
 cargo run -p rift-client -- --graphics 117hd --shadows off|blob|map
 cargo run -p rift-client -- --graphics 117hd --pitch 0.22
 
+# Optional: populate the gitignored UI asset tree (see docs/UI_ASSETS.md)
+# assets/osrs-ui/items/*.png + assets/osrs-ui/ui/tab.png
+
 # Grant gold, open the shop, and buy all six items
 cargo run -p rift-client -- --demo-shop --timescale 4
 
@@ -113,8 +119,10 @@ Put `keys.json` next to `main_file_cache.dat2`, or pass `--keys`.
 - **W**: blink/dash toward the cursor (8 s)
 - **E**: heal + shield (12 s)
 - **R**: meteor AoE at the cursor (45 s)
-- **B**: toggle the fountain shop
-- **1–6**: buy the matching shop item while the shop is open
+- **B**: toggle the Fountain Shop
+- **Click a category**: filter shop items
+- **Click an item card**: select it; use **Buy** or **Sell** in the detail pane
+- **1–6**: quick-buy the matching shop item while the shop is open
 - **Click the minimap**: pan the camera to that point (disables follow)
 - **Arrow keys**: pan the camera (disables follow)
 - **Z / X**: rotate camera
@@ -146,6 +154,7 @@ commands, and how to contribute without breaking determinism or leaking assets.
 - [docs/MAP_FORMAT.md](docs/MAP_FORMAT.md)
 - [docs/NETCODE.md](docs/NETCODE.md)
 - [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md)
+- [docs/UI_ASSETS.md](docs/UI_ASSETS.md)
 - [docs/DECISIONS.md](docs/DECISIONS.md)
 
 ## License

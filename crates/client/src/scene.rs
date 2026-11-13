@@ -10,27 +10,6 @@ use rift_cache::{
 use rift_sim::{Grid, find_path, simplify_path};
 use serde::Deserialize;
 
-#[repr(C)]
-#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct Vertex {
-    pub position: [f32; 3],
-    pub color: [f32; 4],
-}
-
-impl Vertex {
-    pub fn new(position: Vec3, color: [u8; 3]) -> Self {
-        Self {
-            position: position.to_array(),
-            color: [
-                srgb_to_linear(color[0] as f32 / 255.0),
-                srgb_to_linear(color[1] as f32 / 255.0),
-                srgb_to_linear(color[2] as f32 / 255.0),
-                1.0,
-            ],
-        }
-    }
-}
-
 /// Convert an sRGB channel to linear light. The surface is an sRGB target, so
 /// shader output must be linear or the palette is double-gamma corrected.
 pub fn srgb_to_linear(c: f32) -> f32 {
@@ -72,6 +51,12 @@ impl SceneVertex {
     pub fn unlit(position: Vec3, color: [u8; 3]) -> Self {
         let mut vertex = Self::new(position, Vec3::Y, color);
         vertex.material = 1;
+        vertex
+    }
+
+    pub fn unlit_alpha(position: Vec3, color: [u8; 3], alpha: f32) -> Self {
+        let mut vertex = Self::unlit(position, color);
+        vertex.color[3] = alpha.clamp(0.0, 1.0);
         vertex
     }
 
@@ -147,14 +132,16 @@ impl HeightGrid {
 #[derive(Clone)]
 pub struct WorldCollision {
     grid: Grid,
+    sight_grid: Grid,
     origin_tile_x: i32,
     origin_tile_y: i32,
 }
 
 impl WorldCollision {
-    pub fn new(grid: Grid, origin_tile_x: i32, origin_tile_y: i32) -> Self {
+    pub fn new(grid: Grid, sight_grid: Grid, origin_tile_x: i32, origin_tile_y: i32) -> Self {
         Self {
             grid,
+            sight_grid,
             origin_tile_x,
             origin_tile_y,
         }
@@ -188,6 +175,11 @@ impl WorldCollision {
     pub fn is_walkable_world(&self, world_x: f32, world_z: f32) -> bool {
         let (tx, ty) = self.tile_of(world_x, world_z);
         self.grid.is_walkable(tx, ty)
+    }
+
+    /// Trees, walls, and structures block sight; water does not.
+    pub fn blocks_sight_tile(&self, tx: i32, ty: i32) -> bool {
+        !self.sight_grid.is_walkable(tx, ty)
     }
 
     pub fn nearest_walkable_world(&self, world_x: f32, world_z: f32) -> Option<(i32, i32)> {
@@ -762,6 +754,7 @@ pub fn build(
     let tiles_x = ((max_x - min_x + 1) * 64) as usize;
     let tiles_y = ((max_y - min_y + 1) * 64) as usize;
     let mut collision_grid = Grid::new(tiles_x, tiles_y);
+    let mut sight_grid = Grid::new(tiles_x, tiles_y);
     for ((rx, ry), terrain) in &terrains {
         for ty in 0..64 {
             for tx in 0..64 {
@@ -799,12 +792,14 @@ pub fn build(
             let gx = (*rx as i32 * 64 + loc.x as i32) - origin_tile_x;
             let gy = (*ry as i32 * 64 + loc.y as i32) - origin_tile_y;
             collision_grid.block_rect(gx, gy, w, h);
+            sight_grid.block_rect(gx, gy, w, h);
         }
     }
     let map = MapLayout::load(map_path, &height)?;
     map.clear_collision(&mut collision_grid, origin_tile_x, origin_tile_y, 4.5);
     map.block_structures(&mut collision_grid, origin_tile_x, origin_tile_y);
-    let collision = WorldCollision::new(collision_grid, origin_tile_x, origin_tile_y);
+    map.block_structures(&mut sight_grid, origin_tile_x, origin_tile_y);
+    let collision = WorldCollision::new(collision_grid, sight_grid, origin_tile_x, origin_tile_y);
 
     let center = Vec3::new(
         (center_x as f32 * 64.0 + 32.0) * 128.0,

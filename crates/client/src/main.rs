@@ -5,6 +5,7 @@ mod hud;
 mod items;
 mod renderer;
 mod scene;
+mod ui_assets;
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -24,7 +25,10 @@ use winit::window::{Window, WindowId};
 use crate::animated::AnimatedScene;
 use crate::champion::ChampionConfig;
 use crate::hud::{Hud, PlayerHud, minimap_world_at};
-use crate::items::{ItemShop, shop_row_at, shop_row_rect};
+use crate::items::{
+    ItemShop, point_in_rect, shop_button_at, shop_buy_at, shop_card_at, shop_card_rect,
+    shop_category_at, shop_close_at, shop_sell_at, shop_window_rect,
+};
 use crate::renderer::{Camera, Renderer};
 use crate::scene::{CampBuff, HeightGrid, SceneData, SceneVertex, WorldCollision};
 
@@ -128,6 +132,7 @@ fn main() -> Result<()> {
         }
     });
 
+    let ui_atlas = Arc::new(ui_assets::UiAtlas::load()?);
     let mut app = App {
         scene: Some(scene),
         animated: Some(animated),
@@ -151,6 +156,15 @@ fn main() -> Result<()> {
         demo_kit_timer: 0.0,
         demo_kit_stage: 0,
         shop,
+        event_log: vec![
+            "FOUNTAIN HEALS".to_string(),
+            "PRESS B FOR SHOP".to_string(),
+            "WAVE INBOUND".to_string(),
+        ],
+        last_level: 1,
+        last_buff_label: None,
+        last_inhib0: (3, 3),
+        last_inhib1: (3, 3),
         demo_shop: cli.demo_shop,
         demo_shop_timer: 0.0,
         demo_shop_stage: 0,
@@ -169,7 +183,7 @@ fn main() -> Result<()> {
         demo_combat_targeted: false,
         demo_combat_cast: false,
         demo_combat_target: None,
-        hud: Hud::new(),
+        hud: Hud::new(ui_atlas),
         graphics_classic: cli.graphics.eq_ignore_ascii_case("classic"),
         debug_view: parse_debug_view(&cli.debug_view),
         shadow_mode: cli.shadows.clone(),
@@ -207,6 +221,11 @@ struct App {
     demo_kit_timer: f32,
     demo_kit_stage: u8,
     shop: ItemShop,
+    event_log: Vec<String>,
+    last_level: u32,
+    last_buff_label: Option<&'static str>,
+    last_inhib0: (usize, usize),
+    last_inhib1: (usize, usize),
     demo_shop: bool,
     demo_shop_timer: f32,
     demo_shop_stage: u8,
@@ -258,7 +277,12 @@ impl ApplicationHandler for App {
         let scene = self.scene.take().expect("scene missing");
         let animated = self.animated.take().expect("animated scene missing");
         let camera = Camera::new(animated.player_pos() + Vec3::Y * 140.0);
-        let mut renderer = match pollster::block_on(Renderer::new(window.clone(), &scene, camera)) {
+        let mut renderer = match pollster::block_on(Renderer::new(
+            window.clone(),
+            &scene,
+            camera,
+            self.hud.atlas.clone(),
+        )) {
             Ok(renderer) => renderer,
             Err(err) => {
                 tracing::error!("failed to create renderer: {err:#}");
@@ -314,17 +338,49 @@ impl ApplicationHandler for App {
                 {
                     return;
                 }
+                let (w, h) = self
+                    .renderer
+                    .as_ref()
+                    .map(|r| (r.size.0 as f32, r.size.1 as f32))
+                    .unwrap_or((1280.0, 720.0));
                 if state == ElementState::Pressed && self.shop.open {
-                    let (w, h) = self
-                        .renderer
-                        .as_ref()
-                        .map(|r| (r.size.0 as f32, r.size.1 as f32))
-                        .unwrap_or((1280.0, 720.0));
-                    if let Some(row) = shop_row_at(w, h, self.mouse_pos) {
-                        self.purchase_item(row);
+                    if shop_close_at(w, h, self.mouse_pos) {
+                        self.shop.open = false;
+                        return;
+                    }
+                    if let Some(category) = shop_category_at(w, h, self.mouse_pos) {
+                        self.shop.category = category;
+                        self.shop.selected = self.shop.filtered_items().first().copied();
+                        return;
+                    }
+                    if let Some(item) = shop_card_at(w, h, self.mouse_pos, &self.shop) {
+                        self.shop.selected = Some(item);
+                        return;
+                    }
+                    if shop_buy_at(w, h, self.mouse_pos) {
+                        if let Some(item) = self.shop.selected {
+                            self.purchase_item(item);
+                        }
+                        return;
+                    }
+                    if shop_sell_at(w, h, self.mouse_pos) {
+                        if let Some(item) = self.shop.selected {
+                            self.sell_item(item);
+                        }
+                        return;
+                    }
+                    if point_in_rect(shop_window_rect(w, h), self.mouse_pos) {
                         return;
                     }
                     self.shop.open = false;
+                    return;
+                }
+                if state == ElementState::Pressed
+                    && !self.shop.open
+                    && shop_button_at(w, h, self.mouse_pos)
+                {
+                    self.shop.open = true;
+                    self.shop.selected = self.shop.filtered_items().first().copied();
                     return;
                 }
                 match state {
@@ -370,6 +426,9 @@ impl ApplicationHandler for App {
                         self.cast_r();
                     } else if code == KeyCode::KeyB {
                         self.shop.open = !self.shop.open;
+                        if self.shop.open {
+                            self.shop.selected = self.shop.filtered_items().first().copied();
+                        }
                         println!("shop open={}", self.shop.open);
                     } else if let Some(index) = digit_index(code) {
                         if self.shop.open {
@@ -464,13 +523,12 @@ impl App {
                     .as_ref()
                     .map(|r| (r.size.0 as f32, r.size.1 as f32))
                     .unwrap_or((1280.0, 720.0));
-                let row = self
-                    .shop
-                    .owned
+                let filtered = self.shop.filtered_items();
+                let slot = filtered
                     .iter()
-                    .position(Option::is_none)
-                    .unwrap_or(5);
-                let (x, y, rw, rh) = shop_row_rect(w, h, row);
+                    .position(|index| !self.shop.is_owned(*index))
+                    .unwrap_or(0);
+                let (x, y, rw, rh) = shop_card_rect(w, h, slot);
                 self.mouse_pos = ((x + rw * 0.5) as f64, (y + rh * 0.5) as f64);
             }
             if self.demo_shop_stage == 7 && self.demo_shop_timer >= 4.5 {
@@ -726,24 +784,20 @@ impl App {
             }
             let steps = self.timescale.round().clamp(1.0, 20.0) as u32;
             for _ in 0..steps {
-                animated.update(
-                    dt,
-                    height,
-                    collision,
-                    camera_right,
-                    camera_up,
-                    camera_forward,
-                );
+                animated.update(dt, height, collision);
             }
+            animated.refresh_visibility(dt, collision);
+            animated.prepare_render(height, camera_right, camera_up, camera_forward);
             renderer.set_dynamic_mesh(&animated.vertices, &animated.indices);
             renderer.set_shadow_mesh(&animated.shadow_vertices, &animated.shadow_indices);
             renderer.set_caster_mesh(&animated.caster_vertices, &animated.caster_indices);
             renderer.set_lights(&animated.lights());
             renderer.set_time(self.app_time);
             self.fog_timer += dt;
-            if self.fog_timer >= 0.5 {
+            if self.fog_timer >= 0.15 || animated.visibility_dirty {
                 self.fog_timer = 0.0;
                 rebuild_fog(renderer, animated, height, collision);
+                animated.visibility_dirty = false;
             }
 
             let nexus0 = animated.nexus_health(0).unwrap_or((0.0, 1.0));
@@ -777,11 +831,40 @@ impl App {
                 buff_data.map(|(remaining, duration, color, _)| (remaining, duration, color));
             let buff_label = buff_data.map(|(_, _, _, label)| label);
             let stats = animated.player_stats();
+            if stats.level > self.last_level {
+                self.last_level = stats.level;
+                log_event(&mut self.event_log, format!("LEVEL UP! L{}", stats.level));
+            }
+            if buff_label != self.last_buff_label {
+                self.last_buff_label = buff_label;
+                if let Some(label) = buff_label {
+                    log_event(&mut self.event_log, format!("BUFF {label}"));
+                }
+            }
+            let i0 = animated.inhibitor_count(0);
+            if i0.0 < self.last_inhib0.0 {
+                log_event(&mut self.event_log, "INHIBITOR DOWN".to_string());
+            } else if i0.0 > self.last_inhib0.0 {
+                log_event(&mut self.event_log, "INHIBITOR RESPAWN".to_string());
+            }
+            self.last_inhib0 = i0;
+            let i1 = animated.inhibitor_count(1);
+            if i1.0 < self.last_inhib1.0 {
+                log_event(&mut self.event_log, "ENEMY INHIBITOR DOWN".to_string());
+            } else if i1.0 > self.last_inhib1.0 {
+                log_event(&mut self.event_log, "ENEMY INHIBITOR UP".to_string());
+            }
+            self.last_inhib1 = i1;
             let (hud_w, hud_h) = (renderer.size.0 as f32, renderer.size.1 as f32);
             let shop_hover = if self.shop.open {
-                shop_row_at(hud_w, hud_h, self.mouse_pos)
+                shop_card_at(hud_w, hud_h, self.mouse_pos, &self.shop)
             } else {
                 None
+            };
+            let towers = {
+                let healths = animated.tower_healths(0);
+                let alive = healths.iter().filter(|(hp, _)| *hp > 0.0).count();
+                (alive, healths.len())
             };
             let player_hud = PlayerHud {
                 health: stats.health,
@@ -797,15 +880,23 @@ impl App {
                 buff_label,
                 level: stats.level,
                 gold: stats.gold,
-                items: self.shop.owned_colors(),
                 shop_open: self.shop.open,
                 shop_hover,
+                shop_selected: self.shop.selected,
                 shop_in_range: animated.in_fountain_range(),
+                champion_name: animated.champion_name().to_string(),
+                minions: animated.minion_count(),
+                visible_enemies: animated.visible_enemy_count(),
+                towers,
+                inhibitors: animated.inhibitor_count(0),
+                items_owned: self.shop.item_count(),
+                events: self.event_log.clone(),
             };
             self.hud.build(
                 renderer.size.0 as f32,
                 renderer.size.1 as f32,
                 &player_hud,
+                &self.shop,
                 nexus0,
                 nexus1,
                 animated.wave_timer,
@@ -853,10 +944,11 @@ impl App {
                     .map(|(remaining, _, kind)| format!("{:?} {remaining:.0}s", kind))
                     .unwrap_or_else(|| "-".to_string());
                 let shop_note = if self.shop.open {
-                    match shop_row_at(
+                    match shop_card_at(
                         renderer.size.0 as f32,
                         renderer.size.1 as f32,
                         self.mouse_pos,
+                        &self.shop,
                     ) {
                         Some(i) => format!(
                             " | SHOP {} {}g{}",
@@ -967,8 +1059,34 @@ impl App {
                     item.cost,
                     self.shop.item_count()
                 );
+                log_event(&mut self.event_log, format!("BOUGHT {}", item.name));
             }
             Err(err) => tracing::info!("shop: {} failed: {err}", item.name),
+        }
+    }
+
+    fn sell_item(&mut self, index: usize) {
+        let Some(item) = self.shop.items.get(index).cloned() else {
+            return;
+        };
+        if !self.shop.is_owned(index) {
+            return;
+        }
+        let Some(animated) = self.animated.as_mut() else {
+            return;
+        };
+        match animated.sell_item(&item) {
+            Ok(()) => {
+                self.shop.remove_owned(index);
+                tracing::info!(
+                    "shop: sold {} for {}g ({} slots used)",
+                    item.name,
+                    item.cost / 2,
+                    self.shop.item_count()
+                );
+                log_event(&mut self.event_log, format!("SOLD {}", item.name));
+            }
+            Err(err) => tracing::info!("shop: sell {} failed: {err}", item.name),
         }
     }
 
@@ -1178,27 +1296,74 @@ fn rebuild_fog(
     let height_tiles = collision.height();
     let mut vertices = Vec::new();
     let mut indices = Vec::new();
-    let color = [14u8, 20, 28];
+    let color = [36u8, 46, 60];
+    let max_alpha = 0.65;
+
+    // Smoothed visibility at tile corners gives soft fog edges instead of
+    // hard 128-unit blocks.
+    let stride = (width + 1) as usize;
+    let mut smooth = vec![0.0f32; stride * (height_tiles + 1) as usize];
+    for gy in 0..=height_tiles {
+        for gx in 0..=width {
+            let mut sum = 0.0;
+            let mut count = 0.0;
+            for dy in -1..=1 {
+                for dx in -1..=1 {
+                    let tx = gx + dx;
+                    let ty = gy + dy;
+                    if tx >= 0 && ty >= 0 && tx < width && ty < height_tiles {
+                        sum += if animated.visibility.is_visible(tx, ty) {
+                            1.0
+                        } else {
+                            0.0
+                        };
+                        count += 1.0;
+                    }
+                }
+            }
+            smooth[gy as usize * stride + gx as usize] =
+                if count > 0.0 { sum / count } else { 0.0 };
+        }
+    }
 
     for gy in 0..height_tiles {
         for gx in 0..width {
-            if animated.visibility.is_visible(gx, gy) {
+            let v00 = smooth[gy as usize * stride + gx as usize];
+            let v10 = smooth[gy as usize * stride + gx as usize + 1];
+            let v01 = smooth[(gy as usize + 1) * stride + gx as usize];
+            let v11 = smooth[(gy as usize + 1) * stride + gx as usize + 1];
+            let a00 = (1.0 - v00) * max_alpha;
+            let a10 = (1.0 - v10) * max_alpha;
+            let a01 = (1.0 - v01) * max_alpha;
+            let a11 = (1.0 - v11) * max_alpha;
+            if a00.max(a10).max(a01).max(a11) < 0.01 {
                 continue;
             }
+
             let x0 = (ox + gx) as f32 * 128.0;
             let z0 = (oy + gy) as f32 * 128.0;
             let x1 = x0 + 128.0;
             let z1 = z0 + 128.0;
-            let y = height.height_at(x0 + 64.0, z0 + 64.0) + 120.0;
+            let y = height
+                .height_at(x0 + 64.0, z0 + 64.0)
+                .max(height.height_at(x1 - 64.0, z0 + 64.0))
+                .max(height.height_at(x0 + 64.0, z1 - 64.0))
+                .max(height.height_at(x1 - 64.0, z1 - 64.0))
+                + 90.0;
             let base = vertices.len() as u32;
-            vertices.push(SceneVertex::unlit(Vec3::new(x0, y, z0), color));
-            vertices.push(SceneVertex::unlit(Vec3::new(x1, y, z0), color));
-            vertices.push(SceneVertex::unlit(Vec3::new(x0, y, z1), color));
-            vertices.push(SceneVertex::unlit(Vec3::new(x1, y, z1), color));
+            vertices.push(SceneVertex::unlit_alpha(Vec3::new(x0, y, z0), color, a00));
+            vertices.push(SceneVertex::unlit_alpha(Vec3::new(x1, y, z0), color, a10));
+            vertices.push(SceneVertex::unlit_alpha(Vec3::new(x0, y, z1), color, a01));
+            vertices.push(SceneVertex::unlit_alpha(Vec3::new(x1, y, z1), color, a11));
             indices.extend_from_slice(&[base, base + 1, base + 2, base + 2, base + 1, base + 3]);
         }
     }
     renderer.set_fog_mesh(&vertices, &indices);
+}
+
+fn log_event(events: &mut Vec<String>, message: String) {
+    events.insert(0, message);
+    events.truncate(5);
 }
 
 fn parse_shadow_mode(name: &str) -> u32 {

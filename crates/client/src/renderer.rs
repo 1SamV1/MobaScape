@@ -6,9 +6,9 @@ use wgpu::util::DeviceExt;
 use winit::window::Window;
 
 use crate::animated::SceneLight;
-use crate::scene::{
-    Atmosphere, HeightGrid, MeshData, SceneData, SceneVertex, Vertex, srgb_to_linear,
-};
+use crate::hud::UiVertex;
+use crate::scene::{Atmosphere, HeightGrid, MeshData, SceneData, SceneVertex, srgb_to_linear};
+use crate::ui_assets::UiAtlas;
 
 #[repr(C)]
 #[derive(Copy, Clone, Default, bytemuck::Pod, bytemuck::Zeroable)]
@@ -153,8 +153,12 @@ pub struct Renderer {
     config: wgpu::SurfaceConfiguration,
     scene_pipeline: wgpu::RenderPipeline,
     hud_pipeline: wgpu::RenderPipeline,
+    hud_bind_group: wgpu::BindGroup,
+    _ui_texture: wgpu::Texture,
+    _ui_sampler: wgpu::Sampler,
     sky_pipeline: wgpu::RenderPipeline,
     blob_pipeline: wgpu::RenderPipeline,
+    fog_pipeline: wgpu::RenderPipeline,
     shadow_pipeline: wgpu::RenderPipeline,
     bind_group: wgpu::BindGroup,
     shadow_bind_group: wgpu::BindGroup,
@@ -202,6 +206,7 @@ impl Renderer {
         window: Arc<Window>,
         scene: &SceneData,
         initial_camera: Camera,
+        ui_atlas: Arc<UiAtlas>,
     ) -> Result<Self> {
         let size = window.inner_size();
         let width = size.width.max(1);
@@ -258,9 +263,9 @@ impl Renderer {
             label: Some("rift scene shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("scene.wgsl").into()),
         });
-        let hud_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("rift hud shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("hud.wgsl").into()),
+        let ui_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("rift ui shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("ui.wgsl").into()),
         });
         let sky_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("rift sky shader"),
@@ -273,6 +278,10 @@ impl Renderer {
         let shadow_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("rift sun shadow shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shadow.wgsl").into()),
+        });
+        let fog_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("rift fog of war shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("fog.wgsl").into()),
         });
 
         let scene_globals = SceneGlobals::from_atmosphere(&scene.atmosphere);
@@ -363,6 +372,73 @@ impl Renderer {
             ],
         });
 
+        let ui_texture = device.create_texture_with_data(
+            &queue,
+            &wgpu::TextureDescriptor {
+                label: Some("ui atlas"),
+                size: wgpu::Extent3d {
+                    width: ui_atlas.width,
+                    height: ui_atlas.height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            },
+            wgpu::util::TextureDataOrder::LayerMajor,
+            &ui_atlas.pixels,
+        );
+        let ui_view = ui_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let ui_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("ui sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            ..Default::default()
+        });
+        let hud_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("ui texture layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            });
+        let hud_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("ui texture bind group"),
+            layout: &hud_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&ui_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&ui_sampler),
+                },
+            ],
+        });
+
         let scene_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("scene pipeline layout"),
@@ -398,8 +474,8 @@ impl Renderer {
                 immediate_size: 0,
             });
         let hud_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("hud pipeline layout"),
-            bind_group_layouts: &[],
+            label: Some("ui pipeline layout"),
+            bind_group_layouts: &[Some(&hud_bind_group_layout)],
             immediate_size: 0,
         });
 
@@ -411,8 +487,8 @@ impl Renderer {
             4 => Float32,
             5 => Uint32
         ];
-        const HUD_ATTRS: [wgpu::VertexAttribute; 2] =
-            wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x4];
+        const HUD_ATTRS: [wgpu::VertexAttribute; 3] =
+            wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2, 2 => Float32x4];
 
         let scene_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("scene pipeline"),
@@ -449,6 +525,50 @@ impl Renderer {
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth32Float,
                 depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Less),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
+        let fog_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("fog of war pipeline"),
+            layout: Some(&scene_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &fog_shader,
+                entry_point: Some("vs"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                buffers: &[Some(wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<SceneVertex>() as wgpu::BufferAddress,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &SCENE_ATTRS,
+                })],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &fog_shader,
+                entry_point: Some("fs"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                unclipped_depth: false,
+                conservative: false,
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: Some(false),
                 depth_compare: Some(wgpu::CompareFunction::Less),
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
@@ -501,17 +621,17 @@ impl Renderer {
             label: Some("hud pipeline"),
             layout: Some(&hud_pipeline_layout),
             vertex: wgpu::VertexState {
-                module: &hud_shader,
+                module: &ui_shader,
                 entry_point: Some("vs"),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
+                    array_stride: std::mem::size_of::<UiVertex>() as wgpu::BufferAddress,
                     step_mode: wgpu::VertexStepMode::Vertex,
                     attributes: &HUD_ATTRS,
                 })],
             },
             fragment: Some(wgpu::FragmentState {
-                module: &hud_shader,
+                module: &ui_shader,
                 entry_point: Some("fs"),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 targets: &[Some(wgpu::ColorTargetState {
@@ -684,7 +804,7 @@ impl Renderer {
         let hud_vertex_buffer = create_dynamic_buffer(
             &device,
             "hud vertices",
-            hud_vertex_capacity * std::mem::size_of::<Vertex>(),
+            hud_vertex_capacity * std::mem::size_of::<UiVertex>(),
             wgpu::BufferUsages::VERTEX,
         );
         let hud_index_buffer = create_dynamic_buffer(
@@ -716,8 +836,12 @@ impl Renderer {
             config,
             scene_pipeline,
             hud_pipeline,
+            hud_bind_group,
+            _ui_texture: ui_texture,
+            _ui_sampler: ui_sampler,
             sky_pipeline,
             blob_pipeline,
+            fog_pipeline,
             shadow_pipeline,
             bind_group,
             shadow_bind_group,
@@ -1018,13 +1142,13 @@ impl Renderer {
         self.fog_index_count = indices.len() as u32;
     }
 
-    pub fn set_hud_mesh(&mut self, vertices: &[Vertex], indices: &[u32]) {
+    pub fn set_hud_mesh(&mut self, vertices: &[UiVertex], indices: &[u32]) {
         if vertices.len() > self.hud_vertex_capacity {
             let capacity = vertices.len().next_power_of_two();
             self.hud_vertex_buffer = create_dynamic_buffer(
                 &self.device,
                 "hud vertices",
-                capacity * std::mem::size_of::<Vertex>(),
+                capacity * std::mem::size_of::<UiVertex>(),
                 wgpu::BufferUsages::VERTEX,
             );
             self.hud_vertex_capacity = capacity;
@@ -1187,9 +1311,13 @@ impl Renderer {
                 pass.draw_indexed(0..mesh.index_count, 0, 0..1);
             }
             if self.fog_index_count > 0 {
+                pass.set_pipeline(&self.fog_pipeline);
+                pass.set_bind_group(0, &self.bind_group, &[]);
                 pass.set_vertex_buffer(0, self.fog_vertex_buffer.slice(..));
                 pass.set_index_buffer(self.fog_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
                 pass.draw_indexed(0..self.fog_index_count, 0, 0..1);
+                pass.set_pipeline(&self.scene_pipeline);
+                pass.set_bind_group(0, &self.bind_group, &[]);
             }
             if self.dynamic_index_count > 0 {
                 pass.set_vertex_buffer(0, self.dynamic_vertex_buffer.slice(..));
@@ -1221,6 +1349,7 @@ impl Renderer {
             }
             if self.hud_index_count > 0 {
                 pass.set_pipeline(&self.hud_pipeline);
+                pass.set_bind_group(0, &self.hud_bind_group, &[]);
                 pass.set_vertex_buffer(0, self.hud_vertex_buffer.slice(..));
                 pass.set_index_buffer(self.hud_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
                 pass.draw_indexed(0..self.hud_index_count, 0, 0..1);

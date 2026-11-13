@@ -156,7 +156,7 @@ Cache location: `.cache/osrs-235/cache` by default. Pass `--cache` and
 - Renderer changes: include a headless screenshot or a manual visual check note.
 - Performance: 1080p/60 target on the AMD 680M iGPU. Profile before optimizing.
 
-## 8. Known M5.1 limitations
+## 8. Known M5.1 UI limitations
 
 - Client renders a 3×3 region block (192×192 tiles); there is no terrain skirt
   or streaming beyond it, and the collision grid is approximate (water + object
@@ -183,6 +183,13 @@ Cache location: `.cache/osrs-235/cache` by default. Pass `--cache` and
   MSAA, and draw-distance streaming are not implemented yet.
 - `--graphics classic` preserves a flat baseline; `--debug-view albedo|normal|
   lighting|fog|lights|shadow|ao` helps tune the renderer.
+- **UI pass**: the Fountain Shop is a centered OSRS-style window with category
+  tabs, item-card grid, detail pane, Buy/Sell buttons, inventory row, and real
+  item icons/tab sprites from the gitignored `assets/osrs-ui` tree. The HUD has
+  resource, team, objectives, event-log, compact health/mana, inventory, and
+  shop-button panels. `crates/client/src/ui_assets.rs` builds a 1024×1024 atlas;
+  `ui.wgsl` samples it with nearest filtering. Missing assets fall back to
+  procedural icons. See `docs/UI_ASSETS.md`; never commit `assets/`.
 - Three data-driven champions (`monkey`, `jad`, `kree`) with distinct models,
   stats, and ability numbers. They share the Q/W/E/R shape; Kree has ranged
   auto-attacks. No champion-select UI or passive.
@@ -201,6 +208,12 @@ Cache location: `.cache/osrs-235/cache` by default. Pass `--cache` and
   use flat fallback colours. Dead-tree trunks read as pale spikes.
 - Animaya is not applied; only classic frame/framemap animation works.
 - No lobby, netcode, audio, or map editor. Ambient NPCs idle only.
+- The UI atlas depends on external PNGs in `assets/osrs-ui`; without them the
+  shop uses procedural fallback icons and no OSRS tab sprites. The bronze sword
+  icon is a trimmed detail render because the plain inventory icon file was not
+  available under the expected wiki name.
+- Baked numbers/icons in the tab sprites are covered by dark overlays; faint
+  traces can still show through at some scales.
 - LZMA groups are implemented but not exercised by the pinned cache.
 - Config archives use real file IDs from the reference table; keep it that way.
 - The viewer follows the player by default. Arrow keys pan; `F` toggles follow.

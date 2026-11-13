@@ -1,9 +1,23 @@
+use std::sync::Arc;
+
 use glam::Vec2;
 
 use crate::animated::{AnimatedScene, UnitKind};
 use crate::font;
-use crate::items::{ItemShop, shop_row_rect};
-use crate::scene::Vertex;
+use crate::items::{
+    CATEGORY_LABELS, ItemConfig, ItemShop, shop_button_rect, shop_buy_rect, shop_card_rect,
+    shop_category_rect, shop_close_rect, shop_detail_rect, shop_sell_rect, shop_window_rect,
+};
+use crate::scene::srgb_to_linear;
+use crate::ui_assets::UiAtlas;
+
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct UiVertex {
+    pub position: [f32; 3],
+    pub uv: [f32; 2],
+    pub color: [f32; 4],
+}
 
 pub struct PlayerHud {
     pub health: f32,
@@ -19,15 +33,23 @@ pub struct PlayerHud {
     pub buff_label: Option<&'static str>,
     pub level: u32,
     pub gold: u32,
-    pub items: [Option<[u8; 3]>; 6],
     pub shop_open: bool,
     pub shop_hover: Option<usize>,
+    pub shop_selected: Option<usize>,
     pub shop_in_range: bool,
+    pub champion_name: String,
+    pub minions: usize,
+    pub visible_enemies: usize,
+    pub towers: (usize, usize),
+    pub inhibitors: (usize, usize),
+    pub items_owned: usize,
+    pub events: Vec<String>,
 }
 
 pub struct Hud {
-    pub vertices: Vec<Vertex>,
+    pub vertices: Vec<UiVertex>,
     pub indices: Vec<u32>,
+    pub atlas: Arc<UiAtlas>,
 }
 
 /// Screen-space rectangle of the minimap: `(x, y, width, height)`.
@@ -59,10 +81,11 @@ pub fn minimap_world_at(
 }
 
 impl Hud {
-    pub fn new() -> Self {
+    pub fn new(atlas: Arc<UiAtlas>) -> Self {
         Self {
             vertices: Vec::new(),
             indices: Vec::new(),
+            atlas,
         }
     }
 
@@ -294,6 +317,7 @@ impl Hud {
         width: f32,
         height: f32,
         player: &PlayerHud,
+        shop: &ItemShop,
         nexus0: (f32, f32),
         nexus1: (f32, f32),
         wave_timer: f32,
@@ -389,13 +413,13 @@ impl Hud {
         );
         if let Some((remaining, duration, color)) = player.buff {
             let fill = (remaining / duration.max(0.1)).clamp(0.0, 1.0);
-            self.panel(width, height, 22.0, 94.0, 150.0, 10.0, fill, color);
+            self.panel(width, height, 22.0, 86.0, 150.0, 10.0, fill, color);
             if let Some(label) = player.buff_label {
                 self.text(
                     width,
                     height,
                     26.0,
-                    95.0,
+                    87.0,
                     0.9,
                     &format!("{label} {remaining:.0}S"),
                     [250, 250, 250],
@@ -411,7 +435,7 @@ impl Hud {
             width,
             height,
             x0,
-            18.0,
+            34.0,
             bar_w,
             16.0,
             (nexus0.0 / nexus0.1.max(1.0)).clamp(0.0, 1.0),
@@ -421,7 +445,7 @@ impl Hud {
             width,
             height,
             x0 + bar_w + gap,
-            18.0,
+            34.0,
             bar_w,
             16.0,
             (nexus1.0 / nexus1.1.max(1.0)).clamp(0.0, 1.0),
@@ -436,7 +460,7 @@ impl Hud {
             width,
             height,
             width * 0.5 - 90.0,
-            40.0,
+            66.0,
             180.0,
             6.0,
             wave_fill,
@@ -446,7 +470,7 @@ impl Hud {
             width,
             height,
             x0,
-            4.0,
+            52.0,
             1.1,
             &format!("BLUE {:.0}", nexus0.0),
             [110, 175, 255],
@@ -455,7 +479,7 @@ impl Hud {
             width,
             height,
             x0 + bar_w + gap,
-            4.0,
+            52.0,
             1.1,
             &format!("RED {:.0}", nexus1.0),
             [255, 120, 110],
@@ -464,7 +488,7 @@ impl Hud {
             width,
             height,
             width * 0.5,
-            48.0,
+            74.0,
             0.9,
             &format!("WAVE {:.0}S", wave_timer),
             [230, 210, 120],
@@ -554,7 +578,324 @@ impl Hud {
             }
         }
 
+        // Top resource bar.
+        let bar_x = width * 0.5 - 240.0;
+        self.quad(width, height, bar_x - 1.0, 3.0, 482.0, 28.0, [82, 76, 58]);
+        self.quad(width, height, bar_x, 4.0, 480.0, 26.0, [20, 20, 24]);
+        self.text(
+            width,
+            height,
+            bar_x + 12.0,
+            9.0,
+            1.0,
+            &format!("GOLD {}", player.gold),
+            [245, 205, 70],
+        );
+        self.text(
+            width,
+            height,
+            bar_x + 108.0,
+            9.0,
+            1.0,
+            &format!("WAVE {:.0}S", wave_timer),
+            [225, 225, 225],
+        );
+        self.text(
+            width,
+            height,
+            bar_x + 202.0,
+            9.0,
+            1.0,
+            &format!("MINIONS {}", player.minions),
+            [225, 225, 225],
+        );
+        self.text(
+            width,
+            height,
+            bar_x + 306.0,
+            9.0,
+            1.0,
+            &format!("ITEMS {}/6", player.items_owned),
+            [225, 225, 225],
+        );
+        self.text(
+            width,
+            height,
+            bar_x + 404.0,
+            9.0,
+            1.0,
+            &format!("VIS {}", player.visible_enemies),
+            [225, 225, 225],
+        );
+
+        // Team panel, top-right.
+        let tx = width - 238.0;
+        self.quad(width, height, tx - 1.0, 3.0, 222.0, 82.0, [82, 76, 58]);
+        self.quad(width, height, tx, 4.0, 220.0, 80.0, [20, 20, 24]);
+        self.text(
+            width,
+            height,
+            tx + 8.0,
+            10.0,
+            1.0,
+            "YOUR TEAM",
+            [220, 200, 150],
+        );
+        self.text(
+            width,
+            height,
+            tx + 8.0,
+            24.0,
+            1.1,
+            &player.champion_name,
+            [240, 240, 240],
+        );
+        self.text(
+            width,
+            height,
+            tx + 8.0,
+            42.0,
+            0.9,
+            &format!("LV {}   {}/6 ITEMS", player.level, player.items_owned),
+            [200, 200, 200],
+        );
+        self.text(
+            width,
+            height,
+            tx + 8.0,
+            54.0,
+            0.9,
+            &format!("HP {:.0}/{:.0}", player.health, player.max_health),
+            [120, 230, 150],
+        );
+        self.text(
+            width,
+            height,
+            tx + 8.0,
+            66.0,
+            0.9,
+            &format!("GOLD {}", player.gold),
+            [245, 205, 70],
+        );
+
+        // Objectives panel, left.
+        let ox = 22.0;
+        let oy = 104.0;
+        self.quad(
+            width,
+            height,
+            ox - 1.0,
+            oy - 1.0,
+            232.0,
+            114.0,
+            [82, 76, 58],
+        );
+        self.quad(width, height, ox, oy, 230.0, 112.0, [18, 20, 24]);
+        self.text(
+            width,
+            height,
+            ox + 8.0,
+            oy + 6.0,
+            1.0,
+            "OBJECTIVES",
+            [220, 200, 150],
+        );
+        self.text(
+            width,
+            height,
+            ox + 8.0,
+            oy + 22.0,
+            0.9,
+            &format!("NEXUS {:.0}/{:.0}", nexus0.0, nexus0.1),
+            [110, 175, 255],
+        );
+        self.text(
+            width,
+            height,
+            ox + 8.0,
+            oy + 36.0,
+            0.9,
+            &format!("INHIB {}/{}", player.inhibitors.0, player.inhibitors.1),
+            [220, 180, 120],
+        );
+        self.text(
+            width,
+            height,
+            ox + 8.0,
+            oy + 50.0,
+            0.9,
+            &format!("TOWERS {}/{}", player.towers.0, player.towers.1),
+            [220, 180, 120],
+        );
+        let buff_line = player
+            .buff
+            .map(|(remaining, _, _)| {
+                format!(
+                    "BUFF {} {:.0}S",
+                    player.buff_label.unwrap_or("ACTIVE"),
+                    remaining
+                )
+            })
+            .unwrap_or_else(|| "BUFF NONE".to_string());
+        self.text(
+            width,
+            height,
+            ox + 8.0,
+            oy + 64.0,
+            0.9,
+            &buff_line,
+            [255, 170, 80],
+        );
+        self.text(
+            width,
+            height,
+            ox + 8.0,
+            oy + 78.0,
+            0.9,
+            &format!("VISIBLE {}", player.visible_enemies),
+            [200, 220, 240],
+        );
+        self.text(
+            width,
+            height,
+            ox + 8.0,
+            oy + 92.0,
+            0.9,
+            &format!("MINIONS {}", player.minions),
+            [200, 220, 240],
+        );
+
+        // Event log, bottom-left.
+        let lx = 18.0;
+        let ly = height - 170.0;
+        self.quad(
+            width,
+            height,
+            lx - 1.0,
+            ly - 1.0,
+            342.0,
+            122.0,
+            [82, 76, 58],
+        );
+        self.quad(width, height, lx, ly, 340.0, 120.0, [16, 18, 22]);
+        self.text(
+            width,
+            height,
+            lx + 8.0,
+            ly + 6.0,
+            1.0,
+            "EVENT LOG",
+            [220, 200, 150],
+        );
+        if player.events.is_empty() {
+            self.text(
+                width,
+                height,
+                lx + 8.0,
+                ly + 22.0,
+                0.85,
+                "NO EVENTS YET",
+                [180, 185, 195],
+            );
+        } else {
+            for (i, event) in player.events.iter().take(5).enumerate() {
+                let line: String = event.chars().take(46).collect();
+                self.text(
+                    width,
+                    height,
+                    lx + 8.0,
+                    ly + 22.0 + i as f32 * 15.0,
+                    0.85,
+                    &line,
+                    [210, 215, 225],
+                );
+            }
+        }
+
+        // Compact health/mana bars above the ability row.
+        let cx = width * 0.5 - 120.0;
+        self.panel(
+            width,
+            height,
+            cx,
+            height - 138.0,
+            240.0,
+            10.0,
+            (player.health / player.max_health.max(1.0)).clamp(0.0, 1.0),
+            [70, 190, 95],
+        );
+        self.text(
+            width,
+            height,
+            cx + 4.0,
+            height - 137.0,
+            0.75,
+            &format!("HP {:.0}/{:.0}", player.health, player.max_health),
+            [245, 245, 245],
+        );
+        self.panel(
+            width,
+            height,
+            cx,
+            height - 124.0,
+            240.0,
+            8.0,
+            (player.mana / player.max_mana.max(1.0)).clamp(0.0, 1.0),
+            [70, 120, 235],
+        );
+        self.text(
+            width,
+            height,
+            cx + 4.0,
+            height - 123.0,
+            0.7,
+            &format!("MP {:.0}/{:.0}", player.mana, player.max_mana),
+            [230, 235, 255],
+        );
+
+        // Inventory and shop button, bottom-right.
+        let inv_x = width - 454.0;
+        let inv_y = height - 96.0;
+        self.draw_inventory_slots(width, height, inv_x, inv_y, 34.0, 6.0, shop);
+        let (bx, by, bw, bh) = shop_button_rect(width, height);
+        self.quad(
+            width,
+            height,
+            bx - 1.0,
+            by - 1.0,
+            bw + 2.0,
+            bh + 2.0,
+            [82, 76, 58],
+        );
+        if let Some(uv) = self.atlas.ui_uv("tab") {
+            self.sprite(width, height, bx, by, bw, bh, uv, [255, 240, 200], 1.0);
+            self.quad_alpha(
+                width,
+                height,
+                bx + 3.0,
+                by + 3.0,
+                bw - 6.0,
+                bh - 6.0,
+                [24, 24, 28],
+                0.82,
+            );
+        } else {
+            self.quad(width, height, bx, by, bw, bh, [30, 28, 22]);
+        }
+        self.text_centered(
+            width,
+            height,
+            bx + bw * 0.5,
+            by + 7.0,
+            0.9,
+            "SHOP [B]",
+            [245, 220, 150],
+        );
+
         // Crosshair at the cursor.
+        if player.shop_open {
+            return;
+        }
         let mx = mouse.0 as f32;
         let my = mouse.1 as f32;
         self.quad(
@@ -580,272 +921,631 @@ impl Hud {
     /// Draw the six inventory slots and, when open, the fountain shop panel.
     /// Geometry only: the window title carries item names and gold.
     pub fn build_shop(&mut self, width: f32, height: f32, player: &PlayerHud, shop: &ItemShop) {
-        // Inventory slots, bottom-left.
-        let slot = 30.0;
-        let gap = 6.0;
-        let ix = 22.0;
-        let iy = height - 96.0;
-        for i in 0..6 {
-            let x = ix + i as f32 * (slot + gap);
-            self.quad(
-                width,
-                height,
-                x - 1.0,
-                iy - 1.0,
-                slot + 2.0,
-                slot + 2.0,
-                [70, 75, 85],
-            );
-            self.quad(width, height, x, iy, slot, slot, [20, 22, 26]);
-            if let Some(color) = player.items[i] {
-                self.quad(
-                    width,
-                    height,
-                    x + 5.0,
-                    iy + 5.0,
-                    slot - 10.0,
-                    slot - 10.0,
-                    color,
-                );
-                if let Some(index) = shop.owned[i] {
-                    if let Some(item) = shop.items.get(index) {
-                        if let Some(initial) = item.name.chars().next() {
-                            self.text_centered(
-                                width,
-                                height,
-                                x + slot * 0.5,
-                                iy + 18.0,
-                                1.0,
-                                &initial.to_string(),
-                                [245, 245, 245],
-                            );
-                        }
-                    }
-                }
-            } else {
-                self.quad(
-                    width,
-                    height,
-                    x + slot * 0.5 - 2.0,
-                    iy + slot * 0.5 - 2.0,
-                    4.0,
-                    4.0,
-                    [48, 52, 60],
-                );
-            }
-        }
-
         if !player.shop_open {
             return;
         }
+        let (wx, wy, ww, wh) = shop_window_rect(width, height);
+        let affordable = shop.affordable(player.gold);
 
-        // Shop panel backdrop and header gold bar.
-        let panel_x = 16.0;
-        let panel_y = height - 368.0;
-        self.quad(width, height, panel_x, panel_y, 262.0, 272.0, [70, 75, 85]);
+        // Modal dimmer and window frame.
+        self.quad_alpha(width, height, 0.0, 0.0, width, height, [0, 0, 0], 0.42);
         self.quad(
             width,
             height,
-            panel_x + 2.0,
-            panel_y + 2.0,
-            258.0,
-            268.0,
-            [14, 16, 20],
+            wx - 2.0,
+            wy - 2.0,
+            ww + 4.0,
+            wh + 4.0,
+            [96, 82, 50],
         );
+        self.quad_alpha(width, height, wx, wy, ww, wh, [18, 20, 26], 0.97);
+        if let Some(uv) = self.atlas.ui_uv("tab") {
+            self.sprite(
+                width,
+                height,
+                wx + 2.0,
+                wy + 2.0,
+                ww - 4.0,
+                32.0,
+                uv,
+                [255, 255, 255],
+                1.0,
+            );
+            self.quad_alpha(
+                width,
+                height,
+                wx + 5.0,
+                wy + 5.0,
+                ww - 10.0,
+                26.0,
+                [18, 20, 26],
+                0.88,
+            );
+        } else {
+            self.quad(
+                width,
+                height,
+                wx + 2.0,
+                wy + 2.0,
+                ww - 4.0,
+                32.0,
+                [34, 31, 24],
+            );
+        }
         self.quad(
             width,
             height,
-            panel_x + 8.0,
-            panel_y + 8.0,
-            246.0,
-            20.0,
-            [10, 12, 16],
+            wx + 2.0,
+            wy + 34.0,
+            ww - 4.0,
+            2.0,
+            [120, 100, 60],
         );
-        let gold_fill = (player.gold as f32 / 2000.0).clamp(0.0, 1.0);
-        self.quad(
+
+        self.text_centered(
             width,
             height,
-            panel_x + 10.0,
-            panel_y + 10.0,
-            242.0 * gold_fill,
-            16.0,
-            if player.shop_in_range {
-                [225, 185, 55]
-            } else {
-                [130, 60, 60]
-            },
-        );
-        self.text(
-            width,
-            height,
-            panel_x + 10.0,
-            panel_y + 10.0,
-            1.2,
-            "SHOP",
-            [245, 245, 245],
+            wx + ww * 0.5,
+            wy + 10.0,
+            1.6,
+            "FOUNTAIN SHOP",
+            [245, 220, 160],
         );
         let gold_text = format!("{}G", player.gold);
-        let gold_width = font::text_width(&gold_text, 1.2);
+        let gold_width = font::text_width(&gold_text, 1.1);
         self.text(
             width,
             height,
-            panel_x + 250.0 - gold_width,
-            panel_y + 10.0,
-            1.2,
+            wx + ww - 160.0 - gold_width,
+            wy + 12.0,
+            1.1,
             &gold_text,
-            [245, 245, 245],
+            [245, 205, 70],
+        );
+        let (cx, cy, cw, ch) = shop_close_rect(width, height);
+        self.quad(width, height, cx, cy, cw, ch, [110, 55, 50]);
+        self.quad(
+            width,
+            height,
+            cx + 2.0,
+            cy + 2.0,
+            cw - 4.0,
+            ch - 4.0,
+            [40, 20, 20],
+        );
+        self.text_centered(
+            width,
+            height,
+            cx + cw * 0.5,
+            cy + 6.0,
+            1.2,
+            "X",
+            [255, 220, 210],
         );
 
-        let affordable = shop.affordable(player.gold);
-        for (row, &can_buy_item) in affordable.iter().enumerate() {
-            let (x, y, w, h) = shop_row_rect(width, height, row);
-            let hover = player.shop_hover == Some(row);
-            let can_buy = can_buy_item && player.shop_in_range;
-            let owned = shop.is_owned(row);
-            let item = shop.items.get(row);
-            let border = if hover {
-                [120, 200, 255]
-            } else if can_buy {
-                [88, 94, 108]
+        // Category sidebar.
+        for (index, label) in CATEGORY_LABELS.iter().enumerate() {
+            let (x, y, w, h) = shop_category_rect(width, height, index);
+            let selected = shop.category == index;
+            if let Some(uv) = self.atlas.ui_uv("tab") {
+                self.sprite(
+                    width,
+                    height,
+                    x,
+                    y,
+                    w,
+                    h,
+                    uv,
+                    if selected {
+                        [255, 230, 160]
+                    } else {
+                        [220, 210, 190]
+                    },
+                    1.0,
+                );
+                self.quad_alpha(
+                    width,
+                    height,
+                    x + 3.0,
+                    y + 3.0,
+                    w - 6.0,
+                    h - 6.0,
+                    [22, 22, 26],
+                    0.86,
+                );
             } else {
-                [54, 56, 64]
+                self.quad(
+                    width,
+                    height,
+                    x,
+                    y,
+                    w,
+                    h,
+                    if selected { [78, 64, 34] } else { [28, 30, 36] },
+                );
+            }
+            if selected {
+                self.quad(width, height, x, y, 3.0, h, [225, 185, 90]);
+            }
+            self.text(
+                width,
+                height,
+                x + 9.0,
+                y + 7.0,
+                0.9,
+                label,
+                if selected {
+                    [250, 225, 160]
+                } else {
+                    [185, 190, 200]
+                },
+            );
+        }
+
+        // Item cards.
+        let filtered = shop.filtered_items();
+        for (slot, item_index) in filtered.iter().enumerate().take(6) {
+            let (x, y, w, h) = shop_card_rect(width, height, slot);
+            let item = &shop.items[*item_index];
+            let hover = player.shop_hover == Some(*item_index);
+            let selected = player.shop_selected == Some(*item_index);
+            let can_buy = affordable[*item_index] && player.shop_in_range;
+            let border = if selected {
+                [230, 190, 90]
+            } else if hover {
+                [120, 200, 255]
+            } else {
+                [82, 76, 58]
             };
             self.quad(width, height, x, y, w, h, border);
             self.quad(
                 width,
                 height,
-                x + 1.0,
-                y + 1.0,
-                w - 2.0,
-                h - 2.0,
-                if hover { [34, 38, 46] } else { [22, 24, 30] },
-            );
-            let swatch = if can_buy {
-                item.map(|item| item.color).unwrap_or([90, 90, 90])
-            } else {
-                [56, 58, 66]
-            };
-            // The swatch is the item colour when affordable; owned items are
-            // marked with a green corner so duplicates remain readable.
-            self.quad(width, height, x + 8.0, y + 6.0, 24.0, 24.0, swatch);
-            let cost = item.map(|item| item.cost).unwrap_or(0);
-            let cost_frac = (cost as f32 / 1000.0).clamp(0.0, 1.0);
-            self.quad(width, height, x + 40.0, y + 27.0, 190.0, 4.0, [10, 12, 16]);
-            self.quad(
-                width,
-                height,
-                x + 40.0,
-                y + 27.0,
-                190.0 * cost_frac,
-                4.0,
-                if can_buy {
-                    [225, 185, 55]
+                x + 2.0,
+                y + 2.0,
+                w - 4.0,
+                h - 4.0,
+                if hover || selected {
+                    [38, 40, 48]
                 } else {
-                    [110, 55, 55]
+                    [24, 26, 32]
                 },
             );
-            let name = item.map(|item| item.name.as_str()).unwrap_or("?");
-            let name_color = if owned {
-                [170, 255, 190]
-            } else if can_buy {
-                [238, 238, 238]
-            } else {
-                [135, 135, 145]
-            };
-            self.text(width, height, x + 40.0, y + 4.0, 1.25, name, name_color);
-            self.text(
+            let icon_alpha = if can_buy { 1.0 } else { 0.45 };
+            self.draw_item_icon(
                 width,
                 height,
-                x + 40.0,
-                y + 17.0,
+                x + (w - 46.0) * 0.5,
+                y + 8.0,
+                46.0,
+                item,
+                icon_alpha,
+            );
+            let name: String = item.name.chars().take(16).collect();
+            self.text_centered(
+                width,
+                height,
+                x + w * 0.5,
+                y + 60.0,
+                0.8,
+                &name,
+                if can_buy {
+                    [235, 235, 235]
+                } else {
+                    [135, 135, 145]
+                },
+            );
+            self.text_centered(
+                width,
+                height,
+                x + w * 0.5,
+                y + 74.0,
                 0.9,
-                &format!("{cost}G"),
+                &format!("{}G", item.cost),
                 if can_buy {
                     [245, 205, 70]
                 } else {
                     [170, 95, 95]
                 },
             );
-            if owned {
+            let owned = shop.owned_count(*item_index);
+            if owned > 0 {
                 self.quad(
                     width,
                     height,
                     x + w - 16.0,
-                    y + 8.0,
-                    8.0,
-                    8.0,
+                    y + 6.0,
+                    9.0,
+                    9.0,
                     [80, 255, 120],
                 );
+                if owned > 1 {
+                    self.text(
+                        width,
+                        height,
+                        x + w - 26.0,
+                        y + 17.0,
+                        0.7,
+                        &format!("x{owned}"),
+                        [170, 255, 190],
+                    );
+                }
             }
         }
 
-        // Hovered-item tooltip, to the right of the shop panel.
-        if let Some(row) = player.shop_hover {
-            if let Some(item) = shop.items.get(row) {
-                let (_, row_y, _, _) = shop_row_rect(width, height, row);
-                let mut lines = Vec::new();
-                if item.damage > 0.0 {
-                    lines.push(format!("+{:.0} DMG", item.damage));
-                }
-                if item.health > 0.0 {
-                    lines.push(format!("+{:.0} HP", item.health));
-                }
-                if item.mana > 0.0 {
-                    lines.push(format!("+{:.0} MP", item.mana));
-                }
-                if item.speed > 0.0 {
-                    lines.push(format!("+{:.0} SPD", item.speed));
-                }
-                if item.ability > 0.0 {
-                    lines.push(format!("+{:.0}% AP", item.ability));
-                }
-                if lines.is_empty() {
-                    lines.push("NO BONUS".to_string());
-                }
-
-                let panel_w = 190.0;
-                let panel_h = 36.0 + lines.len() as f32 * 12.0;
-                let px = 282.0;
-                let py = row_y.min(height - panel_h - 8.0).max(8.0);
-                self.quad(width, height, px, py, panel_w, panel_h, [90, 160, 220]);
-                self.quad(
+        // Detail pane.
+        let (dx, dy, dw, dh) = shop_detail_rect(width, height);
+        self.quad(width, height, dx, dy, dw, dh, [82, 76, 58]);
+        self.quad(
+            width,
+            height,
+            dx + 2.0,
+            dy + 2.0,
+            dw - 4.0,
+            dh - 4.0,
+            [18, 20, 25],
+        );
+        let detail_index = player.shop_hover.or(player.shop_selected).or(shop.selected);
+        if let Some(index) = detail_index {
+            if let Some(item) = shop.items.get(index) {
+                let can_buy = affordable[index] && player.shop_in_range && shop.has_free_slot();
+                let name: String = item.name.chars().take(20).collect();
+                self.text(
                     width,
                     height,
-                    px + 1.0,
-                    py + 1.0,
-                    panel_w - 2.0,
-                    panel_h - 2.0,
-                    [14, 16, 22],
+                    dx + 10.0,
+                    dy + 8.0,
+                    1.0,
+                    &name,
+                    [240, 235, 220],
                 );
                 self.text(
                     width,
                     height,
-                    px + 8.0,
-                    py + 6.0,
-                    1.1,
-                    &item.name,
-                    [238, 238, 238],
+                    dx + 10.0,
+                    dy + 22.0,
+                    0.9,
+                    &format!("{}G", item.cost),
+                    [245, 205, 70],
                 );
-                let mut ty = py + 22.0;
-                for line in &lines {
-                    self.text(width, height, px + 8.0, ty, 1.0, line, [200, 220, 240]);
-                    ty += 12.0;
+                self.draw_item_icon(width, height, dx + 10.0, dy + 40.0, 52.0, item, 1.0);
+
+                let mut lines = Vec::new();
+                if item.damage > 0.0 {
+                    lines.push(format!("+{:.0} DAMAGE", item.damage));
                 }
-                let can_buy = shop.affordable(player.gold)[row] && player.shop_in_range;
-                let (status, color) = if !player.shop_in_range {
-                    ("RETURN TO FOUNTAIN", [255, 120, 110])
-                } else if shop.is_owned(row) {
-                    ("OWNED", [170, 255, 190])
-                } else if !shop.affordable(player.gold)[row] {
-                    ("NEED GOLD", [255, 120, 110])
+                if item.health > 0.0 {
+                    lines.push(format!("+{:.0} HEALTH", item.health));
+                }
+                if item.mana > 0.0 {
+                    lines.push(format!("+{:.0} MANA", item.mana));
+                }
+                if item.speed > 0.0 {
+                    lines.push(format!("+{:.0} SPEED", item.speed));
+                }
+                if item.ability > 0.0 {
+                    lines.push(format!("+{:.0}% ABILITY", item.ability));
+                }
+                if lines.is_empty() {
+                    lines.push("NO BONUS".to_string());
+                }
+                for (i, line) in lines.iter().take(5).enumerate() {
+                    self.text(
+                        width,
+                        height,
+                        dx + 10.0,
+                        dy + 100.0 + i as f32 * 12.0,
+                        0.85,
+                        line,
+                        [200, 220, 240],
+                    );
+                }
+
+                let owned = shop.owned_count(index);
+                let status = if !player.shop_in_range {
+                    "RETURN TO FOUNTAIN"
+                } else if owned > 0 {
+                    "OWNED"
+                } else if !affordable[index] {
+                    "NEED GOLD"
                 } else if !shop.has_free_slot() {
-                    ("INVENTORY FULL", [255, 170, 90])
-                } else if can_buy {
-                    ("CLICK TO BUY", [245, 205, 70])
+                    "INVENTORY FULL"
                 } else {
-                    ("UNAVAILABLE", [150, 150, 150])
+                    "IN STOCK"
                 };
-                self.text(width, height, px + 8.0, ty + 2.0, 0.9, status, color);
+                self.text(
+                    width,
+                    height,
+                    dx + 10.0,
+                    dy + 166.0,
+                    0.8,
+                    status,
+                    if can_buy {
+                        [160, 235, 170]
+                    } else {
+                        [230, 130, 120]
+                    },
+                );
+
+                let (bx, by, bw, bh) = shop_buy_rect(width, height);
+                if let Some(uv) = self.atlas.ui_uv("tab") {
+                    self.sprite(
+                        width,
+                        height,
+                        bx,
+                        by,
+                        bw,
+                        bh,
+                        uv,
+                        if can_buy {
+                            [150, 255, 170]
+                        } else {
+                            [150, 150, 150]
+                        },
+                        if can_buy { 0.95 } else { 0.55 },
+                    );
+                    self.quad_alpha(
+                        width,
+                        height,
+                        bx + 4.0,
+                        by + 4.0,
+                        bw - 8.0,
+                        bh - 8.0,
+                        [18, 20, 24],
+                        0.82,
+                    );
+                } else {
+                    self.quad(
+                        width,
+                        height,
+                        bx,
+                        by,
+                        bw,
+                        bh,
+                        if can_buy { [52, 120, 58] } else { [55, 55, 62] },
+                    );
+                }
+                self.text_centered(
+                    width,
+                    height,
+                    bx + bw * 0.5,
+                    by + 9.0,
+                    0.9,
+                    &format!("BUY  {}G", item.cost),
+                    [245, 245, 245],
+                );
+
+                let (sx, sy, sw, sh) = shop_sell_rect(width, height);
+                let can_sell = owned > 0;
+                if let Some(uv) = self
+                    .atlas
+                    .ui_uv(if can_sell { "button_red" } else { "button" })
+                {
+                    self.sprite(
+                        width,
+                        height,
+                        sx,
+                        sy,
+                        sw,
+                        sh,
+                        uv,
+                        if can_sell {
+                            [255, 200, 140]
+                        } else {
+                            [140, 140, 140]
+                        },
+                        if can_sell { 0.95 } else { 0.50 },
+                    );
+                    self.quad_alpha(
+                        width,
+                        height,
+                        sx + 4.0,
+                        sy + 3.0,
+                        sw - 8.0,
+                        sh - 6.0,
+                        [18, 20, 24],
+                        0.82,
+                    );
+                } else {
+                    self.quad(
+                        width,
+                        height,
+                        sx,
+                        sy,
+                        sw,
+                        sh,
+                        if can_sell {
+                            [120, 72, 34]
+                        } else {
+                            [48, 48, 54]
+                        },
+                    );
+                }
+                let sell_text = if can_sell {
+                    format!("SELL  +{}G", item.cost / 2)
+                } else {
+                    "SELL".to_string()
+                };
+                self.text_centered(
+                    width,
+                    height,
+                    sx + sw * 0.5,
+                    sy + 7.0,
+                    0.8,
+                    &sell_text,
+                    if can_sell {
+                        [255, 225, 180]
+                    } else {
+                        [130, 130, 140]
+                    },
+                );
+            }
+        }
+
+        // Inventory row and footer.
+        self.text(
+            width,
+            height,
+            wx + 166.0,
+            wy + 282.0,
+            0.9,
+            "INVENTORY",
+            [220, 200, 150],
+        );
+        self.draw_inventory_slots(width, height, wx + 166.0, wy + 300.0, 38.0, 6.0, shop);
+        self.text(
+            width,
+            height,
+            wx + 520.0,
+            wy + 282.0,
+            0.9,
+            &format!("GOLD {}G", player.gold),
+            [245, 205, 70],
+        );
+        self.text_centered(
+            width,
+            height,
+            wx + ww * 0.5,
+            wy + wh - 18.0,
+            0.8,
+            "CLICK ITEM TO SELECT  ·  BUY  ·  B/ESC TO CLOSE",
+            [160, 160, 170],
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn draw_item_icon(
+        &mut self,
+        width: f32,
+        height: f32,
+        x: f32,
+        y: f32,
+        size: f32,
+        item: &ItemConfig,
+        alpha: f32,
+    ) {
+        if let Some(uv) = self.atlas.item_uv(&item.id) {
+            self.sprite(width, height, x, y, size, size, uv, [255, 255, 255], alpha);
+            return;
+        }
+        self.quad_alpha(width, height, x, y, size, size, [12, 14, 18], 0.92 * alpha);
+        let c = item.color;
+        let light = [
+            c[0].saturating_add(45),
+            c[1].saturating_add(45),
+            c[2].saturating_add(45),
+        ];
+        let dark = [c[0] / 2, c[1] / 2, c[2] / 2];
+        let q = |hud: &mut Hud, fx: f32, fy: f32, fw: f32, fh: f32, col: [u8; 3]| {
+            hud.quad_alpha(
+                width,
+                height,
+                x + fx * size,
+                y + fy * size,
+                fw * size,
+                fh * size,
+                col,
+                alpha,
+            );
+        };
+        match item.id.as_str() {
+            "bronze_sword" => {
+                q(self, 0.46, 0.12, 0.08, 0.50, light);
+                q(self, 0.30, 0.58, 0.40, 0.08, c);
+                q(self, 0.46, 0.66, 0.08, 0.18, dark);
+            }
+            "iron_plate" => {
+                q(self, 0.34, 0.26, 0.32, 0.42, c);
+                q(self, 0.22, 0.22, 0.16, 0.18, light);
+                q(self, 0.62, 0.22, 0.16, 0.18, light);
+                q(self, 0.46, 0.26, 0.08, 0.10, dark);
+            }
+            "fury" => {
+                q(self, 0.30, 0.20, 0.08, 0.18, light);
+                q(self, 0.62, 0.20, 0.08, 0.18, light);
+                q(self, 0.38, 0.34, 0.24, 0.10, c);
+                q(self, 0.44, 0.46, 0.12, 0.18, light);
+            }
+            "berserker" => {
+                q(self, 0.28, 0.28, 0.44, 0.44, c);
+                q(self, 0.39, 0.39, 0.22, 0.22, dark);
+            }
+            "ahrims" => {
+                q(self, 0.46, 0.16, 0.08, 0.66, c);
+                q(self, 0.36, 0.10, 0.28, 0.28, light);
+                q(self, 0.42, 0.16, 0.16, 0.16, dark);
+            }
+            "boots" => {
+                q(self, 0.34, 0.24, 0.22, 0.42, c);
+                q(self, 0.34, 0.60, 0.42, 0.16, light);
+                q(self, 0.34, 0.72, 0.42, 0.06, dark);
+            }
+            _ => {
+                q(self, 0.28, 0.28, 0.44, 0.44, c);
+                if let Some(ch) = item.name.chars().next() {
+                    self.text_centered(
+                        width,
+                        height,
+                        x + size * 0.5,
+                        y + size * 0.36,
+                        1.2,
+                        &ch.to_string(),
+                        [245, 245, 245],
+                    );
+                }
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn draw_inventory_slots(
+        &mut self,
+        width: f32,
+        height: f32,
+        x: f32,
+        y: f32,
+        slot: f32,
+        gap: f32,
+        shop: &ItemShop,
+    ) {
+        for i in 0..6 {
+            let sx = x + i as f32 * (slot + gap);
+            self.quad(
+                width,
+                height,
+                sx - 1.0,
+                y - 1.0,
+                slot + 2.0,
+                slot + 2.0,
+                [82, 76, 58],
+            );
+            self.quad(width, height, sx, y, slot, slot, [18, 20, 25]);
+            if let Some(index) = shop.owned[i] {
+                if let Some(item) = shop.items.get(index) {
+                    self.draw_item_icon(width, height, sx + 3.0, y + 3.0, slot - 6.0, item, 1.0);
+                    let count = shop.owned_count(index);
+                    if count > 1 {
+                        self.text(
+                            width,
+                            height,
+                            sx + slot - 12.0,
+                            y + slot - 12.0,
+                            0.8,
+                            &format!("x{count}"),
+                            [245, 220, 140],
+                        );
+                    }
+                }
+            } else {
+                self.quad(
+                    width,
+                    height,
+                    sx + slot * 0.5 - 2.0,
+                    y + slot * 0.5 - 2.0,
+                    4.0,
+                    4.0,
+                    [48, 52, 60],
+                );
             }
         }
     }
@@ -875,7 +1575,68 @@ impl Hud {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn quad(&mut self, width: f32, height: f32, x: f32, y: f32, w: f32, h: f32, color: [u8; 3]) {
+    pub fn sprite(
+        &mut self,
+        width: f32,
+        height: f32,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        uv: [f32; 4],
+        tint: [u8; 3],
+        alpha: f32,
+    ) {
+        if w <= 0.0 || h <= 0.0 {
+            return;
+        }
+        let x0 = 2.0 * x / width - 1.0;
+        let x1 = 2.0 * (x + w) / width - 1.0;
+        let y0 = 1.0 - 2.0 * y / height;
+        let y1 = 1.0 - 2.0 * (y + h) / height;
+        let color = [
+            srgb_to_linear(tint[0] as f32 / 255.0),
+            srgb_to_linear(tint[1] as f32 / 255.0),
+            srgb_to_linear(tint[2] as f32 / 255.0),
+            alpha,
+        ];
+        let base = self.vertices.len() as u32;
+        self.vertices.push(UiVertex {
+            position: [x0, y0, 0.0],
+            uv: [uv[0], uv[1]],
+            color,
+        });
+        self.vertices.push(UiVertex {
+            position: [x1, y0, 0.0],
+            uv: [uv[2], uv[1]],
+            color,
+        });
+        self.vertices.push(UiVertex {
+            position: [x0, y1, 0.0],
+            uv: [uv[0], uv[3]],
+            color,
+        });
+        self.vertices.push(UiVertex {
+            position: [x1, y1, 0.0],
+            uv: [uv[2], uv[3]],
+            color,
+        });
+        self.indices
+            .extend_from_slice(&[base, base + 1, base + 2, base + 2, base + 1, base + 3]);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn quad_alpha(
+        &mut self,
+        width: f32,
+        height: f32,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        color: [u8; 3],
+        alpha: f32,
+    ) {
         if w <= 0.0 || h <= 0.0 {
             return;
         }
@@ -885,16 +1646,40 @@ impl Hud {
         let y1 = 1.0 - 2.0 * (y + h) / height;
 
         let base = self.vertices.len() as u32;
-        self.vertices
-            .push(Vertex::new(glam::Vec3::new(x0, y0, 0.0), color));
-        self.vertices
-            .push(Vertex::new(glam::Vec3::new(x1, y0, 0.0), color));
-        self.vertices
-            .push(Vertex::new(glam::Vec3::new(x0, y1, 0.0), color));
-        self.vertices
-            .push(Vertex::new(glam::Vec3::new(x1, y1, 0.0), color));
+        let uv = self.atlas.white_uv;
+        let rgba = [
+            srgb_to_linear(color[0] as f32 / 255.0),
+            srgb_to_linear(color[1] as f32 / 255.0),
+            srgb_to_linear(color[2] as f32 / 255.0),
+            alpha,
+        ];
+        self.vertices.push(UiVertex {
+            position: [x0, y0, 0.0],
+            uv: [uv[0], uv[1]],
+            color: rgba,
+        });
+        self.vertices.push(UiVertex {
+            position: [x1, y0, 0.0],
+            uv: [uv[0], uv[1]],
+            color: rgba,
+        });
+        self.vertices.push(UiVertex {
+            position: [x0, y1, 0.0],
+            uv: [uv[0], uv[1]],
+            color: rgba,
+        });
+        self.vertices.push(UiVertex {
+            position: [x1, y1, 0.0],
+            uv: [uv[0], uv[1]],
+            color: rgba,
+        });
         self.indices
             .extend_from_slice(&[base, base + 1, base + 2, base + 2, base + 1, base + 3]);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn quad(&mut self, width: f32, height: f32, x: f32, y: f32, w: f32, h: f32, color: [u8; 3]) {
+        self.quad_alpha(width, height, x, y, w, h, color, 1.0);
     }
 }
 

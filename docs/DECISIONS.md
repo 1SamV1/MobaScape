@@ -274,3 +274,16 @@ on the dev machine. `--shadows off|blob|map` controls the mode.
 Terrain and model vertices carry baked contact AO (height-cavity for terrain,
 base-to-top gradient for models/units). This is AO v0; full screen-space SSAO
 will arrive with the offscreen post-processing pass in M5.4.
+
+
+## ADR-025 — External OSRS UI atlas, no committed game assets
+
+**Status:** accepted.
+
+The shop/HUD now uses real OSRS item icons and tab/button sprites. Assets live
+in the gitignored `assets/osrs-ui` tree and are loaded by
+`crates/client/src/ui_assets.rs`, which trims/fits item icons into a 1024×1024
+atlas and packs the UI sprites. `ui.wgsl` samples the atlas with nearest
+filtering; untextured HUD quads sample a white texel so one textured pipeline
+handles all HUD geometry. Missing assets fall back to procedural icons, so the
+game still runs from a clean checkout. No Jagex-derived assets are committed.

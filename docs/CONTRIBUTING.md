@@ -36,6 +36,7 @@ cargo run -p rift-client -- --demo-combat
 cargo run -p rift-client -- --timescale 20
 cargo run -p rift-client -- --demo-camp --timescale 4
 cargo run -p rift-client -- --demo-kit --timescale 4
+# Populate gitignored UI assets first: see docs/UI_ASSETS.md
 cargo run -p rift-client -- --graphics 117hd
 cargo run -p rift-client -- --graphics classic
 cargo run -p rift-client -- --graphics 117hd --debug-view lighting

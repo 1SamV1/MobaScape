@@ -188,6 +188,8 @@ pub struct AnimatedScene {
     pub match_over: Option<u8>,
     pub minimap_bounds: (glam::Vec2, glam::Vec2),
     pub visibility: VisibilityGrid,
+    pub visibility_timer: f32,
+    pub visibility_dirty: bool,
     pub brush: Vec<(f32, f32, f32, f32)>,
     pub vision_origin: (i32, i32),
     pub team_buffs: [Option<TeamBuff>; 2],
@@ -430,6 +432,8 @@ impl AnimatedScene {
             match_over: None,
             minimap_bounds,
             visibility,
+            visibility_timer: 0.0,
+            visibility_dirty: true,
             brush: scene.map.brush.clone(),
             vision_origin: (vision_origin_x, vision_origin_y),
             team_buffs: [None, None],
@@ -491,6 +495,30 @@ impl AnimatedScene {
     pub fn in_fountain_range(&self) -> bool {
         let player = &self.units[self.player_index];
         player.health > 0.0 && player.pos.distance(self.player_spawn) <= 900.0
+    }
+
+    pub fn sell_item(&mut self, item: &ItemConfig) -> Result<(), &'static str> {
+        let pi = self.player_index;
+        let player = &mut self.units[pi];
+        if player.health <= 0.0 {
+            return Err("dead");
+        }
+        if player.pos.distance(self.player_spawn) > 900.0 {
+            return Err("out of fountain range");
+        }
+        player.gold = player.gold.saturating_add(item.cost / 2);
+        player.attack_damage = (player.attack_damage - item.damage).max(1.0);
+        if item.health > 0.0 {
+            player.max_health = (player.max_health - item.health).max(100.0);
+            player.health = player.health.min(player.max_health);
+        }
+        if item.mana > 0.0 {
+            player.max_mana = (player.max_mana - item.mana).max(50.0);
+            player.mana = player.mana.min(player.max_mana);
+        }
+        player.speed = (player.speed - item.speed).max(100.0);
+        player.ability_power = (player.ability_power - item.ability).max(0.0);
+        Ok(())
     }
 
     pub fn debug_grant_gold(&mut self, amount: u32) {
@@ -879,15 +907,7 @@ impl AnimatedScene {
         self.units.get(index).map(|u| u.health)
     }
 
-    pub fn update(
-        &mut self,
-        dt: f32,
-        height: &HeightGrid,
-        collision: &WorldCollision,
-        camera_right: Vec3,
-        camera_up: Vec3,
-        camera_forward: Vec3,
-    ) {
+    pub fn update(&mut self, dt: f32, height: &HeightGrid, collision: &WorldCollision) {
         let pi = self.player_index;
         let player_spawn = self.player_spawn;
         {
@@ -986,9 +1006,6 @@ impl AnimatedScene {
         }
 
         self.update_projectiles(dt, height);
-        self.update_visibility();
-        self.rebuild_shadows(height);
-        self.rebuild_mesh(camera_right, camera_up, camera_forward);
     }
 
     fn update_player(&mut self, dt: f32, height: &HeightGrid, collision: &WorldCollision) {
@@ -1320,7 +1337,17 @@ impl AnimatedScene {
         }
     }
 
-    fn update_visibility(&mut self) {
+    pub fn refresh_visibility(&mut self, dt: f32, collision: &WorldCollision) {
+        self.visibility_timer += dt;
+        if self.visibility_timer < 0.15 {
+            return;
+        }
+        self.visibility_timer = 0.0;
+        self.update_visibility(collision);
+        self.visibility_dirty = true;
+    }
+
+    fn update_visibility(&mut self, collision: &WorldCollision) {
         self.visibility.tiles.fill(false);
         for unit in &mut self.units {
             unit.visible = unit.team == 0;
@@ -1333,8 +1360,9 @@ impl AnimatedScene {
             .map(|u| {
                 let radius: f32 = match u.kind {
                     UnitKind::Player => 1500.0,
-                    UnitKind::MeleeMinion | UnitKind::RangedMinion => 700.0,
-                    _ => 1000.0,
+                    UnitKind::MeleeMinion | UnitKind::RangedMinion => 900.0,
+                    UnitKind::Tower | UnitKind::Inhibitor | UnitKind::Nexus => 1100.0,
+                    _ => 800.0,
                 };
                 (u.pos, radius)
             })
@@ -1352,14 +1380,17 @@ impl AnimatedScene {
                     }
                     let tx = ctx + dx;
                     let ty = cty + dy;
-                    if tx >= 0
-                        && ty >= 0
-                        && (tx as usize) < self.visibility.width
-                        && (ty as usize) < self.visibility.height
+                    if tx < 0
+                        || ty < 0
+                        || (tx as usize) >= self.visibility.width
+                        || (ty as usize) >= self.visibility.height
                     {
-                        self.visibility.tiles[ty as usize * self.visibility.width + tx as usize] =
-                            true;
+                        continue;
                     }
+                    if !los_clear(collision, ctx, cty, tx, ty) {
+                        continue;
+                    }
+                    self.visibility.tiles[ty as usize * self.visibility.width + tx as usize] = true;
                 }
             }
         }
@@ -1380,6 +1411,24 @@ impl AnimatedScene {
             }
             unit.visible = true;
         }
+        // The training dummy is a dev-only target; keep it visible so the
+        // deterministic combat demo is not blocked by LOS.
+        for unit in &mut self.units {
+            if unit.kind == UnitKind::Dummy && unit.health > 0.0 {
+                unit.visible = true;
+            }
+        }
+    }
+
+    pub fn prepare_render(
+        &mut self,
+        height: &HeightGrid,
+        camera_right: Vec3,
+        camera_up: Vec3,
+        camera_forward: Vec3,
+    ) {
+        self.rebuild_shadows(height);
+        self.rebuild_mesh(camera_right, camera_up, camera_forward);
     }
 
     pub fn visible_enemy_count(&self) -> usize {
@@ -1779,6 +1828,34 @@ impl AnimatedUnit {
     fn is_minion_of(&self, team: u8) -> bool {
         self.kind.is_minion() && self.team == team
     }
+}
+
+fn los_clear(collision: &WorldCollision, ox: i32, oy: i32, tx: i32, ty: i32) -> bool {
+    let dx = (tx - ox).abs();
+    let dy = (ty - oy).abs();
+    let sx = if ox < tx { 1 } else { -1 };
+    let sy = if oy < ty { 1 } else { -1 };
+    let mut err = dx - dy;
+    let mut x = ox;
+    let mut y = oy;
+    loop {
+        if (x != ox || y != oy) && (x != tx || y != ty) && collision.blocks_sight_tile(x, y) {
+            return false;
+        }
+        if x == tx && y == ty {
+            break;
+        }
+        let e2 = 2 * err;
+        if e2 > -dy {
+            err -= dy;
+            x += sx;
+        }
+        if e2 < dx {
+            err += dx;
+            y += sy;
+        }
+    }
+    true
 }
 
 fn point_in_brush(brush: &[(f32, f32, f32, f32)], pos: Vec3) -> bool {

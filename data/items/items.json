@@ -1,8 +1,98 @@
 [
-  { "id": "bronze_sword", "name": "Bronze sword", "color": [180, 120, 60], "cost": 300, "damage": 10, "health": 0, "mana": 0, "speed": 0, "ability": 0 },
-  { "id": "iron_plate", "name": "Iron platebody", "color": [160, 160, 170], "cost": 400, "damage": 0, "health": 150, "mana": 0, "speed": 0, "ability": 0 },
-  { "id": "fury", "name": "Amulet of fury", "color": [80, 200, 220], "cost": 800, "damage": 15, "health": 50, "mana": 20, "speed": 0, "ability": 0 },
-  { "id": "berserker", "name": "Berserker ring", "color": [220, 80, 80], "cost": 700, "damage": 8, "health": 0, "mana": 0, "speed": 0, "ability": 15 },
-  { "id": "ahrims", "name": "Ahrim's staff", "color": [120, 80, 200], "cost": 900, "damage": 0, "health": 0, "mana": 40, "speed": 0, "ability": 30 },
-  { "id": "boots", "name": "Dragon boots", "color": [200, 60, 60], "cost": 600, "damage": 0, "health": 30, "mana": 0, "speed": 40, "ability": 0 }
+  {
+    "id": "bronze_sword",
+    "name": "Bronze sword",
+    "color": [
+      180,
+      120,
+      60
+    ],
+    "cost": 300,
+    "damage": 10,
+    "health": 0,
+    "mana": 0,
+    "speed": 0,
+    "ability": 0,
+    "category": "weapon"
+  },
+  {
+    "id": "iron_plate",
+    "name": "Iron platebody",
+    "color": [
+      160,
+      160,
+      170
+    ],
+    "cost": 400,
+    "damage": 0,
+    "health": 150,
+    "mana": 0,
+    "speed": 0,
+    "ability": 0,
+    "category": "armour"
+  },
+  {
+    "id": "fury",
+    "name": "Amulet of fury",
+    "color": [
+      80,
+      200,
+      220
+    ],
+    "cost": 800,
+    "damage": 15,
+    "health": 50,
+    "mana": 20,
+    "speed": 0,
+    "ability": 0,
+    "category": "jewellery"
+  },
+  {
+    "id": "berserker",
+    "name": "Berserker ring",
+    "color": [
+      220,
+      80,
+      80
+    ],
+    "cost": 700,
+    "damage": 8,
+    "health": 0,
+    "mana": 0,
+    "speed": 0,
+    "ability": 15,
+    "category": "jewellery"
+  },
+  {
+    "id": "ahrims",
+    "name": "Ahrim's staff",
+    "color": [
+      120,
+      80,
+      200
+    ],
+    "cost": 900,
+    "damage": 0,
+    "health": 0,
+    "mana": 40,
+    "speed": 0,
+    "ability": 30,
+    "category": "weapon"
+  },
+  {
+    "id": "boots",
+    "name": "Dragon boots",
+    "color": [
+      200,
+      60,
+      60
+    ],
+    "cost": 600,
+    "damage": 0,
+    "health": 30,
+    "mana": 0,
+    "speed": 40,
+    "ability": 0,
+    "category": "boots"
+  }
 ]

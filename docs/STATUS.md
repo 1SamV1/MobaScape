@@ -1,6 +1,6 @@
 # Status
 
-Last updated: M5.1 Shadows + contact AO, 2026-11-13.
+Last updated: M5.1 Shadows + contact AO + OSRS UI pass, 2026-11-13.
 
 ## Working
 
@@ -38,6 +38,12 @@ Last updated: M5.1 Shadows + contact AO, 2026-11-13.
   units of spawn; two persistent rings mark the fountain.
 - Item shop: six data-driven items, six inventory slots, fountain-range
   purchase, gold spending, stat/ability-power application, hover tooltips.
+- **OSRS-style UI**: centered Fountain Shop window with category tabs, item-card
+  grid, detail pane, Buy/Sell buttons, inventory row, gold, close button, and
+  real item icons/tab sprites from the gitignored `assets/osrs-ui` tree. HUD
+  resource bar, team panel, objectives panel, event log, compact health/mana
+  bars, bottom-right inventory, and shop button. Textured `ui.wgsl` pipeline
+  with a 1024×1024 atlas; procedural fallback if assets are missing.
 - HUD font: built-in 5x7 uppercase bitmap font; HP/MP/XP/gold, nexus values,
   wave timer, ability labels/cooldowns, shop names/costs/tooltips, result.
 - **117HD Core renderer**:
@@ -65,7 +71,7 @@ Last updated: M5.1 Shadows + contact AO, 2026-11-13.
 
 ## Verified
 
-- `cargo test --workspace`: 27 tests pass (6 cache, 14 client, 7 sim).
+- `cargo test --workspace`: 28 tests pass (6 cache, 15 client, 7 sim).
 - `cargo clippy --workspace --all-targets`: no warnings.
 - 117HD Core runs at **60–68 fps at 1280×720** on the dev machine at timescale 1;
   shadow modes measured **67 fps (off)**, **68 fps (blob)**, **66 fps (map)**.
@@ -103,6 +109,10 @@ Last updated: M5.1 Shadows + contact AO, 2026-11-13.
 - Item purchases and gold/heal/shop-range remain client-side.
 - No item selling/combining/passives; champions share the QWER shape.
 - The HUD font is a code-defined 5x7 bitmap, not a cache-native OSRS font.
+- UI assets live in gitignored `assets/osrs-ui`; without them the shop falls back
+  to procedural icons and no tab sprites. The bronze sword icon is a trimmed
+  detail render because the plain inventory icon file was unavailable under the
+  expected wiki name. Faint baked tab numbers/icons can show through overlays.
 - Kree'arra/Jad models are large; scale tuning is ongoing.
 - Fog/brush is client-side only; server-authoritative fog is required.
 - No lobby, netcode, audio, or map editor.
@@ -125,7 +135,7 @@ Last updated: M5.1 Shadows + contact AO, 2026-11-13.
   walkable, no corner cutting, simplification, bounds, LOS).
 - `cargo test -p rift-cache`: 6 tests (smart reads, chained smart, XTEA, HSL,
   group rejection, framemap/frame parse).
-- `cargo test -p rift-client`: 14 tests (4 items, 2 font, 2 minimap,
+- `cargo test -p rift-client`: 15 tests (5 items/layout, 2 font, 2 minimap,
   4 scene/lighting, 2 shadow matrix/defaults).
 - Shop demo: 6/6 items, dmg 45, HP 730/730, MP 260/260, speed 460, AP 45%,
   gold 300.
@@ -134,6 +144,7 @@ Last updated: M5.1 Shadows + contact AO, 2026-11-13.
 - 117HD debug: albedo/normal/lighting/fog views render; dynamic lights show
   green fountain and orange Q impact pools; shadow/AO debug views render.
 - Shadow modes: off 67 fps, blob 68 fps, map 66 fps at 1280×720.
+- UI run: real item icons/tab sprites render; shop open at 58–60 fps.
 - Champion runs: Jad 700 HP / 260 mana; Kree 420 HP / 240 mana; W/E/R true.
 - Fog run: visible enemies 7–13; dark fog mesh over unseen tiles.
 - Three-lane 20× run: victory states, towers/inhibitors/nexus live.

@@ -116,6 +116,10 @@ Done:
 - **M5.1 Shadows + contact AO**: 1024px sun shadow map, PCF, dynamic
   player/structure/camp casters, alternating shadow updates, baked terrain and
   model contact AO. `--shadows off|blob|map`, `--debug-view shadow|ao`.
+- **UI pass**: OSRS-style Fountain Shop window (categories, item cards, detail
+  pane, Buy/Sell, inventory row), HUD resource/team/objectives/event-log/
+  inventory/shop panels, real item icons and tab sprites from the gitignored
+  asset pack. See `docs/UI_ASSETS.md`.
 - `--graphics 117hd|classic`, `--debug-view albedo|normal|lighting|fog|lights`,
   and `--pitch` for verification.
 
