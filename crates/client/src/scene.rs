@@ -186,6 +186,7 @@ pub enum StructureKind {
 pub struct StructureSpawn {
     pub team: u8,
     pub kind: StructureKind,
+    pub lane_index: Option<usize>,
     pub tile: [f32; 2],
     pub model_id: u32,
     pub pos: Vec3,
@@ -295,6 +296,7 @@ impl MapLayout {
         let to_spawn = |s: &StructureJson| StructureSpawn {
             team: s.team,
             kind: s.kind,
+            lane_index: None,
             tile: s.tile,
             model_id: s.model,
             pos: world_of(s.tile),
@@ -310,7 +312,7 @@ impl MapLayout {
         for s in &map.nexus {
             structures.push(to_spawn(s));
         }
-        for lane in &map.lanes {
+        for (lane_index, lane) in map.lanes.iter().enumerate() {
             if lane.waypoints.len() < 2 {
                 anyhow::bail!("lane {} needs at least two waypoints", lane.id);
             }
@@ -319,10 +321,14 @@ impl MapLayout {
                 waypoints: lane.waypoints.iter().map(|&tile| world_of(tile)).collect(),
             });
             for s in &lane.towers {
-                structures.push(to_spawn(s));
+                let mut spawn = to_spawn(s);
+                spawn.lane_index = Some(lane_index);
+                structures.push(spawn);
             }
             for s in &lane.inhibitors {
-                structures.push(to_spawn(s));
+                let mut spawn = to_spawn(s);
+                spawn.lane_index = Some(lane_index);
+                structures.push(spawn);
             }
         }
 

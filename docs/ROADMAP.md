@@ -92,18 +92,24 @@ Done:
   zones, and a dark fog mesh over unseen tiles.
 - Three data-driven champions: Monkey, JalRek-Jad, Kree'arra Jr.; distinct
   models, stats, and ability numbers; Kree has ranged auto-attacks.
-- Six data-driven items, six inventory slots, fountain-range shop, gold
-  spending, and stat/ability-power application (`B`, `1`–`6`).
+- Six data-driven items, six inventory slots, fountain-range shop, hover
+  tooltips, gold spending, and stat/ability-power application (`B`, `1`–`6`).
+- Passive gold (8/s) and fountain healing (6% max HP/MP/s within 900 units).
+- Built-in 5x7 bitmap-font HUD: HP/MP/XP/gold, nexus/wave values, ability
+  labels/cooldowns, shop names/costs/tooltips, victory/defeat.
+- Inhibitor respawn (120 s) and lane super minions while an enemy inhibitor is
+  down.
+- Fogged minimap (8×8-tile blocks) with click-to-pan.
 - HUD nexus health bars, wave timer, buff bar, inventory slots, shop rows;
-  title shows full match state.
-- `--timescale`, `--demo-camp`, `--demo-kit`, `--demo-shop`, and `--champion`
-  for verification.
+  title retains the full debug state.
+- `--timescale`, `--demo-camp`, `--demo-kit`, `--demo-shop`, `--demo-base`,
+  `--demo-inhibitor`, and `--champion` for verification.
 
 Remaining:
 
-- Server-authoritative fog, minimap click-to-pan, and brush visuals.
+- Server-authoritative fog and brush visuals.
 - Item selling/combining/passives and five champions with distinct kits.
-- HUD text/font atlas so shop names, gold, and stats are on-screen.
+- Cache-native font atlas and richer shop/scoreboard screens.
 - Deterministic 10-bot match at 20× speed with a state hash.
 - Data hot reload for champions/abilities/items/waves.
 - Balance pass v0.

@@ -193,3 +193,46 @@ the shop is a base interaction rather than a global menu. `B` toggles the panel;
 percentage that scales Q/R damage and E heal/shield. The client applies the
 transaction locally in this prototype; the server must own gold, range,
 inventory, and stats before multiplayer.
+
+## ADR-019 — Built-in 5x7 bitmap font for HUD text
+
+**Status:** accepted for the prototype.
+
+The HUD needs on-screen numbers and shop labels before a cache-native font
+atlas exists. `crates/client/src/font.rs` defines uppercase ASCII glyphs as
+seven 5-bit row masks. `Hud::text` emits one quad per horizontal pixel run with
+a one-pixel drop shadow. This is deliberately small and code-only: no Jagex
+font assets, no extra dependencies, and no text layout engine. A cache-native
+font atlas can replace it later behind the same `Hud::text` call sites.
+
+## ADR-020 — Fountain economy: passive gold + heal + shop range
+
+**Status:** accepted for the prototype.
+
+The player earns 8 gold per second and, within 900 world units of spawn, heals
+6% max HP and MP per second. The shop uses the same 900-unit radius, so the
+fountain is a real base interaction instead of a global menu. Two persistent
+world rings mark the area. The client owns this in the prototype; the server
+must own gold, healing, and shop range before multiplayer.
+
+## ADR-021 — Inhibitor respawn and lane super minions
+
+**Status:** accepted.
+
+Destroyed inhibitors respawn after 120 seconds. While an enemy inhibitor in a
+lane is down, that lane's next waves include one super minion (2.5x health, 2x
+damage, 1.6x scale, slower, gold minimap marker). Nexus vulnerability is still
+derived from live inhibitor health, so a respawn re-shields the nexus. This
+makes inhibitor pressure meaningful without adding a full super-minion roster
+or inhibitor-specific art.
+
+## ADR-022 — Fogged minimap and click-to-pan
+
+**Status:** accepted for the prototype.
+
+The minimap uses the same 192x192 visibility grid as the world fog. Entirely
+unseen 8x8-tile blocks are covered by a dark overlay; the block size keeps the
+HUD mesh cheap. `minimap_world_at` is a pure screen-to-world conversion, unit
+tested for corners/center/outside clicks. A click inside the minimap pans the
+camera and disables follow. Fog remains client-side until the authoritative
+server owns vision.

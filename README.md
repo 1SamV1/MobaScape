@@ -4,14 +4,15 @@ A 5v5 MOBA built on a custom Rust engine, using modern Old School RuneScape
 cache assets for its visual identity. Server-authoritative, data-driven, and
 designed for fast-paced low-team-count matches.
 
-> Status: **M4.0 item shop**. The cache reader, terrain/location/model/
-> sequence decoders, animated NPCs, a 3x3 Karamja block, A* pathfinding with
-> collision, hold-to-steer, a screen-space HUD, auto-attacks, a Q/W/E/R kit
+> Status: **M4.2 HUD font + base loop**. The cache reader, terrain/location/
+> model/sequence decoders, animated NPCs, a 3x3 Karamja block, A* pathfinding
+> with collision, hold-to-steer, a bitmap-font HUD, auto-attacks, a Q/W/E/R kit
 > with mana/cooldowns/XP/gold, three data-driven champions, a six-item shop
-> with six inventory slots, three lanes with towers/inhibitors/shielded nexus,
-> minion waves, jungle camps with team buffs, brush/fog of war, a live minimap,
-> and a win condition are working. There is no networking yet. See
-> [docs/STATUS.md](docs/STATUS.md).
+> with tooltips and six inventory slots, passive gold and fountain healing,
+> three lanes with towers/inhibitors/shielded nexus, inhibitor respawn and
+> super minions, minion waves, jungle camps with team buffs, brush/fog of war,
+> a fogged minimap with click-to-pan, and a win condition are working. There is
+> no networking yet. See [docs/STATUS.md](docs/STATUS.md).
 
 ## What exists
 
@@ -25,8 +26,8 @@ designed for fast-paced low-team-count matches.
 - `crates/tools` — `rift-tools` CLI for cache inspection and OBJ export
 - `crates/client` — native wgpu client: 3x3 Karamja, animated NPCs, three lanes,
   towers/inhibitors/nexus, minion waves, jungle camps/buffs, brush/fog of war,
-  item shop/inventory, live minimap, click-to-move + hold-to-steer, HUD,
-  auto-attacks, Q
+  item shop/inventory, bitmap-font HUD, fogged minimap, click-to-move +
+  hold-to-steer, auto-attacks, Q
 - `data/maps/karamja_rift/map.json` — lanes, structures, camps, wave timing
 - `docs/reference` — archived Java-era experiments (not built)
 
@@ -73,6 +74,12 @@ cargo run -p rift-client -- --champion kree
 
 # Grant gold, open the shop, and buy all six items
 cargo run -p rift-client -- --demo-shop --timescale 4
+
+# Verify fountain healing and passive gold
+cargo run -p rift-client -- --demo-base --timescale 4
+
+# Destroy an inhibitor, verify super minions and respawn
+cargo run -p rift-client -- --demo-inhibitor --timescale 20
 ```
 
 The cache download is not automated yet; see
@@ -90,6 +97,7 @@ Put `keys.json` next to `main_file_cache.dat2`, or pass `--keys`.
 - **R**: meteor AoE at the cursor (45 s)
 - **B**: toggle the fountain shop
 - **1–6**: buy the matching shop item while the shop is open
+- **Click the minimap**: pan the camera to that point (disables follow)
 - **Arrow keys**: pan the camera (disables follow)
 - **Z / X**: rotate camera
 - **Space**: recenter/follow

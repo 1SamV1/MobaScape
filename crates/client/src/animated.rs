@@ -82,6 +82,8 @@ pub struct AnimatedUnit {
     pub e_shield: f32,
     pub w_distance: f32,
     pub ability_power: f32,
+    pub structure_lane: Option<usize>,
+    pub super_minion: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -166,6 +168,7 @@ pub struct AnimatedScene {
     pub effects: Vec<Effect>,
     pub wave_timer: f32,
     pub wave_interval: f32,
+    pub gold_income: f32,
     pub lanes: Vec<Vec<Vec3>>,
     pub nexus_positions: [Vec3; 2],
     pub player_spawn: Vec3,
@@ -284,7 +287,7 @@ impl AnimatedScene {
                 UnitKind::Nexus => (300.0, 400.0),
                 _ => (150.0, 200.0),
             };
-            units.push(load_unit(
+            let mut unit = load_unit(
                 cache,
                 structure.model_id,
                 None,
@@ -301,7 +304,9 @@ impl AnimatedScene {
                 hit_radius,
                 bar_height,
                 Vec::new(),
-            )?);
+            )?;
+            unit.structure_lane = structure.lane_index;
+            units.push(unit);
         }
 
         for camp in &scene.map.camps {
@@ -396,6 +401,7 @@ impl AnimatedScene {
             effects: Vec::new(),
             wave_timer: 0.0,
             wave_interval: scene.map.wave_interval,
+            gold_income: 0.0,
             lanes: scene
                 .map
                 .lanes
@@ -414,6 +420,21 @@ impl AnimatedScene {
             melee_template,
             ranged_template,
         };
+        // Persistent fountain rings mark the heal/shop area at spawn.
+        animated.effects.push(Effect {
+            pos: scene.player_spawn,
+            radius: 240.0,
+            remaining: 1.0e9,
+            duration: 1.0e9,
+            color: [70, 210, 130],
+        });
+        animated.effects.push(Effect {
+            pos: scene.player_spawn,
+            radius: 140.0,
+            remaining: 1.0e9,
+            duration: 1.0e9,
+            color: [120, 255, 170],
+        });
         for lane_index in 0..animated.lanes.len() {
             animated.spawn_wave(0, lane_index);
             animated.spawn_wave(1, lane_index);
@@ -458,6 +479,42 @@ impl AnimatedScene {
     pub fn debug_grant_gold(&mut self, amount: u32) {
         let player = &mut self.units[self.player_index];
         player.gold = player.gold.saturating_add(amount);
+    }
+
+    pub fn debug_destroy_inhibitor(&mut self, team: u8, lane_index: usize, respawn: f32) -> bool {
+        if let Some(unit) = self.units.iter_mut().find(|u| {
+            u.kind == UnitKind::Inhibitor && u.team == team && u.structure_lane == Some(lane_index)
+        }) {
+            unit.health = 0.0;
+            unit.dead_timer = respawn;
+            unit.attack_target = None;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn debug_inhibitor_state(&self, team: u8, lane_index: usize) -> Option<(f32, f32, f32)> {
+        self.units
+            .iter()
+            .find(|u| {
+                u.kind == UnitKind::Inhibitor
+                    && u.team == team
+                    && u.structure_lane == Some(lane_index)
+            })
+            .map(|u| (u.health, u.max_health, u.dead_timer))
+    }
+
+    pub fn super_minion_count(&self) -> usize {
+        self.units
+            .iter()
+            .filter(|u| u.super_minion && u.health > 0.0)
+            .count()
+    }
+
+    pub fn debug_damage_player(&mut self, amount: f32) {
+        let player = &mut self.units[self.player_index];
+        player.health = (player.health - amount).max(1.0);
     }
 
     /// Buy an item at the fountain. The client applies stats locally for the
@@ -808,17 +865,32 @@ impl AnimatedScene {
         camera_forward: Vec3,
     ) {
         let pi = self.player_index;
+        let player_spawn = self.player_spawn;
         {
             let player = &mut self.units[pi];
             for cd in &mut player.cooldowns {
                 *cd = (*cd - dt).max(0.0);
             }
             player.mana = (player.mana + 8.0 * dt).min(player.max_mana);
+            if player.health > 0.0 && player.pos.distance(player_spawn) <= 900.0 {
+                player.health =
+                    (player.health + player.max_health * 0.06 * dt).min(player.max_health);
+                player.mana = (player.mana + player.max_mana * 0.06 * dt).min(player.max_mana);
+            }
             if player.shield_timer > 0.0 {
                 player.shield_timer -= dt;
                 if player.shield_timer <= 0.0 {
                     player.shield = 0.0;
                 }
+            }
+        }
+        self.gold_income += 8.0 * dt;
+        if self.gold_income >= 1.0 {
+            let amount = self.gold_income.floor() as u32;
+            self.gold_income -= amount as f32;
+            let player = &mut self.units[pi];
+            if player.health > 0.0 {
+                player.gold = player.gold.saturating_add(amount);
             }
         }
         for effect in &mut self.effects {
@@ -856,7 +928,13 @@ impl AnimatedScene {
             unit.hit_flash = (unit.hit_flash - dt).max(0.0);
             unit.attack_cooldown = (unit.attack_cooldown - dt).max(0.0);
             unit.anim_time_ms += dt * 1000.0;
-            if unit.health <= 0.0 && matches!(unit.kind, UnitKind::Dummy | UnitKind::Camp) {
+            if unit.health <= 0.0
+                && matches!(
+                    unit.kind,
+                    UnitKind::Dummy | UnitKind::Camp | UnitKind::Inhibitor
+                )
+                && unit.dead_timer > 0.0
+            {
                 unit.dead_timer -= dt;
                 if unit.dead_timer <= 0.0 {
                     unit.health = unit.max_health;
@@ -1162,6 +1240,9 @@ impl AnimatedScene {
             UnitKind::Tower => {
                 self.units[index].dead_timer = 0.0;
             }
+            UnitKind::Inhibitor => {
+                self.units[index].dead_timer = 120.0;
+            }
             UnitKind::Dummy => {
                 self.units[index].dead_timer = 4.0;
             }
@@ -1363,20 +1444,49 @@ impl AnimatedScene {
             reversed.reverse();
             reversed
         };
-        let offsets = [
-            Vec3::new(70.0, 0.0, 0.0),
-            Vec3::new(-70.0, 0.0, 0.0),
-            Vec3::new(0.0, 0.0, 70.0),
+        let enemy_team = 1 - team;
+        let super_lane = self.units.iter().any(|u| {
+            u.kind == UnitKind::Inhibitor
+                && u.team == enemy_team
+                && u.structure_lane == Some(lane_index)
+                && u.health <= 0.0
+        });
+        let mut offsets = vec![
+            (Vec3::new(70.0, 0.0, 0.0), false, false),
+            (Vec3::new(-70.0, 0.0, 0.0), false, false),
+            (Vec3::new(0.0, 0.0, 70.0), true, false),
         ];
+        if super_lane {
+            offsets.push((Vec3::new(0.0, 0.0, -70.0), false, true));
+        }
 
-        for (i, offset) in offsets.iter().enumerate() {
-            let ranged = i == 2;
+        for (offset, ranged, super_minion) in offsets {
             let template = if ranged {
                 &self.ranged_template
             } else {
                 &self.melee_template
             };
-            let mut pos = nexus + *offset;
+            let health = if super_minion {
+                template.health * 2.5
+            } else {
+                template.health
+            };
+            let damage = if super_minion {
+                template.damage * 2.0
+            } else {
+                template.damage
+            };
+            let scale = if super_minion {
+                template.scale * 1.6
+            } else {
+                template.scale
+            };
+            let speed = if super_minion {
+                template.speed * 0.9
+            } else {
+                template.speed
+            };
+            let mut pos = nexus + offset;
             pos.y = self
                 .units
                 .iter()
@@ -1389,7 +1499,7 @@ impl AnimatedScene {
                 walk: Some(template.walk.clone()),
                 pos,
                 yaw: if team == 0 { 0.0 } else { std::f32::consts::PI },
-                scale: template.scale,
+                scale,
                 anim_time_ms: 0.0,
                 moving: false,
                 kind: if ranged {
@@ -1398,8 +1508,8 @@ impl AnimatedScene {
                     UnitKind::MeleeMinion
                 },
                 team,
-                health: template.health,
-                max_health: template.health,
+                health,
+                max_health: health,
                 hit_flash: 0.0,
                 dead_timer: 0.0,
                 target: None,
@@ -1408,11 +1518,11 @@ impl AnimatedScene {
                 attack_target: None,
                 attack_cooldown: 0.0,
                 attack_range: template.range,
-                attack_damage: template.damage,
+                attack_damage: damage,
                 attack_interval: template.interval,
-                speed: template.speed,
-                hit_radius: 90.0,
-                bar_height: 170.0,
+                speed,
+                hit_radius: if super_minion { 120.0 } else { 90.0 },
+                bar_height: if super_minion { 220.0 } else { 170.0 },
                 lane: lane.clone(),
                 lane_index: 1.min(lane.len()),
                 respawn_time: 0.0,
@@ -1433,6 +1543,8 @@ impl AnimatedScene {
                 e_shield: 0.0,
                 w_distance: 0.0,
                 ability_power: 0.0,
+                structure_lane: None,
+                super_minion,
             };
             self.units.push(unit);
         }
@@ -1670,6 +1782,8 @@ fn load_unit(
         e_shield: 0.0,
         w_distance: 0.0,
         ability_power: 0.0,
+        structure_lane: None,
+        super_minion: false,
     })
 }
 

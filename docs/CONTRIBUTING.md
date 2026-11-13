@@ -37,6 +37,8 @@ cargo run -p rift-client -- --timescale 20
 cargo run -p rift-client -- --demo-camp --timescale 4
 cargo run -p rift-client -- --demo-kit --timescale 4
 cargo run -p rift-client -- --demo-shop --timescale 4
+cargo run -p rift-client -- --demo-base --timescale 4
+cargo run -p rift-client -- --demo-inhibitor --timescale 20
 cargo run -p rift-client -- --champion jad
 cargo run -p rift-client -- --champion kree
 cargo run -p rift-client -- --demo-target 2900 3060

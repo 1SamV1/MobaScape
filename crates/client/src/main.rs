@@ -1,5 +1,6 @@
 mod animated;
 mod champion;
+mod font;
 mod hud;
 mod items;
 mod renderer;
@@ -22,8 +23,8 @@ use winit::window::{Window, WindowId};
 
 use crate::animated::AnimatedScene;
 use crate::champion::ChampionConfig;
-use crate::hud::{Hud, PlayerHud};
-use crate::items::{ItemShop, shop_row_at};
+use crate::hud::{Hud, PlayerHud, minimap_world_at};
+use crate::items::{ItemShop, shop_row_at, shop_row_rect};
 use crate::renderer::{Camera, Renderer};
 use crate::scene::{CampBuff, HeightGrid, SceneData, Vertex, WorldCollision};
 
@@ -63,6 +64,12 @@ struct Cli {
     /// Demo: grant gold, open the shop, and buy one of every item.
     #[arg(long)]
     demo_shop: bool,
+    /// Demo: damage the player and verify fountain healing plus passive gold.
+    #[arg(long)]
+    demo_base: bool,
+    /// Demo: destroy an inhibitor and verify super minions plus respawn.
+    #[arg(long)]
+    demo_inhibitor: bool,
     /// Simulation speed multiplier for verification.
     #[arg(long, default_value_t = 1.0)]
     timescale: f32,
@@ -134,6 +141,12 @@ fn main() -> Result<()> {
         demo_shop: cli.demo_shop,
         demo_shop_timer: 0.0,
         demo_shop_stage: 0,
+        demo_base: cli.demo_base,
+        demo_base_timer: 0.0,
+        demo_base_stage: 0,
+        demo_inhibitor: cli.demo_inhibitor,
+        demo_inhibitor_timer: 0.0,
+        demo_inhibitor_stage: 0,
         demo_camp_timer: 0.0,
         demo_camp_target: None,
         demo_camp_cast: false,
@@ -179,6 +192,12 @@ struct App {
     demo_shop: bool,
     demo_shop_timer: f32,
     demo_shop_stage: u8,
+    demo_base: bool,
+    demo_base_timer: f32,
+    demo_base_stage: u8,
+    demo_inhibitor: bool,
+    demo_inhibitor_timer: f32,
+    demo_inhibitor_stage: u8,
     demo_camp_timer: f32,
     demo_camp_target: Option<usize>,
     demo_camp_cast: bool,
@@ -262,6 +281,8 @@ impl ApplicationHandler for App {
                     || self.demo_combat
                     || self.demo_kit
                     || self.demo_shop
+                    || self.demo_base
+                    || self.demo_inhibitor
                 {
                     return;
                 }
@@ -284,13 +305,12 @@ impl ApplicationHandler for App {
                         self.lmb_press = Some(Instant::now());
                     }
                     ElementState::Released => {
-                        let held = self
-                            .lmb_press
-                            .take()
-                            .map(|t| t.elapsed().as_secs_f32())
-                            .unwrap_or(0.0);
+                        let Some(press) = self.lmb_press.take() else {
+                            return;
+                        };
+                        let held = press.elapsed().as_secs_f32();
                         self.lmb_down = false;
-                        if held < 0.18 {
+                        if held < 0.18 && !self.click_minimap() {
                             self.pick_and_move();
                         }
                     }
@@ -407,6 +427,23 @@ impl App {
                     self.demo_shop_stage += 1;
                 }
             }
+            if self.shop.open {
+                // Keep the demo cursor over the next unowned row so the
+                // hovered-item tooltip is part of the captured verification.
+                let (w, h) = self
+                    .renderer
+                    .as_ref()
+                    .map(|r| (r.size.0 as f32, r.size.1 as f32))
+                    .unwrap_or((1280.0, 720.0));
+                let row = self
+                    .shop
+                    .owned
+                    .iter()
+                    .position(Option::is_none)
+                    .unwrap_or(5);
+                let (x, y, rw, rh) = shop_row_rect(w, h, row);
+                self.mouse_pos = ((x + rw * 0.5) as f64, (y + rh * 0.5) as f64);
+            }
             if self.demo_shop_stage == 7 && self.demo_shop_timer >= 4.5 {
                 if let Some(animated) = self.animated.as_ref() {
                     let s = animated.player_stats();
@@ -427,15 +464,101 @@ impl App {
             }
         }
 
+        if self.demo_base {
+            self.demo_base_timer += dt;
+            if self.demo_base_stage == 0 && self.demo_base_timer >= 0.5 {
+                if let Some(animated) = self.animated.as_mut() {
+                    animated.debug_damage_player(300.0);
+                    let s = animated.player_stats();
+                    tracing::info!(
+                        "demo base: damaged to {:.0}/{:.0} hp, {:.0}/{:.0} mp, gold {}",
+                        s.health,
+                        s.max_health,
+                        s.mana,
+                        s.max_mana,
+                        s.gold
+                    );
+                }
+                self.demo_base_stage = 1;
+            }
+            if self.demo_base_stage == 1 && self.demo_base_timer >= 4.0 {
+                if let Some(animated) = self.animated.as_ref() {
+                    let s = animated.player_stats();
+                    tracing::info!(
+                        "demo base: fountain healed to {:.0}/{:.0} hp, {:.0}/{:.0} mp, passive gold {}",
+                        s.health,
+                        s.max_health,
+                        s.mana,
+                        s.max_mana,
+                        s.gold
+                    );
+                }
+                self.demo_base = false;
+            }
+        }
+
+        if self.demo_inhibitor {
+            self.demo_inhibitor_timer += dt;
+            if self.demo_inhibitor_stage == 0 && self.demo_inhibitor_timer >= 0.5 {
+                if let Some(animated) = self.animated.as_mut() {
+                    let ok = animated.debug_destroy_inhibitor(1, 0, 30.0);
+                    tracing::info!(
+                        "demo inhibitor: destroyed={ok} state={:?} inhib1={:?} vulnerable1={} supers={}",
+                        animated.debug_inhibitor_state(1, 0),
+                        animated.inhibitor_count(1),
+                        animated.nexus_vulnerable(1),
+                        animated.super_minion_count()
+                    );
+                }
+                self.demo_inhibitor_stage = 1;
+            }
+            if self.demo_inhibitor_stage == 1 && self.demo_inhibitor_timer >= 2.0 {
+                if let Some(animated) = self.animated.as_ref() {
+                    tracing::info!(
+                        "demo inhibitor: after wave state={:?} inhib1={:?} vulnerable1={} supers={}",
+                        animated.debug_inhibitor_state(1, 0),
+                        animated.inhibitor_count(1),
+                        animated.nexus_vulnerable(1),
+                        animated.super_minion_count()
+                    );
+                }
+                self.demo_inhibitor_stage = 2;
+            }
+            if self.demo_inhibitor_stage == 2 && self.demo_inhibitor_timer >= 5.5 {
+                if let Some(animated) = self.animated.as_ref() {
+                    tracing::info!(
+                        "demo inhibitor: after respawn state={:?} inhib1={:?} vulnerable1={} supers={}",
+                        animated.debug_inhibitor_state(1, 0),
+                        animated.inhibitor_count(1),
+                        animated.nexus_vulnerable(1),
+                        animated.super_minion_count()
+                    );
+                }
+                self.demo_inhibitor = false;
+            }
+        }
+
         let Some(renderer) = self.renderer.as_mut() else {
             return;
         };
 
+        let over_minimap = self.animated.as_ref().is_some_and(|animated| {
+            minimap_world_at(
+                renderer.size.0 as f32,
+                renderer.size.1 as f32,
+                self.mouse_pos,
+                animated.minimap_bounds,
+            )
+            .is_some()
+        });
         let steering = self.lmb_down
+            && !over_minimap
             && !self.demo_camp
             && !self.demo_combat
             && !self.demo_kit
             && !self.demo_shop
+            && !self.demo_base
+            && !self.demo_inhibitor
             && self
                 .lmb_press
                 .map(|t| t.elapsed().as_secs_f32() >= 0.18)
@@ -596,8 +719,9 @@ impl App {
             if self.lane_log_timer >= 5.0 {
                 self.lane_log_timer = 0.0;
                 tracing::info!(
-                    "lane: minions={} visible_enemies={} towers0={:?} towers1={:?} inhib0={:?} inhib1={:?} nexus0={:?} nexus1={:?} vulnerable0={} vulnerable1={}",
+                    "lane: minions={} supers={} visible_enemies={} towers0={:?} towers1={:?} inhib0={:?} inhib1={:?} nexus0={:?} nexus1={:?} vulnerable0={} vulnerable1={}",
                     animated.minion_count(),
+                    animated.super_minion_count(),
                     animated.visible_enemy_count(),
                     animated.tower_healths(0),
                     animated.tower_healths(1),
@@ -609,13 +733,16 @@ impl App {
                     animated.nexus_vulnerable(1)
                 );
             }
-            let buff = animated.team_buff(0).map(|(remaining, duration, kind)| {
-                let color = match kind {
-                    CampBuff::Might => [255, 160, 60],
-                    CampBuff::Swift => [90, 220, 255],
+            let buff_data = animated.team_buff(0).map(|(remaining, duration, kind)| {
+                let (color, label) = match kind {
+                    CampBuff::Might => ([255, 160, 60], "MIGHT"),
+                    CampBuff::Swift => ([90, 220, 255], "SWIFT"),
                 };
-                (remaining, duration, color)
+                (remaining, duration, color, label)
             });
+            let buff =
+                buff_data.map(|(remaining, duration, color, _)| (remaining, duration, color));
+            let buff_label = buff_data.map(|(_, _, _, label)| label);
             let stats = animated.player_stats();
             let (hud_w, hud_h) = (renderer.size.0 as f32, renderer.size.1 as f32);
             let shop_hover = if self.shop.open {
@@ -623,8 +750,6 @@ impl App {
             } else {
                 None
             };
-            let shop_costs =
-                std::array::from_fn(|i| self.shop.items.get(i).map(|item| item.cost).unwrap_or(0));
             let player_hud = PlayerHud {
                 health: stats.health,
                 max_health: stats.max_health,
@@ -636,20 +761,12 @@ impl App {
                 shield: stats.shield,
                 shield_timer: stats.shield_timer,
                 buff,
+                buff_label,
+                level: stats.level,
                 gold: stats.gold,
                 items: self.shop.owned_colors(),
                 shop_open: self.shop.open,
                 shop_hover,
-                shop_affordable: self.shop.affordable(stats.gold),
-                shop_costs,
-                shop_colors: std::array::from_fn(|i| {
-                    self.shop
-                        .items
-                        .get(i)
-                        .map(|item| item.color)
-                        .unwrap_or([90, 90, 90])
-                }),
-                shop_owned: std::array::from_fn(|i| self.shop.is_owned(i)),
                 shop_in_range: animated.in_fountain_range(),
             };
             self.hud.build(
@@ -663,7 +780,7 @@ impl App {
                 animated.match_over,
                 self.mouse_pos,
             );
-            self.hud.build_shop(hud_w, hud_h, &player_hud);
+            self.hud.build_shop(hud_w, hud_h, &player_hud, &self.shop);
             self.hud
                 .build_minimap(renderer.size.0 as f32, renderer.size.1 as f32, animated);
             renderer.set_hud_mesh(&self.hud.vertices, &self.hud.indices);
@@ -770,6 +887,32 @@ impl App {
         self.update_camera(dt);
     }
 
+    fn click_minimap(&mut self) -> bool {
+        let Some(renderer) = self.renderer.as_mut() else {
+            return false;
+        };
+        let Some(animated) = self.animated.as_ref() else {
+            return false;
+        };
+        let Some(height) = self.height.as_ref() else {
+            return false;
+        };
+        let Some((wx, wz)) = minimap_world_at(
+            renderer.size.0 as f32,
+            renderer.size.1 as f32,
+            self.mouse_pos,
+            animated.minimap_bounds,
+        ) else {
+            return false;
+        };
+        let wy = height.height_at(wx, wz) + 140.0;
+        renderer.camera.target = Vec3::new(wx, wy, wz);
+        self.follow = false;
+        renderer.update_camera();
+        tracing::info!("minimap pan to tile {:.0},{:.0}", wx / 128.0, wz / 128.0);
+        true
+    }
+
     fn purchase_item(&mut self, index: usize) {
         let Some(item) = self.shop.items.get(index).cloned() else {
             return;
@@ -873,6 +1016,80 @@ impl App {
     }
 
     fn update_camera(&mut self, dt: f32) {
+        if self.demo_base {
+            self.demo_base_timer += dt;
+            if self.demo_base_stage == 0 && self.demo_base_timer >= 0.5 {
+                if let Some(animated) = self.animated.as_mut() {
+                    animated.debug_damage_player(300.0);
+                    let s = animated.player_stats();
+                    tracing::info!(
+                        "demo base: damaged to {:.0}/{:.0} hp, {:.0}/{:.0} mp, gold {}",
+                        s.health,
+                        s.max_health,
+                        s.mana,
+                        s.max_mana,
+                        s.gold
+                    );
+                }
+                self.demo_base_stage = 1;
+            }
+            if self.demo_base_stage == 1 && self.demo_base_timer >= 4.0 {
+                if let Some(animated) = self.animated.as_ref() {
+                    let s = animated.player_stats();
+                    tracing::info!(
+                        "demo base: fountain healed to {:.0}/{:.0} hp, {:.0}/{:.0} mp, passive gold {}",
+                        s.health,
+                        s.max_health,
+                        s.mana,
+                        s.max_mana,
+                        s.gold
+                    );
+                }
+                self.demo_base = false;
+            }
+        }
+
+        if self.demo_inhibitor {
+            self.demo_inhibitor_timer += dt;
+            if self.demo_inhibitor_stage == 0 && self.demo_inhibitor_timer >= 0.5 {
+                if let Some(animated) = self.animated.as_mut() {
+                    let ok = animated.debug_destroy_inhibitor(1, 0, 30.0);
+                    tracing::info!(
+                        "demo inhibitor: destroyed={ok} state={:?} inhib1={:?} vulnerable1={} supers={}",
+                        animated.debug_inhibitor_state(1, 0),
+                        animated.inhibitor_count(1),
+                        animated.nexus_vulnerable(1),
+                        animated.super_minion_count()
+                    );
+                }
+                self.demo_inhibitor_stage = 1;
+            }
+            if self.demo_inhibitor_stage == 1 && self.demo_inhibitor_timer >= 2.0 {
+                if let Some(animated) = self.animated.as_ref() {
+                    tracing::info!(
+                        "demo inhibitor: after wave state={:?} inhib1={:?} vulnerable1={} supers={}",
+                        animated.debug_inhibitor_state(1, 0),
+                        animated.inhibitor_count(1),
+                        animated.nexus_vulnerable(1),
+                        animated.super_minion_count()
+                    );
+                }
+                self.demo_inhibitor_stage = 2;
+            }
+            if self.demo_inhibitor_stage == 2 && self.demo_inhibitor_timer >= 5.5 {
+                if let Some(animated) = self.animated.as_ref() {
+                    tracing::info!(
+                        "demo inhibitor: after respawn state={:?} inhib1={:?} vulnerable1={} supers={}",
+                        animated.debug_inhibitor_state(1, 0),
+                        animated.inhibitor_count(1),
+                        animated.nexus_vulnerable(1),
+                        animated.super_minion_count()
+                    );
+                }
+                self.demo_inhibitor = false;
+            }
+        }
+
         let Some(renderer) = self.renderer.as_mut() else {
             return;
         };
