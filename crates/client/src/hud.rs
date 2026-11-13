@@ -24,6 +24,11 @@ impl Hud {
         max_mana: f32,
         q_cooldown: f32,
         q_max: f32,
+        nexus0: (f32, f32),
+        nexus1: (f32, f32),
+        wave_timer: f32,
+        wave_interval: f32,
+        match_over: Option<u8>,
         mouse: (f64, f64),
     ) {
         self.vertices.clear();
@@ -50,6 +55,58 @@ impl Hud {
             mana / max_mana,
             [70, 120, 235],
         );
+
+        // Nexus health bars, top-centre.
+        let bar_w = 220.0;
+        let gap = 24.0;
+        let x0 = (width - (bar_w * 2.0 + gap)) * 0.5;
+        self.panel(
+            width,
+            height,
+            x0,
+            18.0,
+            bar_w,
+            16.0,
+            (nexus0.0 / nexus0.1.max(1.0)).clamp(0.0, 1.0),
+            [80, 150, 255],
+        );
+        self.panel(
+            width,
+            height,
+            x0 + bar_w + gap,
+            18.0,
+            bar_w,
+            16.0,
+            (nexus1.0 / nexus1.1.max(1.0)).clamp(0.0, 1.0),
+            [220, 65, 60],
+        );
+        let wave_fill = if wave_interval > 0.0 {
+            (1.0 - wave_timer / wave_interval).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        self.panel(
+            width,
+            height,
+            width * 0.5 - 90.0,
+            40.0,
+            180.0,
+            6.0,
+            wave_fill,
+            [220, 190, 60],
+        );
+
+        if let Some(winner) = match_over {
+            let color = if winner == 0 {
+                [80, 150, 255]
+            } else {
+                [220, 65, 60]
+            };
+            self.quad(width, height, 0.0, 0.0, width, 5.0, color);
+            self.quad(width, height, 0.0, height - 5.0, width, 5.0, color);
+            self.quad(width, height, 0.0, 0.0, 5.0, height, color);
+            self.quad(width, height, width - 5.0, 0.0, 5.0, height, color);
+        }
 
         // Q cooldown box, bottom-centre.
         let qx = width * 0.5 - 34.0;

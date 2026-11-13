@@ -47,8 +47,9 @@ North star:
 ```
 crates/cache/    cache reader + decoders (terrain, locations, configs, models)
 crates/tools/    rift-tools CLI (inspect, dump, export OBJ)
-crates/client/   winit + wgpu client (world, animation, HUD, combat sandbox)
+crates/client/   winit + wgpu client (world, animation, HUD, lane, combat)
 crates/sim/      deterministic tile grid, collision, A* pathfinding
+data/maps/       authored lane waypoints, structures, wave timing
 crates/data/     (planned) serde content types + hot reload
 crates/proto/    (planned) wire messages + snapshot encoding
 crates/server/   (planned) match instances, lobby, auth-lite
@@ -86,6 +87,7 @@ cargo run -p rift-tools -- model 1715
 cargo test -p rift-sim
 cargo run -p rift-client
 cargo run -p rift-client -- --demo-combat
+cargo run -p rift-client -- --timescale 20
 ```
 
 Cache location: `.cache/osrs-235/cache` by default. Pass `--cache` and
@@ -152,20 +154,21 @@ Cache location: `.cache/osrs-235/cache` by default. Pass `--cache` and
 - Renderer changes: include a headless screenshot or a manual visual check note.
 - Performance: 1080p/60 target on the AMD 680M iGPU. Profile before optimizing.
 
-## 8. Known M2 limitations
+## 8. Known M3 limitations
 
 - Client renders a 3×3 region block (192×192 tiles); there is no terrain skirt
   or streaming beyond it, and the collision grid is approximate (water + object
   footprints, no cliffs/bridges).
+- One mid lane only: two towers and one nexus per team, five minions per wave,
+  25 s wave interval. No top/bottom lanes, inhibitors, jungle camps, or items.
+- The HUD is geometry only (bars, Q box, crosshair, nexus/wave bars); all
+  numbers live in the window title. No text renderer yet.
+- Combat has one Q projectile; no passive/Q/W/E/R kit, mana cost, or items.
 - Model formats 1 and old-format models are not implemented yet.
 - Textures are not sampled; textured faces and the `0xff00ff` overlay sentinel
   use flat fallback colours. Dead-tree trunks read as pale spikes.
 - Animaya is not applied; only classic frame/framemap animation works.
-- The HUD is geometry only (bars, Q box, crosshair); all numbers live in the
-  window title. No text renderer yet.
-- Combat is a sandbox: three respawning dummies, auto-attacks, and one Q
-  projectile. No mana cost, minions, towers, items, or champion kits.
-- No lobby, netcode, audio, or map editor. NPCs idle only.
+- No lobby, netcode, audio, or map editor. Ambient NPCs idle only.
 - LZMA groups are implemented but not exercised by the pinned cache.
 - Config archives use real file IDs from the reference table; keep it that way.
 - The viewer follows the player by default. `WASD` disables follow; `F` toggles.

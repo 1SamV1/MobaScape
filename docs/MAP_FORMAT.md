@@ -19,63 +19,41 @@ data/maps/karamja_rift/
 the cache and are **not committed**. `map.json` is committed because it is our
 design data; it references cache IDs, not assets.
 
-## `map.json` sketch
+## Current `map.json` (v1)
+
+The first playable lane is `data/maps/karamja_rift/map.json`:
 
 ```json
 {
-  "name": "Karamja Rift",
-  "version": 1,
-  "size": [160, 160],
-  "source": {
-    "cache": "openrs2-2392-build235",
-    "regions": [[43, 46], [44, 46], [45, 46], [43, 47], [44, 47], [45, 47], [43, 48], [44, 48], [45, 48]],
-    "carve": "karamja_rift_v1"
-  },
-  "teams": [
-    { "id": 0, "name": "West", "color": [80, 140, 220], "fountain": [18, 80], "nexus": [26, 80] },
-    { "id": 1, "name": "East", "color": [220, 90, 70], "fountain": [142, 80], "nexus": [134, 80] }
+  "name": "Karamja Rift - Mid Lane",
+  "lane": [
+    [2800, 3040], [2815, 3045], [2835, 3055], [2850, 3065],
+    [2860, 3065], [2870, 3055], [2885, 3045], [2900, 3040]
   ],
-  "lanes": [
-    {
-      "id": "top",
-      "width": 10,
-      "waypoints": [[26, 80], [30, 120], [80, 140], [130, 120], [134, 80]]
-    },
-    {
-      "id": "mid",
-      "width": 10,
-      "waypoints": [[26, 80], [80, 80], [134, 80]]
-    },
-    {
-      "id": "bot",
-      "width": 10,
-      "waypoints": [[26, 80], [30, 40], [80, 20], [130, 40], [134, 80]]
-    }
-  ],
-  "towers": [
-    { "team": 0, "lane": "top", "tier": 1, "pos": [34, 112], "npc": 0 },
-    { "team": 0, "lane": "top", "tier": 2, "pos": [28, 96], "npc": 0 }
-  ],
-  "inhibitors": [
-    { "team": 0, "lane": "top", "pos": [26, 84] }
-  ],
-  "camps": [
-    { "id": "blue", "pos": [48, 96], "npc": 0, "buff": "prayer", "respawn": 120 },
-    { "id": "red", "pos": [112, 64], "npc": 0, "buff": "magic", "respawn": 120 },
-    { "id": "boss", "pos": [80, 80], "npc": 0, "buff": "boss", "respawn": 480 }
-  ],
-  "brush": [[[40, 90], [52, 90], [52, 102], [40, 102]]],
-  "fog_blockers": [[[44, 94], [50, 94], [50, 100], [44, 100]]],
-  "spawns": {
-    "team0": [[18, 80], [19, 80], [20, 80], [21, 80], [22, 80]],
-    "team1": [[142, 80], [141, 80], [140, 80], [139, 80], [138, 80]]
-  }
+  "wave_interval": 25.0,
+  "structures": [
+    { "team": 0, "kind": "nexus", "tile": [2800, 3040], "model": 1747,
+      "health": 1200, "range": 0, "damage": 0, "interval": 0, "scale": 1.4 },
+    { "team": 0, "kind": "tower", "tile": [2820, 3050], "model": 1761,
+      "health": 450, "range": 640, "damage": 18, "interval": 1.2, "scale": 1.5 },
+    { "team": 1, "kind": "tower", "tile": [2880, 3050], "model": 1761,
+      "health": 450, "range": 640, "damage": 18, "interval": 1.2, "scale": 1.5 },
+    { "team": 1, "kind": "nexus", "tile": [2900, 3040], "model": 1747,
+      "health": 1200, "range": 0, "damage": 0, "interval": 0, "scale": 1.4 }
+  ]
 }
 ```
 
-All positions are tile coordinates on the 160×160 grid, origin at the
-south-west corner. `width` is in tiles. Tower/camp NPC IDs reference
-`data/npcs/` or a future `data/units/` table; they are not raw cache IDs.
+The scene clears collision in a ~4.5-tile corridor around the lane, blocks
+3×3 footprints under structures, skips scenery within 5 tiles of the lane, and
+draws a stone-path ribbon. The runtime spawns three melee skeletons and two
+skeleton mages per team every `wave_interval` seconds.
+
+## Future schema
+
+Top/bottom lanes, inhibitors, jungle camps, brush, fog blockers, and team
+spawns will be added as the map editor lands. Positions are absolute world
+tiles (e.g. 2800, 3040), not region-local coordinates.
 
 ## Terrain bake
 

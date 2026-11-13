@@ -1689,6 +1689,8 @@ dependencies = [
  "pollster",
  "rift-cache",
  "rift-sim",
+ "serde",
+ "serde_json",
  "tracing",
  "tracing-subscriber",
  "wgpu",

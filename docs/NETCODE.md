@@ -40,6 +40,8 @@ Client sends `InputCommand { client_tick, ack_tick, move_mode, target, cast }`.
 - Tap-to-move: server A* on the tile grid (`crates/sim` already owns the grid and
   pathfinder); returns a path. Client predicts along the path and reconciles on
   ack.
+- Minions, towers, nexus health, wave timers, and win conditions must move into
+  the authoritative `sim`; the current lane loop is a client-side prototype.
 - Hold-to-steer: client sends a direction each tick; server applies collision
   sliding at the same speed and validates against the map.
 - Server correction: if the client's predicted position differs by more than a

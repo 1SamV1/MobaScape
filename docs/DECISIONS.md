@@ -117,3 +117,14 @@ The HUD uses the same vertex format as the world but a second pipeline with an
 identity camera, alpha blending, and depth testing disabled. This keeps the HUD
 cheap and avoids a UI framework dependency. Text is deferred; numeric values are
 shown in the window title until a bitmap font atlas is added.
+
+## ADR-012 — One data-driven mid lane first
+
+**Status:** accepted.
+
+The first playable MOBA loop is a single mid lane defined in
+`data/maps/karamja_rift/map.json`. Scene building clears a collision corridor,
+blocks structure footprints, skips scenery near the lane, and emits a stone-path
+ribbon. `AnimatedScene` spawns waves, runs minion/tower AI, and ends the match
+when a nexus dies. Top/bottom lanes, inhibitors, jungle camps, and brush are
+deferred until the loop is stable.

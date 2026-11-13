@@ -38,12 +38,18 @@ struct Cli {
     /// Initial camera distance in world units.
     #[arg(long, default_value_t = 4400.0)]
     distance: f32,
+    /// Map design data.
+    #[arg(long, default_value = "data/maps/karamja_rift/map.json")]
+    map: PathBuf,
     /// Demo: walk to this tile coordinate after one second (x y).
     #[arg(long, num_args = 2, value_names = ["X", "Y"])]
     demo_target: Option<Vec<f32>>,
     /// Demo: auto-target a dummy and fire Q to verify combat.
     #[arg(long)]
     demo_combat: bool,
+    /// Simulation speed multiplier for verification.
+    #[arg(long, default_value_t = 1.0)]
+    timescale: f32,
 }
 
 fn main() -> Result<()> {
@@ -64,7 +70,7 @@ fn main() -> Result<()> {
         cli.region_x,
         cli.region_y
     );
-    let scene = scene::build(&cache, cli.region_x, cli.region_y, cli.radius)?;
+    let scene = scene::build(&cache, cli.region_x, cli.region_y, cli.radius, &cli.map)?;
     let animated = AnimatedScene::new(&cache, &scene)?;
     let height = scene.height.clone();
     let collision = scene.collision.clone();
@@ -102,11 +108,13 @@ fn main() -> Result<()> {
         demo_target,
         demo_timer: 0.0,
         demo_combat: cli.demo_combat,
+        timescale: cli.timescale,
         demo_combat_timer: 0.0,
         demo_combat_targeted: false,
         demo_combat_cast: false,
         demo_combat_target: None,
         hud: Hud::new(),
+        lane_log_timer: 0.0,
         last_frame: Instant::now(),
         title_timer: 0.0,
         title_frames: 0,
@@ -132,11 +140,13 @@ struct App {
     demo_target: Option<(f32, f32)>,
     demo_timer: f32,
     demo_combat: bool,
+    timescale: f32,
     demo_combat_timer: f32,
     demo_combat_targeted: bool,
     demo_combat_cast: bool,
     demo_combat_target: Option<usize>,
     hud: Hud,
+    lane_log_timer: f32,
     last_frame: Instant,
     title_timer: f32,
     title_frames: u32,
@@ -368,17 +378,34 @@ impl App {
                     self.demo_target = None;
                 }
             }
-            animated.update(
-                dt,
-                height,
-                collision,
-                camera_right,
-                camera_up,
-                camera_forward,
-            );
+            let steps = self.timescale.round().clamp(1.0, 20.0) as u32;
+            for _ in 0..steps {
+                animated.update(
+                    dt,
+                    height,
+                    collision,
+                    camera_right,
+                    camera_up,
+                    camera_forward,
+                );
+            }
             renderer.set_dynamic_mesh(&animated.vertices, &animated.indices);
 
             let (hp, max_hp) = animated.player_health();
+            let nexus0 = animated.nexus_health(0).unwrap_or((0.0, 1.0));
+            let nexus1 = animated.nexus_health(1).unwrap_or((0.0, 1.0));
+            self.lane_log_timer += dt;
+            if self.lane_log_timer >= 5.0 {
+                self.lane_log_timer = 0.0;
+                tracing::info!(
+                    "lane: minions={} towers0={:?} towers1={:?} nexus0={:?} nexus1={:?}",
+                    animated.minion_count(),
+                    animated.tower_healths(0),
+                    animated.tower_healths(1),
+                    animated.nexus_health(0),
+                    animated.nexus_health(1)
+                );
+            }
             self.hud.build(
                 renderer.size.0 as f32,
                 renderer.size.1 as f32,
@@ -388,6 +415,11 @@ impl App {
                 1.0,
                 animated.q_cooldown,
                 5.0,
+                nexus0,
+                nexus1,
+                animated.wave_timer,
+                animated.wave_interval,
+                animated.match_over,
                 self.mouse_pos,
             );
             renderer.set_hud_mesh(&self.hud.vertices, &self.hud.indices);
@@ -403,15 +435,29 @@ impl App {
                 let pos = animated.player_pos();
                 let (hp, max_hp) = animated.player_health();
                 let q = animated.q_cooldown;
+                let nexus0 = animated.nexus_health(0).unwrap_or((0.0, 1.0));
+                let nexus1 = animated.nexus_health(1).unwrap_or((0.0, 1.0));
+                let result = match animated.match_over {
+                    Some(0) => " | VICTORY",
+                    Some(_) => " | DEFEAT",
+                    None => "",
+                };
                 if let Some(window) = self.window.as_ref() {
                     window.set_title(&format!(
-                        "Rift - Karamja | tile {:.0},{:.0} | {:.0} fps | HP {:.0}/{:.0} | Q {:.1}s",
+                        "Rift - Karamja | tile {:.0},{:.0} | {:.0} fps | HP {:.0}/{:.0} | Q {:.1}s | nexus {:.0}/{:.0} - {:.0}/{:.0} | wave {:.0}s | minions {}{}",
                         pos.x / 128.0,
                         pos.z / 128.0,
                         fps,
                         hp,
                         max_hp,
-                        q
+                        q,
+                        nexus0.0,
+                        nexus0.1,
+                        nexus1.0,
+                        nexus1.1,
+                        animated.wave_timer,
+                        animated.minion_count(),
+                        result
                     ));
                 }
                 self.title_timer = 0.0;

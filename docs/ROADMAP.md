@@ -71,17 +71,26 @@ Remaining:
 - Dummy minions, a tower, fog v0, HUD v0.
 - Frame time <16.6 ms at 1080p on the 680M.
 
-### M3 — Match loop
+### M3 — Match loop (in progress)
 
 Scope: minion waves, jungle camps/buffs, gold/XP/items, five champions, win
 condition, dev bots, headless match runner.
 
-Exit criteria:
+Done:
 
-- Deterministic 10-bot match completes at 20× speed with a state hash.
-- A human can play a full match against dev bots with all core systems.
-- Data hot reload works for champions, abilities, items, and waves.
-- Balance pass v0 documented.
+- One mid lane carved into Karamja, with two towers and one nexus per team.
+- Five-minion waves every 25 s (three melee skeletons, two skeleton mages).
+- Tower targeting/projectiles, minion lane AI, nexus win condition.
+- HUD nexus health bars and wave timer; title shows tower/minion/match state.
+- `--timescale` for fast verification.
+
+Remaining:
+
+- Top/bottom lanes, inhibitors, jungle camps/buffs.
+- Gold/XP/items and five champions with full kits.
+- Deterministic 10-bot match at 20× speed with a state hash.
+- Data hot reload for champions/abilities/items/waves.
+- Balance pass v0.
 
 ### M4 — Multiplayer
 

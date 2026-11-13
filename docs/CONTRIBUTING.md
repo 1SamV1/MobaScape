@@ -33,6 +33,8 @@ cargo run -p rift-tools -- animate 7744 222
 cargo test -p rift-sim
 cargo run -p rift-client
 cargo run -p rift-client -- --demo-combat
+cargo run -p rift-client -- --timescale 20
+cargo run -p rift-client -- --demo-target 2900 3060
 ```
 
 For a deterministic viewer screenshot under XWayland:

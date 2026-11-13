@@ -3,16 +3,35 @@ use glam::{Mat3, Vec3};
 use rift_cache::{AnimationClip, Cache, Model, model::hsl_to_rgb};
 
 use crate::scene::{
-    HeightGrid, NpcSpawn, SceneData, Vertex, WorldCollision, model_vertex_animated,
+    HeightGrid, SceneData, StructureKind, Vertex, WorldCollision, model_vertex_animated,
 };
 
 const PLAYER_SPEED: f32 = 420.0;
-const ATTACK_RANGE: f32 = 330.0;
-const ATTACK_INTERVAL: f32 = 1.15;
-const ATTACK_DAMAGE: f32 = 12.0;
+const PLAYER_ATTACK_RANGE: f32 = 330.0;
+const PLAYER_ATTACK_INTERVAL: f32 = 1.15;
+const PLAYER_ATTACK_DAMAGE: f32 = 12.0;
 const Q_COOLDOWN: f32 = 5.0;
 const Q_DAMAGE: f32 = 38.0;
-const RESPAWN_TIME: f32 = 4.0;
+const PLAYER_RESPAWN: f32 = 5.0;
+const MINION_AGGRO: f32 = 520.0;
+const MAX_MINIONS_PER_TEAM: usize = 24;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnitKind {
+    Player,
+    Ambient,
+    Dummy,
+    MeleeMinion,
+    RangedMinion,
+    Tower,
+    Nexus,
+}
+
+impl UnitKind {
+    fn is_minion(self) -> bool {
+        matches!(self, Self::MeleeMinion | Self::RangedMinion)
+    }
+}
 
 pub struct AnimatedUnit {
     pub model: Model,
@@ -23,8 +42,7 @@ pub struct AnimatedUnit {
     pub scale: f32,
     pub anim_time_ms: f32,
     pub moving: bool,
-    pub is_player: bool,
-    pub is_dummy: bool,
+    pub kind: UnitKind,
     pub team: u8,
     pub health: f32,
     pub max_health: f32,
@@ -35,6 +53,14 @@ pub struct AnimatedUnit {
     pub path_index: usize,
     pub attack_target: Option<usize>,
     pub attack_cooldown: f32,
+    pub attack_range: f32,
+    pub attack_damage: f32,
+    pub attack_interval: f32,
+    pub speed: f32,
+    pub hit_radius: f32,
+    pub bar_height: f32,
+    pub lane: Vec<Vec3>,
+    pub lane_index: usize,
 }
 
 pub struct Projectile {
@@ -46,6 +72,18 @@ pub struct Projectile {
     pub team: u8,
 }
 
+struct MinionTemplate {
+    model: Model,
+    idle: AnimationClip,
+    walk: AnimationClip,
+    health: f32,
+    range: f32,
+    damage: f32,
+    interval: f32,
+    speed: f32,
+    scale: f32,
+}
+
 pub struct AnimatedScene {
     pub units: Vec<AnimatedUnit>,
     pub player_index: usize,
@@ -54,6 +92,14 @@ pub struct AnimatedScene {
     pub marker: Option<(Vec3, f32)>,
     pub projectiles: Vec<Projectile>,
     pub q_cooldown: f32,
+    pub wave_timer: f32,
+    pub wave_interval: f32,
+    pub lane_waypoints: Vec<Vec3>,
+    pub nexus_positions: [Vec3; 2],
+    pub player_spawn: Vec3,
+    pub match_over: Option<u8>,
+    melee_template: MinionTemplate,
+    ranged_template: MinionTemplate,
 }
 
 impl AnimatedScene {
@@ -61,37 +107,140 @@ impl AnimatedScene {
         let mut units = Vec::new();
 
         for spawn in &scene.npc_spawns {
-            units.push(load_unit(cache, spawn, false, false, 2, 100.0)?);
+            units.push(load_unit(
+                cache,
+                spawn.model_id,
+                Some(spawn.idle_sequence),
+                spawn.walk_sequence,
+                spawn.pos,
+                spawn.scale,
+                UnitKind::Ambient,
+                2,
+                100.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                90.0,
+                150.0,
+                Vec::new(),
+            )?);
         }
 
-        let player_spawn = NpcSpawn {
-            model_id: 7744,
-            idle_sequence: 222,
-            walk_sequence: Some(219),
-            pos: scene.player_spawn,
-            scale: 2.8,
-        };
         let player_index = units.len();
-        units.push(load_unit(cache, &player_spawn, true, false, 0, 500.0)?);
+        units.push(load_unit(
+            cache,
+            7744,
+            Some(222),
+            Some(219),
+            scene.player_spawn,
+            2.8,
+            UnitKind::Player,
+            0,
+            500.0,
+            PLAYER_ATTACK_RANGE,
+            PLAYER_ATTACK_DAMAGE,
+            PLAYER_ATTACK_INTERVAL,
+            PLAYER_SPEED,
+            240.0,
+            380.0,
+            Vec::new(),
+        )?);
 
-        // Three target dummies near the player. Snap each to a walkable tile.
-        for (dx, dy) in [(4.0f32, 0.0f32), (-3.0, 3.0), (0.0, -4.0)] {
-            let wx = scene.player_spawn.x + dx * 128.0;
-            let wz = scene.player_spawn.z + dy * 128.0;
-            if let Some((tx, ty)) = scene.collision.nearest_walkable_world(wx, wz) {
-                let pos = scene.collision.world_of_tile(tx, ty, &scene.height);
-                let spawn = NpcSpawn {
-                    model_id: 7744,
-                    idle_sequence: 222,
-                    walk_sequence: Some(219),
-                    pos,
-                    scale: 2.4,
-                };
-                units.push(load_unit(cache, &spawn, false, true, 1, 120.0)?);
-            }
+        // A training dummy next to the spawn keeps combat testable without
+        // waiting for the first wave to meet in the middle.
+        let dummy_world = scene.player_spawn + Vec3::new(4.0 * 128.0, 0.0, 0.0);
+        if let Some((tx, ty)) = scene
+            .collision
+            .nearest_walkable_world(dummy_world.x, dummy_world.z)
+        {
+            let dummy_pos = scene.collision.world_of_tile(tx, ty, &scene.height);
+            units.push(load_unit(
+                cache,
+                7744,
+                Some(222),
+                Some(219),
+                dummy_pos,
+                2.4,
+                UnitKind::Dummy,
+                1,
+                120.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                130.0,
+                300.0,
+                Vec::new(),
+            )?);
         }
 
-        Ok(Self {
+        for structure in &scene.lane.structures {
+            tracing::info!(
+                "lane structure: {:?} team {} model {} pos {:?}",
+                structure.kind,
+                structure.team,
+                structure.model_id,
+                structure.pos
+            );
+            let kind = match structure.kind {
+                StructureKind::Tower => UnitKind::Tower,
+                StructureKind::Nexus => UnitKind::Nexus,
+            };
+            let (hit_radius, bar_height) = match kind {
+                UnitKind::Tower => (230.0, 500.0),
+                UnitKind::Nexus => (300.0, 400.0),
+                _ => (150.0, 200.0),
+            };
+            units.push(load_unit(
+                cache,
+                structure.model_id,
+                None,
+                None,
+                structure.pos,
+                structure.scale,
+                kind,
+                structure.team,
+                structure.health,
+                structure.range,
+                structure.damage,
+                structure.interval,
+                0.0,
+                hit_radius,
+                bar_height,
+                Vec::new(),
+            )?);
+        }
+
+        let nexus_positions = [
+            find_nexus(&units, 0).unwrap_or(scene.player_spawn),
+            find_nexus(&units, 1).unwrap_or(scene.player_spawn),
+        ];
+
+        let melee_template = MinionTemplate {
+            model: load_model(cache, 2944)?,
+            idle: AnimationClip::load(cache, 262)?,
+            walk: AnimationClip::load(cache, 259)?,
+            health: 90.0,
+            range: 100.0,
+            damage: 7.0,
+            interval: 1.0,
+            speed: 400.0,
+            scale: 1.15,
+        };
+        let ranged_template = MinionTemplate {
+            model: load_model(cache, 21193)?,
+            idle: AnimationClip::load(cache, 5483)?,
+            walk: AnimationClip::load(cache, 5479)?,
+            health: 65.0,
+            range: 380.0,
+            damage: 9.0,
+            interval: 1.3,
+            speed: 380.0,
+            scale: 1.15,
+        };
+
+        let mut animated = Self {
             units,
             player_index,
             vertices: Vec::new(),
@@ -99,7 +248,19 @@ impl AnimatedScene {
             marker: None,
             projectiles: Vec::new(),
             q_cooldown: 0.0,
-        })
+            wave_timer: 0.0,
+            wave_interval: scene.lane.wave_interval,
+            lane_waypoints: scene.lane.waypoints.clone(),
+            nexus_positions,
+            player_spawn: scene.player_spawn,
+            match_over: None,
+            melee_template,
+            ranged_template,
+        };
+        animated.spawn_wave(0);
+        animated.spawn_wave(1);
+        animated.wave_timer = animated.wave_interval;
+        Ok(animated)
     }
 
     pub fn player_pos(&self) -> Vec3 {
@@ -109,6 +270,25 @@ impl AnimatedScene {
     pub fn player_health(&self) -> (f32, f32) {
         let p = &self.units[self.player_index];
         (p.health, p.max_health)
+    }
+
+    pub fn nexus_health(&self, team: u8) -> Option<(f32, f32)> {
+        self.units
+            .iter()
+            .find(|u| u.kind == UnitKind::Nexus && u.team == team)
+            .map(|u| (u.health, u.max_health))
+    }
+
+    pub fn minion_count(&self) -> usize {
+        self.units.iter().filter(|u| u.kind.is_minion()).count()
+    }
+
+    pub fn tower_healths(&self, team: u8) -> Vec<(f32, f32)> {
+        self.units
+            .iter()
+            .filter(|u| u.kind == UnitKind::Tower && u.team == team)
+            .map(|u| (u.health, u.max_health))
+            .collect()
     }
 
     pub fn set_player_target(
@@ -146,7 +326,7 @@ impl AnimatedScene {
         player.attack_target = Some(index);
         player.target = Some(target_pos);
         let distance = player.pos.distance(target_pos);
-        if distance > ATTACK_RANGE {
+        if distance > player.attack_range {
             player.path = collision.path_world(player.pos, target_pos, height);
             player.path_index = 0;
         } else {
@@ -175,7 +355,7 @@ impl AnimatedScene {
             return;
         }
         let dir = flat.normalize();
-        let next = collision.slide_move(unit.pos, dir * PLAYER_SPEED * dt, height);
+        let next = collision.slide_move(unit.pos, dir * unit.speed * dt, height);
         let moved = next.distance(unit.pos) > 0.01;
         unit.pos = next;
         unit.yaw = dir.x.atan2(dir.z);
@@ -183,7 +363,7 @@ impl AnimatedScene {
     }
 
     pub fn cast_q(&mut self, target: Vec3) -> bool {
-        if self.q_cooldown > 0.0 {
+        if self.q_cooldown > 0.0 || self.units[self.player_index].health <= 0.0 {
             return false;
         }
         let player = &self.units[self.player_index];
@@ -211,8 +391,8 @@ impl AnimatedScene {
             if unit.team != 1 || unit.health <= 0.0 {
                 continue;
             }
-            let center = unit.pos + Vec3::Y * (unit.scale * 95.0);
-            let radius = unit.scale * 90.0;
+            let center = unit.pos + Vec3::Y * (unit.bar_height * 0.45);
+            let radius = unit.hit_radius;
             let oc = center - origin;
             let t = oc.dot(dir);
             if t < 0.0 {
@@ -265,10 +445,20 @@ impl AnimatedScene {
             }
         }
 
+        if self.match_over.is_none() {
+            self.wave_timer -= dt;
+            if self.wave_timer <= 0.0 {
+                self.spawn_wave(0);
+                self.spawn_wave(1);
+                self.wave_timer = self.wave_interval;
+            }
+        }
+
         for unit in &mut self.units {
             unit.hit_flash = (unit.hit_flash - dt).max(0.0);
             unit.attack_cooldown = (unit.attack_cooldown - dt).max(0.0);
-            if unit.health <= 0.0 && !unit.is_player {
+            unit.anim_time_ms += dt * 1000.0;
+            if unit.health <= 0.0 && unit.kind == UnitKind::Dummy {
                 unit.dead_timer -= dt;
                 if unit.dead_timer <= 0.0 {
                     unit.health = unit.max_health;
@@ -278,155 +468,46 @@ impl AnimatedScene {
                     unit.path_index = 0;
                 }
             }
-            unit.anim_time_ms += dt * 1000.0;
         }
 
         self.update_player(dt, height, collision);
+
+        let unit_count = self.units.len();
+        for i in 0..unit_count {
+            let kind = self.units[i].kind;
+            if self.units[i].health <= 0.0 {
+                continue;
+            }
+            if kind.is_minion() {
+                self.update_minion(i, dt, height);
+            } else if kind == UnitKind::Tower {
+                self.update_tower(i);
+            }
+        }
+
         self.update_projectiles(dt, height);
-
-        self.vertices.clear();
-        self.indices.clear();
-
-        let units = std::mem::take(&mut self.units);
-        for unit in &units {
-            if unit.health > 0.0 {
-                let clip = if unit.moving {
-                    unit.walk.as_ref().unwrap_or(&unit.idle)
-                } else {
-                    &unit.idle
-                };
-                let positions = unit.model.animated_positions(clip, unit.anim_time_ms);
-                append_unit(self, unit, &positions);
-            }
-        }
-        self.units = units;
-
-        // Health bars for the player and target dummies.
-        let bars = self
-            .units
-            .iter()
-            .filter(|unit| unit.health > 0.0 && (unit.is_player || unit.is_dummy))
-            .map(|unit| {
-                (
-                    unit.pos + Vec3::Y * (unit.scale * 120.0 + 40.0),
-                    150.0 * (unit.scale / 2.8).clamp(0.8, 1.4),
-                    (unit.health / unit.max_health).clamp(0.0, 1.0),
-                    if unit.is_player {
-                        [80u8, 150, 255]
-                    } else {
-                        [220u8, 65, 60]
-                    },
-                )
-            })
-            .collect::<Vec<_>>();
-        for (center, width, fill, color) in bars {
-            append_bar(
-                self,
-                center,
-                width,
-                16.0,
-                fill,
-                color,
-                camera_right,
-                camera_up,
-                camera_forward,
-            );
-        }
-
-        let projectile_positions = self
-            .projectiles
-            .iter()
-            .map(|projectile| projectile.pos)
-            .collect::<Vec<_>>();
-        for pos in projectile_positions {
-            append_billboard(self, pos, 22.0, [255, 150, 40], camera_right, camera_up);
-        }
-
-        // Selection ring under the player.
-        let player = &self.units[self.player_index];
-        let base_y = player.pos.y + 3.0;
-        let radius = 95.0 * player.scale / 2.8;
-        let segments = 32u32;
-        let ring_base = self.vertices.len() as u32;
-        for i in 0..segments {
-            let a = i as f32 / segments as f32 * std::f32::consts::TAU;
-            let b = (i + 1) as f32 / segments as f32 * std::f32::consts::TAU;
-            let inner = 0.78;
-            let color = [90u8, 180, 255];
-            let p0 = Vec3::new(
-                player.pos.x + a.cos() * radius,
-                base_y,
-                player.pos.z + a.sin() * radius,
-            );
-            let p1 = Vec3::new(
-                player.pos.x + b.cos() * radius,
-                base_y,
-                player.pos.z + b.sin() * radius,
-            );
-            let p2 = Vec3::new(
-                player.pos.x + a.cos() * radius * inner,
-                base_y,
-                player.pos.z + a.sin() * radius * inner,
-            );
-            let p3 = Vec3::new(
-                player.pos.x + b.cos() * radius * inner,
-                base_y,
-                player.pos.z + b.sin() * radius * inner,
-            );
-            self.vertices.push(Vertex::new(p0, color));
-            self.vertices.push(Vertex::new(p1, color));
-            self.vertices.push(Vertex::new(p2, color));
-            self.vertices.push(Vertex::new(p3, color));
-            let o = ring_base + i * 4;
-            self.indices
-                .extend_from_slice(&[o, o + 1, o + 2, o + 2, o + 1, o + 3]);
-        }
-
-        if let Some((marker, remaining)) = self.marker {
-            let pulse = (remaining * 6.0).sin().abs() * 0.25 + 0.75;
-            let radius = 55.0 * pulse;
-            let segments = 20u32;
-            let base_y = marker.y + 5.0;
-            let ring_base = self.vertices.len() as u32;
-            for i in 0..segments {
-                let a = i as f32 / segments as f32 * std::f32::consts::TAU;
-                let b = (i + 1) as f32 / segments as f32 * std::f32::consts::TAU;
-                let color = [120u8, 255, 120];
-                let p0 = Vec3::new(
-                    marker.x + a.cos() * radius,
-                    base_y,
-                    marker.z + a.sin() * radius,
-                );
-                let p1 = Vec3::new(
-                    marker.x + b.cos() * radius,
-                    base_y,
-                    marker.z + b.sin() * radius,
-                );
-                let p2 = Vec3::new(
-                    marker.x + a.cos() * radius * 0.6,
-                    base_y,
-                    marker.z + a.sin() * radius * 0.6,
-                );
-                let p3 = Vec3::new(
-                    marker.x + b.cos() * radius * 0.6,
-                    base_y,
-                    marker.z + b.sin() * radius * 0.6,
-                );
-                self.vertices.push(Vertex::new(p0, color));
-                self.vertices.push(Vertex::new(p1, color));
-                self.vertices.push(Vertex::new(p2, color));
-                self.vertices.push(Vertex::new(p3, color));
-                let o = ring_base + i * 4;
-                self.indices
-                    .extend_from_slice(&[o, o + 1, o + 2, o + 2, o + 1, o + 3]);
-            }
-        }
+        self.rebuild_mesh(camera_right, camera_up, camera_forward);
     }
 
     fn update_player(&mut self, dt: f32, height: &HeightGrid, collision: &WorldCollision) {
         let pi = self.player_index;
-        let target_index = self.units[pi].attack_target;
+        if self.units[pi].health <= 0.0 {
+            self.units[pi].dead_timer -= dt;
+            if self.units[pi].dead_timer <= 0.0 {
+                let spawn = self.player_spawn;
+                let unit = &mut self.units[pi];
+                unit.pos = spawn;
+                unit.health = unit.max_health;
+                unit.dead_timer = 0.0;
+                unit.attack_target = None;
+                unit.path.clear();
+                unit.path_index = 0;
+                unit.moving = false;
+            }
+            return;
+        }
 
+        let target_index = self.units[pi].attack_target;
         if let Some(ti) = target_index {
             let target_alive = self
                 .units
@@ -436,7 +517,7 @@ impl AnimatedScene {
                 let target_pos = self.units[ti].pos;
                 let player_pos = self.units[pi].pos;
                 let distance = player_pos.distance(target_pos);
-                if distance > ATTACK_RANGE {
+                if distance > self.units[pi].attack_range {
                     let unit = &mut self.units[pi];
                     if unit.path.is_empty()
                         || unit
@@ -458,13 +539,9 @@ impl AnimatedScene {
                         unit.yaw = dir.x.atan2(dir.z);
                     }
                     if unit.attack_cooldown <= 0.0 {
-                        unit.attack_cooldown = ATTACK_INTERVAL;
-                        let target = &mut self.units[ti];
-                        target.health = (target.health - ATTACK_DAMAGE).max(0.0);
-                        target.hit_flash = 0.18;
-                        if target.health <= 0.0 {
-                            target.dead_timer = RESPAWN_TIME;
-                        }
+                        unit.attack_cooldown = unit.attack_interval;
+                        let damage = unit.attack_damage;
+                        self.damage_unit(ti, damage, 0);
                         if self.units[ti].health <= 0.0 {
                             self.units[pi].attack_target = None;
                         }
@@ -483,6 +560,166 @@ impl AnimatedScene {
         }
     }
 
+    fn update_minion(&mut self, index: usize, dt: f32, height: &HeightGrid) {
+        let team = self.units[index].team;
+        let pos = self.units[index].pos;
+        let target = self.find_target(index, team, MINION_AGGRO);
+
+        if let Some(target) = target {
+            let target_pos = self.units[target].pos;
+            let distance = pos.distance(target_pos);
+            if distance <= self.units[index].attack_range {
+                let unit = &mut self.units[index];
+                unit.moving = false;
+                unit.attack_target = Some(target);
+                let dir = target_pos - unit.pos;
+                if dir.length_squared() > 1e-6 {
+                    unit.yaw = dir.x.atan2(dir.z);
+                }
+                if unit.attack_cooldown <= 0.0 {
+                    unit.attack_cooldown = unit.attack_interval;
+                    let damage = unit.attack_damage;
+                    if unit.kind == UnitKind::RangedMinion {
+                        let dir = (target_pos - unit.pos).normalize_or_zero();
+                        self.projectiles.push(Projectile {
+                            pos: unit.pos + Vec3::Y * 80.0 + dir * 20.0,
+                            dir,
+                            speed: 650.0,
+                            life: 1.4,
+                            damage,
+                            team: unit.team,
+                        });
+                    } else {
+                        self.damage_unit(target, damage, team);
+                    }
+                }
+            } else {
+                self.units[index].attack_target = Some(target);
+                self.move_unit_toward(index, target_pos, dt, height);
+            }
+        } else {
+            self.units[index].attack_target = None;
+            self.follow_lane(index, dt, height);
+        }
+    }
+
+    fn update_tower(&mut self, index: usize) {
+        let team = self.units[index].team;
+        let pos = self.units[index].pos;
+        let range = self.units[index].attack_range;
+        let target = self.find_target(index, team, range);
+        if let Some(target) = target {
+            if self.units[index].attack_cooldown <= 0.0 {
+                self.units[index].attack_cooldown = self.units[index].attack_interval;
+                let target_pos = self.units[target].pos;
+                let dir = (target_pos - pos).normalize_or_zero();
+                let damage = self.units[index].attack_damage;
+                self.projectiles.push(Projectile {
+                    pos: pos + Vec3::Y * 380.0,
+                    dir,
+                    speed: 700.0,
+                    life: 1.6,
+                    damage,
+                    team,
+                });
+            }
+        }
+    }
+
+    fn find_target(&self, index: usize, team: u8, range: f32) -> Option<usize> {
+        let pos = self.units[index].pos;
+        let mut best: Option<(usize, f32)> = None;
+        for (i, unit) in self.units.iter().enumerate() {
+            if i == index || unit.team == team || unit.team == 2 || unit.health <= 0.0 {
+                continue;
+            }
+            let d = pos.distance_squared(unit.pos);
+            if d <= range * range && best.is_none_or(|(_, bd)| d < bd) {
+                best = Some((i, d));
+            }
+        }
+        best.map(|(i, _)| i)
+    }
+
+    fn move_unit_toward(&mut self, index: usize, target: Vec3, dt: f32, height: &HeightGrid) {
+        let unit = &mut self.units[index];
+        let delta = target - unit.pos;
+        let distance = delta.length();
+        if distance < 4.0 {
+            unit.moving = false;
+            return;
+        }
+        let dir = delta / distance;
+        let step = (unit.speed * dt).min(distance);
+        unit.pos += dir * step;
+        unit.pos.y = height.height_at(unit.pos.x, unit.pos.z);
+        unit.yaw = dir.x.atan2(dir.z);
+        unit.moving = true;
+    }
+
+    fn follow_lane(&mut self, index: usize, dt: f32, height: &HeightGrid) {
+        let unit = &mut self.units[index];
+        if unit.lane.is_empty() {
+            unit.moving = false;
+            return;
+        }
+        if unit.lane_index >= unit.lane.len() {
+            let target = unit.lane.last().copied().unwrap_or(unit.pos);
+            let dir = target - unit.pos;
+            if dir.length_squared() > 1e-6 {
+                unit.yaw = dir.x.atan2(dir.z);
+            }
+            unit.moving = false;
+            return;
+        }
+        let waypoint = unit.lane[unit.lane_index];
+        let delta = waypoint - unit.pos;
+        let distance = delta.length();
+        if distance < 10.0 {
+            unit.lane_index += 1;
+            return;
+        }
+        let dir = delta / distance;
+        let step = (unit.speed * dt).min(distance);
+        unit.pos += dir * step;
+        unit.pos.y = height.height_at(unit.pos.x, unit.pos.z);
+        unit.yaw = dir.x.atan2(dir.z);
+        unit.moving = true;
+    }
+
+    fn damage_unit(&mut self, index: usize, amount: f32, attacker_team: u8) {
+        if index >= self.units.len() {
+            return;
+        }
+        let unit = &mut self.units[index];
+        if unit.health <= 0.0 {
+            return;
+        }
+        unit.health = (unit.health - amount).max(0.0);
+        unit.hit_flash = 0.2;
+        if unit.health > 0.0 {
+            return;
+        }
+        match unit.kind {
+            UnitKind::Nexus => {
+                self.match_over = Some(attacker_team);
+            }
+            UnitKind::Player => {
+                unit.dead_timer = PLAYER_RESPAWN;
+                unit.attack_target = None;
+                unit.path.clear();
+                unit.path_index = 0;
+            }
+            UnitKind::Tower => {
+                unit.dead_timer = 0.0;
+            }
+            UnitKind::Dummy => {
+                unit.dead_timer = 4.0;
+            }
+            _ => {}
+        }
+    }
+
     fn update_projectiles(&mut self, dt: f32, height: &HeightGrid) {
         let projectiles = std::mem::take(&mut self.projectiles);
         let mut survivors = Vec::with_capacity(projectiles.len());
@@ -497,36 +734,283 @@ impl AnimatedScene {
                 continue;
             }
 
-            let mut hit = false;
-            for unit in &mut self.units {
-                if unit.team == projectile.team || unit.health <= 0.0 {
+            let mut hit = None;
+            for (i, unit) in self.units.iter().enumerate() {
+                if unit.team == projectile.team || unit.health <= 0.0 || unit.team == 2 {
                     continue;
                 }
-                let radius = unit.scale * 90.0;
-                if projectile
-                    .pos
-                    .distance(unit.pos + Vec3::Y * (unit.scale * 70.0))
-                    <= radius
-                {
-                    unit.health = (unit.health - projectile.damage).max(0.0);
-                    unit.hit_flash = 0.2;
-                    if unit.health <= 0.0 {
-                        unit.dead_timer = RESPAWN_TIME;
-                    }
-                    hit = true;
+                let radius = unit.hit_radius.max(70.0);
+                let center = unit.pos + Vec3::Y * (unit.bar_height * 0.35);
+                if projectile.pos.distance(center) <= radius {
+                    hit = Some(i);
                     break;
                 }
             }
-            if !hit {
+            if let Some(index) = hit {
+                self.damage_unit(index, projectile.damage, projectile.team);
+            } else {
                 survivors.push(projectile);
             }
         }
         self.projectiles = survivors;
     }
+
+    fn spawn_wave(&mut self, team: u8) {
+        if self.match_over.is_some() {
+            return;
+        }
+        if self.units.iter().filter(|u| u.is_minion_of(team)).count() >= MAX_MINIONS_PER_TEAM {
+            return;
+        }
+
+        let nexus = self.nexus_positions[team as usize];
+        let lane = if team == 0 {
+            self.lane_waypoints.clone()
+        } else {
+            let mut reversed = self.lane_waypoints.clone();
+            reversed.reverse();
+            reversed
+        };
+        let offsets = [
+            Vec3::new(70.0, 0.0, 0.0),
+            Vec3::new(-70.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 70.0),
+            Vec3::new(0.0, 0.0, -70.0),
+            Vec3::new(100.0, 0.0, 40.0),
+        ];
+
+        for (i, offset) in offsets.iter().enumerate() {
+            let ranged = i >= 3;
+            let template = if ranged {
+                &self.ranged_template
+            } else {
+                &self.melee_template
+            };
+            let mut pos = nexus + *offset;
+            pos.y = self
+                .units
+                .iter()
+                .find(|u| u.kind == UnitKind::Nexus && u.team == team)
+                .map(|u| u.pos.y)
+                .unwrap_or(0.0);
+            let unit = AnimatedUnit {
+                model: template.model.clone(),
+                idle: template.idle.clone(),
+                walk: Some(template.walk.clone()),
+                pos,
+                yaw: if team == 0 { 0.0 } else { std::f32::consts::PI },
+                scale: template.scale,
+                anim_time_ms: 0.0,
+                moving: false,
+                kind: if ranged {
+                    UnitKind::RangedMinion
+                } else {
+                    UnitKind::MeleeMinion
+                },
+                team,
+                health: template.health,
+                max_health: template.health,
+                hit_flash: 0.0,
+                dead_timer: 0.0,
+                target: None,
+                path: Vec::new(),
+                path_index: 0,
+                attack_target: None,
+                attack_cooldown: 0.0,
+                attack_range: template.range,
+                attack_damage: template.damage,
+                attack_interval: template.interval,
+                speed: template.speed,
+                hit_radius: 90.0,
+                bar_height: 170.0,
+                lane: lane.clone(),
+                lane_index: 1.min(lane.len()),
+            };
+            self.units.push(unit);
+        }
+    }
+
+    fn rebuild_mesh(&mut self, camera_right: Vec3, camera_up: Vec3, camera_forward: Vec3) {
+        self.vertices.clear();
+        self.indices.clear();
+
+        let units = std::mem::take(&mut self.units);
+        for unit in &units {
+            if unit.health > 0.0 {
+                let clip = if unit.moving {
+                    unit.walk.as_ref().unwrap_or(&unit.idle)
+                } else {
+                    &unit.idle
+                };
+                let positions = unit.model.animated_positions(clip, unit.anim_time_ms);
+                append_unit(self, unit, &positions);
+            }
+        }
+        self.units = units;
+
+        let bars = self
+            .units
+            .iter()
+            .filter(|unit| unit.health > 0.0 && unit.team != 2)
+            .map(|unit| {
+                let width = match unit.kind {
+                    UnitKind::Nexus => 190.0,
+                    UnitKind::Tower => 150.0,
+                    UnitKind::Player => 150.0,
+                    _ => 55.0,
+                } * (unit.scale / 2.8).clamp(0.7, 1.5);
+                (
+                    unit.pos + Vec3::Y * unit.bar_height,
+                    width,
+                    (unit.health / unit.max_health).clamp(0.0, 1.0),
+                    if unit.team == 0 {
+                        [80u8, 150, 255]
+                    } else {
+                        [220u8, 65, 60]
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+        for (center, width, fill, color) in bars {
+            append_bar(
+                self,
+                center,
+                width,
+                14.0,
+                fill,
+                color,
+                camera_right,
+                camera_up,
+                camera_forward,
+            );
+        }
+
+        let projectile_positions = self
+            .projectiles
+            .iter()
+            .map(|projectile| projectile.pos)
+            .collect::<Vec<_>>();
+        for pos in projectile_positions {
+            append_billboard(self, pos, 22.0, [255, 150, 40], camera_right, camera_up);
+        }
+
+        let player = &self.units[self.player_index];
+        if player.health > 0.0 {
+            append_ring(
+                self,
+                player.pos,
+                player.pos.y + 3.0,
+                95.0 * player.scale / 2.8,
+                [90, 180, 255],
+            );
+        }
+
+        let structure_rings = self
+            .units
+            .iter()
+            .filter(|u| u.kind == UnitKind::Tower && u.health > 0.0)
+            .map(|u| (u.pos, u.team))
+            .collect::<Vec<_>>();
+        for (pos, team) in structure_rings {
+            append_ring(
+                self,
+                pos,
+                pos.y + 4.0,
+                140.0,
+                if team == 0 {
+                    [90, 160, 255]
+                } else {
+                    [255, 90, 80]
+                },
+            );
+        }
+
+        if let Some((marker, remaining)) = self.marker {
+            let pulse = (remaining * 6.0).sin().abs() * 0.25 + 0.75;
+            append_ring(self, marker, marker.y + 5.0, 55.0 * pulse, [120, 255, 120]);
+        }
+    }
+}
+
+impl AnimatedUnit {
+    fn is_minion_of(&self, team: u8) -> bool {
+        self.kind.is_minion() && self.team == team
+    }
+}
+
+fn find_nexus(units: &[AnimatedUnit], team: u8) -> Option<Vec3> {
+    units
+        .iter()
+        .find(|u| u.kind == UnitKind::Nexus && u.team == team)
+        .map(|u| u.pos)
+}
+
+fn load_model(cache: &Cache, model_id: u32) -> Result<Model> {
+    let group = cache.group(7, model_id)?;
+    Ok(Model::load(model_id, &group.data)?)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn load_unit(
+    cache: &Cache,
+    model_id: u32,
+    idle_sequence: Option<u32>,
+    walk_sequence: Option<u32>,
+    pos: Vec3,
+    scale: f32,
+    kind: UnitKind,
+    team: u8,
+    health: f32,
+    attack_range: f32,
+    attack_damage: f32,
+    attack_interval: f32,
+    speed: f32,
+    hit_radius: f32,
+    bar_height: f32,
+    lane: Vec<Vec3>,
+) -> Result<AnimatedUnit> {
+    let model = load_model(cache, model_id)?;
+    let idle = match idle_sequence {
+        Some(seq) => AnimationClip::load(cache, seq)?,
+        None => AnimationClip::default(),
+    };
+    let walk = match walk_sequence {
+        Some(seq) => Some(AnimationClip::load(cache, seq)?),
+        None => None,
+    };
+    Ok(AnimatedUnit {
+        model,
+        idle,
+        walk,
+        pos,
+        yaw: 0.0,
+        scale,
+        anim_time_ms: 0.0,
+        moving: false,
+        kind,
+        team,
+        health,
+        max_health: health,
+        hit_flash: 0.0,
+        dead_timer: 0.0,
+        target: None,
+        path: Vec::new(),
+        path_index: 0,
+        attack_target: None,
+        attack_cooldown: 0.0,
+        attack_range,
+        attack_damage,
+        attack_interval,
+        speed,
+        hit_radius,
+        bar_height,
+        lane,
+        lane_index: 0,
+    })
 }
 
 fn follow_path(unit: &mut AnimatedUnit, dt: f32, height: &HeightGrid) {
-    let mut budget = PLAYER_SPEED * dt;
+    let mut budget = unit.speed * dt;
     unit.moving = false;
     while budget > 0.0 && unit.path_index < unit.path.len() {
         let waypoint = unit.path[unit.path_index];
@@ -555,45 +1039,6 @@ fn follow_path(unit: &mut AnimatedUnit, dt: f32, height: &HeightGrid) {
     }
 }
 
-fn load_unit(
-    cache: &Cache,
-    spawn: &NpcSpawn,
-    is_player: bool,
-    is_dummy: bool,
-    team: u8,
-    health: f32,
-) -> Result<AnimatedUnit> {
-    let group = cache.group(7, spawn.model_id)?;
-    let model = Model::load(spawn.model_id, &group.data)?;
-    let idle = AnimationClip::load(cache, spawn.idle_sequence)?;
-    let walk = match spawn.walk_sequence {
-        Some(seq) => Some(AnimationClip::load(cache, seq)?),
-        None => None,
-    };
-    Ok(AnimatedUnit {
-        model,
-        idle,
-        walk,
-        pos: spawn.pos,
-        yaw: 0.0,
-        scale: spawn.scale,
-        anim_time_ms: 0.0,
-        moving: false,
-        is_player,
-        is_dummy,
-        team,
-        health,
-        max_health: health,
-        hit_flash: 0.0,
-        dead_timer: 0.0,
-        target: None,
-        path: Vec::new(),
-        path_index: 0,
-        attack_target: None,
-        attack_cooldown: 0.0,
-    })
-}
-
 fn append_unit(scene: &mut AnimatedScene, unit: &AnimatedUnit, positions: &[[f32; 3]]) {
     let rot = Mat3::from_rotation_y(unit.yaw);
     let light = Vec3::new(0.35, 0.85, 0.4).normalize();
@@ -613,7 +1058,13 @@ fn append_unit(scene: &mut AnimatedScene, unit: &AnimatedUnit, positions: &[[f32
             .as_ref()
             .and_then(|t| t.get(face_idx))
             .is_some_and(|&t| t >= 0);
-        let mut rgb = if textured || unit.model.face_colors[face_idx] == 127 {
+        let mut rgb = if unit.kind == UnitKind::Tower {
+            [
+                (125.0 * brightness) as u8,
+                (117.0 * brightness) as u8,
+                (102.0 * brightness) as u8,
+            ]
+        } else if textured || unit.model.face_colors[face_idx] == 127 {
             [
                 (48.0 * brightness) as u8,
                 (95.0 * brightness) as u8,
@@ -622,6 +1073,11 @@ fn append_unit(scene: &mut AnimatedScene, unit: &AnimatedUnit, positions: &[[f32
         } else {
             hsl_to_rgb(unit.model.face_colors[face_idx], brightness)
         };
+        if unit.kind == UnitKind::Nexus && unit.team == 1 {
+            rgb[0] = rgb[0].saturating_add(90);
+            rgb[1] = (rgb[1] as f32 * 0.5) as u8;
+            rgb[2] = (rgb[2] as f32 * 0.8) as u8;
+        }
         if unit.hit_flash > 0.0 {
             rgb[0] = 255;
             rgb[1] = (rgb[1] as f32 * 0.55) as u8;
@@ -681,6 +1137,36 @@ fn append_billboard(
         up * (size * 0.5),
         color,
     );
+}
+
+fn append_ring(scene: &mut AnimatedScene, center: Vec3, y: f32, radius: f32, color: [u8; 3]) {
+    let segments = 32u32;
+    let base = scene.vertices.len() as u32;
+    for i in 0..segments {
+        let a = i as f32 / segments as f32 * std::f32::consts::TAU;
+        let b = (i + 1) as f32 / segments as f32 * std::f32::consts::TAU;
+        let inner = 0.78;
+        let p0 = Vec3::new(center.x + a.cos() * radius, y, center.z + a.sin() * radius);
+        let p1 = Vec3::new(center.x + b.cos() * radius, y, center.z + b.sin() * radius);
+        let p2 = Vec3::new(
+            center.x + a.cos() * radius * inner,
+            y,
+            center.z + a.sin() * radius * inner,
+        );
+        let p3 = Vec3::new(
+            center.x + b.cos() * radius * inner,
+            y,
+            center.z + b.sin() * radius * inner,
+        );
+        scene.vertices.push(Vertex::new(p0, color));
+        scene.vertices.push(Vertex::new(p1, color));
+        scene.vertices.push(Vertex::new(p2, color));
+        scene.vertices.push(Vertex::new(p3, color));
+        let o = base + i * 4;
+        scene
+            .indices
+            .extend_from_slice(&[o, o + 1, o + 2, o + 2, o + 1, o + 3]);
+    }
 }
 
 fn append_quad(scene: &mut AnimatedScene, center: Vec3, right: Vec3, up: Vec3, color: [u8; 3]) {

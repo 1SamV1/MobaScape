@@ -1,12 +1,14 @@
 use std::collections::HashMap;
+use std::path::Path;
 
 use anyhow::{Context, Result};
-use glam::{Mat3, Vec3};
+use glam::{Mat3, Vec2, Vec3};
 use rift_cache::{
     Cache, Locations, Model, ObjectDefinition, OverlayDefinition, Terrain, UnderlayDefinition,
     model::hsl_to_rgb,
 };
 use rift_sim::{Grid, find_path, simplify_path};
+use serde::Deserialize;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -160,6 +162,198 @@ impl WorldCollision {
     }
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum StructureKind {
+    Tower,
+    Nexus,
+}
+
+#[derive(Debug, Clone)]
+pub struct StructureSpawn {
+    pub team: u8,
+    pub kind: StructureKind,
+    pub tile: [f32; 2],
+    pub model_id: u32,
+    pub pos: Vec3,
+    pub health: f32,
+    pub range: f32,
+    pub damage: f32,
+    pub interval: f32,
+    pub scale: f32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct StructureJson {
+    team: u8,
+    kind: StructureKind,
+    tile: [f32; 2],
+    model: u32,
+    health: f32,
+    range: f32,
+    damage: f32,
+    interval: f32,
+    scale: f32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct MapJson {
+    #[serde(default)]
+    name: String,
+    lane: Vec<[f32; 2]>,
+    wave_interval: f32,
+    structures: Vec<StructureJson>,
+}
+
+#[derive(Debug, Clone)]
+pub struct LaneLayout {
+    pub name: String,
+    pub waypoints: Vec<Vec3>,
+    pub structures: Vec<StructureSpawn>,
+    pub wave_interval: f32,
+}
+
+impl LaneLayout {
+    pub fn load(path: &Path, height: &HeightGrid) -> Result<Self> {
+        let data = std::fs::read_to_string(path)
+            .with_context(|| format!("reading map {}", path.display()))?;
+        let map: MapJson = serde_json::from_str(&data)?;
+        if map.lane.len() < 2 {
+            anyhow::bail!("map {} needs at least two lane waypoints", path.display());
+        }
+
+        let world_of = |tile: [f32; 2]| {
+            let x = (tile[0] + 0.5) * 128.0;
+            let z = (tile[1] + 0.5) * 128.0;
+            Vec3::new(x, height.height_at(x, z), z)
+        };
+
+        let waypoints = map.lane.iter().map(|&tile| world_of(tile)).collect();
+        let structures = map
+            .structures
+            .iter()
+            .map(|s| StructureSpawn {
+                team: s.team,
+                kind: s.kind,
+                tile: s.tile,
+                model_id: s.model,
+                pos: world_of(s.tile),
+                health: s.health,
+                range: s.range,
+                damage: s.damage,
+                interval: s.interval,
+                scale: s.scale,
+            })
+            .collect();
+
+        Ok(Self {
+            name: map.name,
+            waypoints,
+            structures,
+            wave_interval: map.wave_interval,
+        })
+    }
+
+    pub fn distance_to_lane(&self, x: f32, z: f32) -> f32 {
+        let p = Vec2::new(x, z);
+        let mut best = f32::MAX;
+        for pair in self.waypoints.windows(2) {
+            let a = Vec2::new(pair[0].x, pair[0].z);
+            let b = Vec2::new(pair[1].x, pair[1].z);
+            best = best.min(point_segment_distance(p, a, b));
+        }
+        best
+    }
+
+    pub fn clear_collision(
+        &self,
+        grid: &mut Grid,
+        origin_tile_x: i32,
+        origin_tile_y: i32,
+        radius_tiles: f32,
+    ) {
+        for pair in self.waypoints.windows(2) {
+            let a = Vec2::new(pair[0].x, pair[0].z);
+            let b = Vec2::new(pair[1].x, pair[1].z);
+            let steps = ((a.distance(b) / 24.0).ceil() as i32).max(1);
+            for i in 0..=steps {
+                let p = a.lerp(b, i as f32 / steps as f32);
+                let tx = (p.x / 128.0).floor() as i32 - origin_tile_x;
+                let ty = (p.y / 128.0).floor() as i32 - origin_tile_y;
+                let r = radius_tiles.ceil() as i32;
+                for dy in -r..=r {
+                    for dx in -r..=r {
+                        if (dx * dx + dy * dy) as f32 <= radius_tiles * radius_tiles {
+                            grid.set_blocked(tx + dx, ty + dy, false);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn block_structures(&self, grid: &mut Grid, origin_tile_x: i32, origin_tile_y: i32) {
+        for structure in &self.structures {
+            let tx = structure.tile[0].floor() as i32 - origin_tile_x;
+            let ty = structure.tile[1].floor() as i32 - origin_tile_y;
+            grid.block_rect(tx - 1, ty - 1, 3, 3);
+        }
+    }
+
+    pub fn build_mesh(&self, mesh: &mut MeshData, height: &HeightGrid, width: f32) {
+        for pair in self.waypoints.windows(2) {
+            let a = Vec2::new(pair[0].x, pair[0].z);
+            let b = Vec2::new(pair[1].x, pair[1].z);
+            let len = a.distance(b);
+            if len < 1.0 {
+                continue;
+            }
+            let steps = ((len / 64.0).ceil() as usize).max(1);
+            let dir = (b - a) / len;
+            let perp = Vec2::new(-dir.y, dir.x) * (width * 0.5);
+            let color = [96, 91, 80];
+
+            for i in 0..steps {
+                let t0 = i as f32 / steps as f32;
+                let t1 = (i + 1) as f32 / steps as f32;
+                let p0 = a.lerp(b, t0);
+                let p1 = a.lerp(b, t1);
+                let corners = [
+                    Vec2::new(p0.x + perp.x, p0.y + perp.y),
+                    Vec2::new(p1.x + perp.x, p1.y + perp.y),
+                    Vec2::new(p0.x - perp.x, p0.y - perp.y),
+                    Vec2::new(p1.x - perp.x, p1.y - perp.y),
+                ];
+                let ys = corners.map(|p| height.height_at(p.x, p.y) + 40.0);
+                let v0 = Vec3::new(corners[0].x, ys[0], corners[0].y);
+                let v1 = Vec3::new(corners[1].x, ys[1], corners[1].y);
+                let v2 = Vec3::new(corners[2].x, ys[2], corners[2].y);
+                let v3 = Vec3::new(corners[3].x, ys[3], corners[3].y);
+                mesh.push_triangle(
+                    Vertex::new(v0, color),
+                    Vertex::new(v1, color),
+                    Vertex::new(v2, color),
+                );
+                mesh.push_triangle(
+                    Vertex::new(v2, color),
+                    Vertex::new(v1, color),
+                    Vertex::new(v3, color),
+                );
+            }
+        }
+    }
+}
+
+fn point_segment_distance(p: Vec2, a: Vec2, b: Vec2) -> f32 {
+    let ab = b - a;
+    let len2 = ab.length_squared();
+    if len2 <= 1e-6 {
+        return p.distance(a);
+    }
+    let t = ((p - a).dot(ab) / len2).clamp(0.0, 1.0);
+    p.distance(a + ab * t)
+}
+
 #[derive(Debug, Clone)]
 pub struct NpcSpawn {
     pub model_id: u32,
@@ -176,11 +370,18 @@ pub struct SceneData {
     pub placements: usize,
     pub height: HeightGrid,
     pub collision: WorldCollision,
+    pub lane: LaneLayout,
     pub npc_spawns: Vec<NpcSpawn>,
     pub player_spawn: Vec3,
 }
 
-pub fn build(cache: &Cache, center_x: u32, center_y: u32, radius: u32) -> Result<SceneData> {
+pub fn build(
+    cache: &Cache,
+    center_x: u32,
+    center_y: u32,
+    radius: u32,
+    map_path: &Path,
+) -> Result<SceneData> {
     let keys = cache
         .keys()
         .context("cache has no keys.json; cannot resolve map groups")?;
@@ -345,6 +546,9 @@ pub fn build(cache: &Cache, center_x: u32, center_y: u32, radius: u32) -> Result
             collision_grid.block_rect(gx, gy, w, h);
         }
     }
+    let lane = LaneLayout::load(map_path, &height)?;
+    lane.clear_collision(&mut collision_grid, origin_tile_x, origin_tile_y, 4.5);
+    lane.block_structures(&mut collision_grid, origin_tile_x, origin_tile_y);
     let collision = WorldCollision::new(collision_grid, origin_tile_x, origin_tile_y);
 
     let center = Vec3::new(
@@ -363,6 +567,9 @@ pub fn build(cache: &Cache, center_x: u32, center_y: u32, radius: u32) -> Result
         for loc in &locations.locations {
             let wx = ((*rx as f32 * 64.0) + loc.x as f32 + 0.5) * 128.0;
             let wz = ((*ry as f32 * 64.0) + loc.y as f32 + 0.5) * 128.0;
+            if lane.distance_to_lane(wx, wz) < 5.0 * 128.0 {
+                continue;
+            }
             let dx = wx - center.x;
             let dz = wz - center.z;
             candidates.push((dx * dx + dz * dz, *rx, *ry, *loc));
@@ -413,16 +620,20 @@ pub fn build(cache: &Cache, center_x: u32, center_y: u32, radius: u32) -> Result
         placements += 1;
     }
 
-    let player_spawn = find_walkable_spawn(&height, &collision, center, &terrains)?;
+    lane.build_mesh(&mut model_mesh, &height, 3.0 * 128.0);
+
+    let spawn_hint = lane.waypoints.get(1).copied().unwrap_or(center);
+    let player_spawn = find_walkable_spawn(&height, &collision, spawn_hint, &terrains)?;
     let npc_spawns = build_npc_spawns(&height, &collision, center, player_spawn, &terrains);
 
     tracing::info!(
-        "scene: {} regions, {} terrain verts, {} model verts, {} placements, {} npcs, center {:?}",
+        "scene: {} regions, {} terrain verts, {} model verts, {} placements, {} npcs, lane {:?}, center {:?}",
         terrains.len(),
         terrain_mesh.vertices.len(),
         model_mesh.vertices.len(),
         placements,
         npc_spawns.len(),
+        lane.name,
         center
     );
 
@@ -433,6 +644,7 @@ pub fn build(cache: &Cache, center_x: u32, center_y: u32, radius: u32) -> Result
         placements,
         height,
         collision,
+        lane,
         npc_spawns,
         player_spawn,
     })
@@ -663,13 +875,17 @@ fn tile_color(
 }
 
 fn append_model(mesh: &mut MeshData, model: &Model, base: Vec3, angle: f32) {
+    append_model_scaled(mesh, model, base, angle, 1.0);
+}
+
+fn append_model_scaled(mesh: &mut MeshData, model: &Model, base: Vec3, angle: f32, scale: f32) {
     let rot = Mat3::from_rotation_y(angle);
     let light = Vec3::new(0.35, 0.85, 0.4).normalize();
 
     for (face_idx, &[a, b, c]) in model.faces.iter().enumerate() {
-        let pa = model_vertex(model, a as usize, base, rot);
-        let pb = model_vertex(model, b as usize, base, rot);
-        let pc = model_vertex(model, c as usize, base, rot);
+        let pa = model_vertex_scaled(model, a as usize, base, rot, scale);
+        let pb = model_vertex_scaled(model, b as usize, base, rot, scale);
+        let pc = model_vertex_scaled(model, c as usize, base, rot, scale);
 
         let normal = (pb - pa).cross(pc - pa).normalize_or_zero();
         let ndotl = normal.dot(light).clamp(0.0, 1.0);
@@ -704,12 +920,12 @@ fn append_model(mesh: &mut MeshData, model: &Model, base: Vec3, angle: f32) {
     }
 }
 
-pub fn model_vertex(model: &Model, i: usize, base: Vec3, rot: Mat3) -> Vec3 {
+pub fn model_vertex_scaled(model: &Model, i: usize, base: Vec3, rot: Mat3, scale: f32) -> Vec3 {
     let local = Vec3::new(
         model.vertex_x[i] as f32,
         -(model.vertex_y[i] as f32),
         model.vertex_z[i] as f32,
-    );
+    ) * scale;
     base + rot * local
 }
 
