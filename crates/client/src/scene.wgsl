@@ -157,7 +157,12 @@ fn noise2(p: vec2<f32>) -> f32 {
 fn albedo(input: VsOut) -> vec3<f32> {
     var c = input.color.rgb;
     if (input.material == 4u) {
-        let uv = input.world.xz / 384.0;
+        // Slope-corrected planar UVs: dividing by the normal's Y keeps the
+        // texel density constant on hills instead of smearing the sprite
+        // down the slope.
+        let n = normalize(input.normal);
+        let ny = clamp(n.y, 0.30, 1.0);
+        let uv = input.world.xz / (384.0 * ny);
         let grass = textureSample(terrain_textures, terrain_sampler, uv, 0).rgb;
         let dirt = textureSample(terrain_textures, terrain_sampler, uv, 1).rgb;
         let stone = textureSample(terrain_textures, terrain_sampler, uv, 2).rgb;
@@ -184,9 +189,18 @@ fn albedo(input: VsOut) -> vec3<f32> {
         // Lanes are baked into the terrain: the vertex alpha carries the
         // road mask and the OSRS road sprites are blended into the ground
         // so there is no ribbon hovering over the terrain.
+        // Steep ground gets a rotated stone pass so cliffs read as rock
+        // instead of a stretched band.
+        let steep = 1.0 - smoothstep(0.58, 0.86, ny);
+        if (steep > 0.01) {
+            let rock_uv = input.world.xz / (230.0 * ny) + vec2<f32>(0.37, 0.21);
+            let rock = textureSample(terrain_textures, terrain_sampler, rock_uv, 2).rgb;
+            tex = mix(tex, tex * 0.55 + rock * 0.75, steep * 0.55);
+        }
+
         let lane = clamp(input.color.a, 0.0, 1.0);
         if (lane > 0.002) {
-            let road_uv = input.world.xz / 192.0;
+            let road_uv = input.world.xz / (192.0 * ny);
             let road = textureSample(terrain_textures, terrain_sampler, road_uv, 1).rgb;
             let gravel = textureSample(terrain_textures, terrain_sampler, road_uv * 0.63, 5).rgb;
             tex = mix(tex, mix(road, gravel, 0.45), lane * 0.94);

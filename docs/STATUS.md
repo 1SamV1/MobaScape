@@ -1,6 +1,6 @@
 # Status
 
-Last updated: M5.14 terrain-hugging rings, prop clearings, 2026-11-13.
+Last updated: M5.16 slope-corrected ground textures, 2026-11-13.
 
 ## Working
 
@@ -31,6 +31,8 @@ Last updated: M5.14 terrain-hugging rings, prop clearings, 2026-11-13.
   line of sight, so they never ambush the player from a hidden tile. The two
   camps that accidentally used a table prop model now use creature models
   (General Graardor Jr. 27660 and Zilyana Jr. 27989).
+- Ground textures: slope-corrected planar UVs (divide by normal Y) keep
+  texel density constant on hills, and a rotated stone pass breaks up cliffs.
 - Presentation: HDR `Rgba16Float` scene target with a real bloom chain
   (bright pass, separable Gaussian, ACES tonemap), cache-native ground
   texture array with world-space UVs, two-sided lighting with a camera fill,

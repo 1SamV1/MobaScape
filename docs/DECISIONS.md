@@ -496,3 +496,16 @@ Scenery props are also kept six tiles clear of every camp and structure, in
 both the base region and the biome pockets. This is what glued a pocket chair
 to the Graardor camp: the dark-magic pocket (region 48,52) contains chairs,
 and one landed on the camp tile.
+
+
+## ADR-038 — Slope-corrected ground UVs and rock detail on cliffs
+
+**Status:** accepted for M5.16.
+
+Ground sprites were sampled with plain XZ world UVs, so a 45 degree hill
+stretched the sprite to 1.41x its intended length and cliffs smeared into
+vertical bands. The terrain shader now divides the UV by the surface normal's
+Y (clamped to 0.30) which keeps texel density constant on slopes, and blends a
+rotated stone sample over steep ground (normal Y below 0.86) so cliffs read as
+rock instead of stretched grass or path. The lane road UV gets the same slope
+correction.
