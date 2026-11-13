@@ -27,9 +27,9 @@ the client owns a predicted local `sim` and a renderer.
 |---|---|
 | `crates/cache` | Cache store, XTEA, compression, reference tables, terrain, locations, configs, models |
 | `crates/tools` | `rift-tools` CLI: inspect, validate, dump OBJ, later bake asset packs |
-| `crates/client` | winit window, wgpu surface/device, scene builder, camera, input |
+| `crates/client` | winit window, wgpu surface/device, scene builder, camera, input, HUD, combat sandbox |
 | `crates/render` (planned) | Shared OSRS-style renderer: chunks, models, animation, fog, water |
-| `crates/sim` (planned) | Deterministic 30 Hz simulation: movement, combat, minions, towers, camps |
+| `crates/sim` | Deterministic tile grid, collision, A* pathfinding; grows into the 30 Hz simulation |
 | `crates/data` (planned) | Serde content types + file watcher + hot reload |
 | `crates/proto` (planned) | Messages, input framing, snapshot delta encoding |
 | `crates/server` (planned) | Match instances, lobby, room codes, persistence |

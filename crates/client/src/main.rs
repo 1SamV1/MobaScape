@@ -1,4 +1,5 @@
 mod animated;
+mod hud;
 mod renderer;
 mod scene;
 
@@ -18,8 +19,9 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
 use crate::animated::AnimatedScene;
+use crate::hud::Hud;
 use crate::renderer::{Camera, Renderer};
-use crate::scene::{HeightGrid, SceneData};
+use crate::scene::{HeightGrid, SceneData, WorldCollision};
 
 #[derive(Parser, Debug)]
 #[command(name = "rift-client", about = "Rift native client (M1 vertical slice)")]
@@ -36,6 +38,12 @@ struct Cli {
     /// Initial camera distance in world units.
     #[arg(long, default_value_t = 4400.0)]
     distance: f32,
+    /// Demo: walk to this tile coordinate after one second (x y).
+    #[arg(long, num_args = 2, value_names = ["X", "Y"])]
+    demo_target: Option<Vec<f32>>,
+    /// Demo: auto-target a dummy and fire Q to verify combat.
+    #[arg(long)]
+    demo_combat: bool,
 }
 
 fn main() -> Result<()> {
@@ -59,6 +67,7 @@ fn main() -> Result<()> {
     let scene = scene::build(&cache, cli.region_x, cli.region_y, cli.radius)?;
     let animated = AnimatedScene::new(&cache, &scene)?;
     let height = scene.height.clone();
+    let collision = scene.collision.clone();
     tracing::info!(
         "scene ready: {} placements, {} animated units",
         scene.placements,
@@ -68,17 +77,36 @@ fn main() -> Result<()> {
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(ControlFlow::Poll);
 
+    let demo_target = cli.demo_target.as_ref().and_then(|v| {
+        if v.len() == 2 {
+            Some((v[0], v[1]))
+        } else {
+            None
+        }
+    });
+
     let mut app = App {
         scene: Some(scene),
         animated: Some(animated),
         height: Some(height),
+        collision: Some(collision),
         window: None,
         renderer: None,
         held: HashSet::new(),
         focused: false,
         follow: true,
         mouse_pos: (640.0, 360.0),
+        lmb_down: false,
+        lmb_press: None,
         initial_distance: cli.distance,
+        demo_target,
+        demo_timer: 0.0,
+        demo_combat: cli.demo_combat,
+        demo_combat_timer: 0.0,
+        demo_combat_targeted: false,
+        demo_combat_cast: false,
+        demo_combat_target: None,
+        hud: Hud::new(),
         last_frame: Instant::now(),
         title_timer: 0.0,
         title_frames: 0,
@@ -91,13 +119,24 @@ struct App {
     scene: Option<SceneData>,
     animated: Option<AnimatedScene>,
     height: Option<HeightGrid>,
+    collision: Option<WorldCollision>,
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
     held: HashSet<KeyCode>,
     focused: bool,
     follow: bool,
     mouse_pos: (f64, f64),
+    lmb_down: bool,
+    lmb_press: Option<Instant>,
     initial_distance: f32,
+    demo_target: Option<(f32, f32)>,
+    demo_timer: f32,
+    demo_combat: bool,
+    demo_combat_timer: f32,
+    demo_combat_targeted: bool,
+    demo_combat_cast: bool,
+    demo_combat_target: Option<usize>,
+    hud: Hud,
     last_frame: Instant,
     title_timer: f32,
     title_frames: u32,
@@ -164,8 +203,25 @@ impl ApplicationHandler for App {
                 self.mouse_pos = (position.x, position.y);
             }
             WindowEvent::MouseInput { state, button, .. } => {
-                if state == ElementState::Pressed && button == MouseButton::Left {
-                    self.pick_and_move();
+                if button != MouseButton::Left {
+                    return;
+                }
+                match state {
+                    ElementState::Pressed => {
+                        self.lmb_down = true;
+                        self.lmb_press = Some(Instant::now());
+                    }
+                    ElementState::Released => {
+                        let held = self
+                            .lmb_press
+                            .take()
+                            .map(|t| t.elapsed().as_secs_f32())
+                            .unwrap_or(0.0);
+                        self.lmb_down = false;
+                        if held < 0.18 {
+                            self.pick_and_move();
+                        }
+                    }
                 }
             }
             WindowEvent::KeyboardInput { event, .. } => {
@@ -186,6 +242,8 @@ impl ApplicationHandler for App {
                     } else if code == KeyCode::KeyF {
                         self.follow = !self.follow;
                         println!("follow={}", self.follow);
+                    } else if code == KeyCode::KeyQ {
+                        self.cast_q();
                     }
                 } else {
                     self.held.remove(&code);
@@ -243,9 +301,96 @@ impl App {
             return;
         };
 
-        if let (Some(animated), Some(height)) = (self.animated.as_mut(), self.height.as_ref()) {
-            animated.update(dt, height);
+        let steering = self.lmb_down
+            && self
+                .lmb_press
+                .map(|t| t.elapsed().as_secs_f32() >= 0.18)
+                .unwrap_or(false);
+
+        let eye = renderer.camera.eye();
+        let camera_forward = (eye - renderer.camera.target).normalize_or_zero();
+        let camera_right = camera_forward.cross(Vec3::Y).normalize_or_zero();
+        let camera_up = camera_right.cross(camera_forward).normalize_or_zero();
+
+        if let (Some(animated), Some(height), Some(collision)) = (
+            self.animated.as_mut(),
+            self.height.as_ref(),
+            self.collision.as_ref(),
+        ) {
+            if self.demo_combat {
+                self.demo_combat_timer += dt;
+                if !self.demo_combat_targeted && self.demo_combat_timer >= 1.0 {
+                    if let Some(index) = animated.nearest_enemy(animated.player_pos()) {
+                        let ok = animated.set_attack_target(index, collision, height);
+                        tracing::info!("demo combat: target {index}, attack={ok}");
+                        self.demo_combat_target = Some(index);
+                    }
+                    self.demo_combat_targeted = true;
+                }
+                if !self.demo_combat_cast && self.demo_combat_timer >= 2.6 {
+                    if let Some(index) = self.demo_combat_target {
+                        if let Some(pos) = animated.unit_pos(index) {
+                            let ok = animated.cast_q(pos);
+                            tracing::info!("demo combat: Q at {index}, cast={ok}");
+                        }
+                    }
+                    self.demo_combat_cast = true;
+                }
+                if self.demo_combat_timer >= 3.5 {
+                    if let Some(index) = self.demo_combat_target {
+                        if let Some(health) = animated.unit_health(index) {
+                            tracing::info!("demo combat: target {index} health {health:.0}");
+                        }
+                    }
+                    self.demo_combat = false;
+                }
+            }
+            if steering {
+                if let Some(point) =
+                    renderer.pick_ground(self.mouse_pos.0, self.mouse_pos.1, height)
+                {
+                    let dir = point - animated.player_pos();
+                    animated.steer_player(dir, dt, height, collision);
+                }
+            }
+            if let Some((tx, ty)) = self.demo_target {
+                self.demo_timer += dt;
+                if self.demo_timer >= 1.0 {
+                    let x = tx * 128.0 + 64.0;
+                    let z = ty * 128.0 + 64.0;
+                    let point = Vec3::new(x, height.height_at(x, z), z);
+                    let waypoints = animated.set_player_target(point, collision, height);
+                    tracing::info!(
+                        "demo move target tile {:.0},{:.0} -> {waypoints} waypoints",
+                        tx,
+                        ty
+                    );
+                    self.demo_target = None;
+                }
+            }
+            animated.update(
+                dt,
+                height,
+                collision,
+                camera_right,
+                camera_up,
+                camera_forward,
+            );
             renderer.set_dynamic_mesh(&animated.vertices, &animated.indices);
+
+            let (hp, max_hp) = animated.player_health();
+            self.hud.build(
+                renderer.size.0 as f32,
+                renderer.size.1 as f32,
+                hp,
+                max_hp,
+                1.0,
+                1.0,
+                animated.q_cooldown,
+                5.0,
+                self.mouse_pos,
+            );
+            renderer.set_hud_mesh(&self.hud.vertices, &self.hud.indices);
             if self.follow {
                 renderer.camera.target = animated.player_pos() + Vec3::Y * 140.0;
                 renderer.update_camera();
@@ -256,12 +401,17 @@ impl App {
             if self.title_timer >= 0.5 {
                 let fps = self.title_frames as f32 / self.title_timer;
                 let pos = animated.player_pos();
+                let (hp, max_hp) = animated.player_health();
+                let q = animated.q_cooldown;
                 if let Some(window) = self.window.as_ref() {
                     window.set_title(&format!(
-                        "Rift - Karamja | tile {:.0},{:.0} | {:.0} fps",
+                        "Rift - Karamja | tile {:.0},{:.0} | {:.0} fps | HP {:.0}/{:.0} | Q {:.1}s",
                         pos.x / 128.0,
                         pos.z / 128.0,
-                        fps
+                        fps,
+                        hp,
+                        max_hp,
+                        q
                     ));
                 }
                 self.title_timer = 0.0;
@@ -273,6 +423,31 @@ impl App {
     }
 
     fn pick_and_move(&mut self) {
+        let (Some(renderer), Some(height), Some(collision), Some(animated)) = (
+            self.renderer.as_ref(),
+            self.height.as_ref(),
+            self.collision.as_ref(),
+            self.animated.as_mut(),
+        ) else {
+            return;
+        };
+        if let Some((origin, dir)) = renderer.screen_ray(self.mouse_pos.0, self.mouse_pos.1) {
+            if let Some(index) = animated.pick_unit(origin, dir) {
+                let ok = animated.set_attack_target(index, collision, height);
+                println!("ATTACK target={index} ok={ok}");
+                return;
+            }
+        }
+        if let Some(point) = renderer.pick_ground(self.mouse_pos.0, self.mouse_pos.1, height) {
+            let waypoints = animated.set_player_target(point, collision, height);
+            println!(
+                "MOVE target={:.0},{:.0},{:.0} path={} waypoints",
+                point.x, point.y, point.z, waypoints
+            );
+        }
+    }
+
+    fn cast_q(&mut self) {
         let (Some(renderer), Some(height), Some(animated)) = (
             self.renderer.as_ref(),
             self.height.as_ref(),
@@ -281,8 +456,8 @@ impl App {
             return;
         };
         if let Some(point) = renderer.pick_ground(self.mouse_pos.0, self.mouse_pos.1, height) {
-            animated.set_player_target(point);
-            println!("MOVE target={:.0},{:.0},{:.0}", point.x, point.y, point.z);
+            let cast = animated.cast_q(point);
+            println!("Q cast={cast}");
         }
     }
 

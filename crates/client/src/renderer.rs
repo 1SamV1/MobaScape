@@ -86,6 +86,7 @@ pub struct Renderer {
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     pipeline: wgpu::RenderPipeline,
+    hud_pipeline: wgpu::RenderPipeline,
     bind_group: wgpu::BindGroup,
     camera_buffer: wgpu::Buffer,
     depth_view: wgpu::TextureView,
@@ -96,6 +97,13 @@ pub struct Renderer {
     dynamic_vertex_capacity: usize,
     dynamic_index_capacity: usize,
     dynamic_index_count: u32,
+    _hud_uniform_buffer: wgpu::Buffer,
+    hud_bind_group: wgpu::BindGroup,
+    hud_vertex_buffer: wgpu::Buffer,
+    hud_index_buffer: wgpu::Buffer,
+    hud_vertex_capacity: usize,
+    hud_index_capacity: usize,
+    hud_index_count: u32,
     pub camera: Camera,
     scene_center: Vec3,
     pub size: (u32, u32),
@@ -246,6 +254,50 @@ impl Renderer {
             cache: None,
         });
 
+        let hud_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("hud pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                buffers: &[Some(wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &ATTRS,
+                })],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                unclipped_depth: false,
+                conservative: false,
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::Always),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
         let depth_view = create_depth_view(&device, width, height);
         let terrain = GpuMesh::upload(&device, &scene.terrain, "terrain");
         let models = GpuMesh::upload(&device, &scene.models, "models");
@@ -265,12 +317,48 @@ impl Renderer {
             wgpu::BufferUsages::INDEX,
         );
 
+        let hud_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("hud camera uniform"),
+            size: std::mem::size_of::<CameraUniform>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let hud_uniform = CameraUniform {
+            view_proj: Mat4::IDENTITY.to_cols_array_2d(),
+            position: [0.0; 4],
+        };
+        queue.write_buffer(&hud_uniform_buffer, 0, bytemuck::bytes_of(&hud_uniform));
+        let hud_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("hud camera bind group"),
+            layout: &bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: hud_uniform_buffer.as_entire_binding(),
+            }],
+        });
+
+        let hud_vertex_capacity = 1024;
+        let hud_index_capacity = 3072;
+        let hud_vertex_buffer = create_dynamic_buffer(
+            &device,
+            "hud vertices",
+            hud_vertex_capacity * std::mem::size_of::<Vertex>(),
+            wgpu::BufferUsages::VERTEX,
+        );
+        let hud_index_buffer = create_dynamic_buffer(
+            &device,
+            "hud indices",
+            hud_index_capacity * std::mem::size_of::<u32>(),
+            wgpu::BufferUsages::INDEX,
+        );
+
         let mut renderer = Self {
             surface,
             device,
             queue,
             config,
             pipeline,
+            hud_pipeline,
             bind_group,
             camera_buffer,
             depth_view,
@@ -281,6 +369,13 @@ impl Renderer {
             dynamic_vertex_capacity,
             dynamic_index_capacity,
             dynamic_index_count: 0,
+            _hud_uniform_buffer: hud_uniform_buffer,
+            hud_bind_group,
+            hud_vertex_buffer,
+            hud_index_buffer,
+            hud_vertex_capacity,
+            hud_index_capacity,
+            hud_index_count: 0,
             camera: initial_camera,
             scene_center: scene.center,
             size: (width, height),
@@ -353,7 +448,7 @@ impl Renderer {
         self.dynamic_index_count = indices.len() as u32;
     }
 
-    pub fn pick_ground(&self, cursor_x: f64, cursor_y: f64, height: &HeightGrid) -> Option<Vec3> {
+    pub fn screen_ray(&self, cursor_x: f64, cursor_y: f64) -> Option<(Vec3, Vec3)> {
         let aspect = self.config.width as f32 / self.config.height as f32;
         let inv = self.camera.view_proj(aspect).inverse();
         let ndc_x = 2.0 * cursor_x as f32 / self.config.width as f32 - 1.0;
@@ -369,6 +464,43 @@ impl Renderer {
         if dir.length_squared() < 1e-6 {
             return None;
         }
+        Some((origin, dir))
+    }
+
+    pub fn set_hud_mesh(&mut self, vertices: &[Vertex], indices: &[u32]) {
+        if vertices.len() > self.hud_vertex_capacity {
+            let capacity = vertices.len().next_power_of_two();
+            self.hud_vertex_buffer = create_dynamic_buffer(
+                &self.device,
+                "hud vertices",
+                capacity * std::mem::size_of::<Vertex>(),
+                wgpu::BufferUsages::VERTEX,
+            );
+            self.hud_vertex_capacity = capacity;
+        }
+        if indices.len() > self.hud_index_capacity {
+            let capacity = indices.len().next_power_of_two();
+            self.hud_index_buffer = create_dynamic_buffer(
+                &self.device,
+                "hud indices",
+                capacity * std::mem::size_of::<u32>(),
+                wgpu::BufferUsages::INDEX,
+            );
+            self.hud_index_capacity = capacity;
+        }
+        if !vertices.is_empty() {
+            self.queue
+                .write_buffer(&self.hud_vertex_buffer, 0, bytemuck::cast_slice(vertices));
+        }
+        if !indices.is_empty() {
+            self.queue
+                .write_buffer(&self.hud_index_buffer, 0, bytemuck::cast_slice(indices));
+        }
+        self.hud_index_count = indices.len() as u32;
+    }
+
+    pub fn pick_ground(&self, cursor_x: f64, cursor_y: f64, height: &HeightGrid) -> Option<Vec3> {
+        let (origin, dir) = self.screen_ray(cursor_x, cursor_y)?;
 
         let mut t = 0.0f32;
         let step = 24.0f32;
@@ -473,6 +605,13 @@ impl Renderer {
                     wgpu::IndexFormat::Uint32,
                 );
                 pass.draw_indexed(0..self.dynamic_index_count, 0, 0..1);
+            }
+            if self.hud_index_count > 0 {
+                pass.set_pipeline(&self.hud_pipeline);
+                pass.set_bind_group(0, &self.hud_bind_group, &[]);
+                pass.set_vertex_buffer(0, self.hud_vertex_buffer.slice(..));
+                pass.set_index_buffer(self.hud_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..self.hud_index_count, 0, 0..1);
             }
         }
 

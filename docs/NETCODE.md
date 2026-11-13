@@ -37,8 +37,9 @@ Client sends `InputCommand { client_tick, ack_tick, move_mode, target, cast }`.
 
 ## Movement
 
-- Tap-to-move: server A* on the tile grid; returns a path. Client predicts along
-  the path and reconciles on ack.
+- Tap-to-move: server A* on the tile grid (`crates/sim` already owns the grid and
+  pathfinder); returns a path. Client predicts along the path and reconciles on
+  ack.
 - Hold-to-steer: client sends a direction each tick; server applies collision
   sliding at the same speed and validates against the map.
 - Server correction: if the client's predicted position differs by more than a

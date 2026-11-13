@@ -4,9 +4,10 @@ A 5v5 MOBA built on a custom Rust engine, using modern Old School RuneScape
 cache assets for its visual identity. Server-authoritative, data-driven, and
 designed for fast-paced low-team-count matches.
 
-> Status: **M1 vertical slice**. The cache reader, terrain/location/model/sequence
-> decoders, animated NPCs, a 3x3 Karamja block, click-to-move, and a wgpu viewer
-> are working. There is no HUD, combat, pathfinding, or networking yet. See
+> Status: **M2 combat sandbox**. The cache reader, terrain/location/model/sequence
+> decoders, animated NPCs, a 3x3 Karamja block, A* pathfinding with collision,
+> hold-to-steer, a screen-space HUD, target dummies, auto-attacks, and a Q fire
+> blast are working. There is no lane/tower/minion loop or networking yet. See
 > [docs/STATUS.md](docs/STATUS.md).
 
 ## What exists
@@ -17,9 +18,10 @@ designed for fast-paced low-team-count matches.
   - terrain (64×64×4), locations, object/NPC/underlay/overlay configs
   - model formats 2 and 3 with flat-shading normals and vertex groups
   - sequences, frames, framemaps, and interpolated vertex animation
+- `crates/sim` — deterministic tile grid, collision, and A* pathfinding
 - `crates/tools` — `rift-tools` CLI for cache inspection and OBJ export
 - `crates/client` — native wgpu viewer: 3x3 Karamja, scenery, animated NPCs,
-  click-to-move player, camera follow
+  click-to-move + hold-to-steer player, HUD, target dummies, auto-attacks, Q
 - `docs/reference` — archived Java-era experiments (not built)
 
 ## Requirements
@@ -46,6 +48,9 @@ cargo run -p rift-tools -- model 1715
 
 # Render the 3x3 block and play
 cargo run -p rift-client
+
+# Deterministic combat check: target a dummy and fire Q
+cargo run -p rift-client -- --demo-combat
 ```
 
 The cache download is not automated yet; see
@@ -54,12 +59,14 @@ Put `keys.json` next to `main_file_cache.dat2`, or pass `--keys`.
 
 ## Controls (viewer)
 
-- **LMB ground**: click to move the champion (tap-to-move)
+- **LMB ground tap**: pathfind to the point
+- **LMB hold**: steer directly toward the cursor with collision sliding
+- **LMB on a dummy**: auto-attack it
+- **Q**: fire blast at the cursor (5 s cooldown)
 - `WASD` / arrows: pan the camera (disables follow)
-- `Q` / `E`: rotate
+- `E` / `R`: rotate / reset camera
 - `Ctrl` + wheel: zoom (plain wheel is ignored to avoid accidental zoom)
 - `F`: toggle camera follow
-- `R`: reset camera to the champion
 - `Esc`: quit
 
 ## Design north star

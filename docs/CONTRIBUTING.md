@@ -30,7 +30,9 @@ cargo run -p rift-tools -- export-obj 1715 /tmp/tree.obj
 cargo run -p rift-tools -- find-npc monkey --limit 5
 cargo run -p rift-tools -- sequence 222
 cargo run -p rift-tools -- animate 7744 222
+cargo test -p rift-sim
 cargo run -p rift-client
+cargo run -p rift-client -- --demo-combat
 ```
 
 For a deterministic viewer screenshot under XWayland:

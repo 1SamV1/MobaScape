@@ -6,6 +6,7 @@ use rift_cache::{
     Cache, Locations, Model, ObjectDefinition, OverlayDefinition, Terrain, UnderlayDefinition,
     model::hsl_to_rgb,
 };
+use rift_sim::{Grid, find_path, simplify_path};
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -85,6 +86,80 @@ impl HeightGrid {
     }
 }
 
+#[derive(Clone)]
+pub struct WorldCollision {
+    grid: Grid,
+    origin_tile_x: i32,
+    origin_tile_y: i32,
+}
+
+impl WorldCollision {
+    pub fn new(grid: Grid, origin_tile_x: i32, origin_tile_y: i32) -> Self {
+        Self {
+            grid,
+            origin_tile_x,
+            origin_tile_y,
+        }
+    }
+
+    pub fn tile_of(&self, world_x: f32, world_z: f32) -> (i32, i32) {
+        (
+            (world_x / 128.0).floor() as i32 - self.origin_tile_x,
+            (world_z / 128.0).floor() as i32 - self.origin_tile_y,
+        )
+    }
+
+    pub fn world_of_tile(&self, tx: i32, ty: i32, height: &HeightGrid) -> Vec3 {
+        let x = (self.origin_tile_x + tx) as f32 * 128.0 + 64.0;
+        let z = (self.origin_tile_y + ty) as f32 * 128.0 + 64.0;
+        Vec3::new(x, height.height_at(x, z), z)
+    }
+
+    pub fn is_walkable_world(&self, world_x: f32, world_z: f32) -> bool {
+        let (tx, ty) = self.tile_of(world_x, world_z);
+        self.grid.is_walkable(tx, ty)
+    }
+
+    pub fn nearest_walkable_world(&self, world_x: f32, world_z: f32) -> Option<(i32, i32)> {
+        let (tx, ty) = self.tile_of(world_x, world_z);
+        self.grid.nearest_walkable(tx, ty, 12)
+    }
+
+    pub fn path_world(&self, start: Vec3, goal: Vec3, height: &HeightGrid) -> Vec<Vec3> {
+        let start_tile = self.tile_of(start.x, start.z);
+        let goal_tile = self.tile_of(goal.x, goal.z);
+        let Some(path) = find_path(&self.grid, start_tile, goal_tile) else {
+            return Vec::new();
+        };
+        let simplified = simplify_path(&self.grid, &path);
+        simplified
+            .into_iter()
+            .skip(1)
+            .map(|(tx, ty)| self.world_of_tile(tx, ty, height))
+            .collect()
+    }
+
+    /// Move with axis-separated collision sliding. Used by hold-to-steer.
+    pub fn slide_move(&self, pos: Vec3, delta: Vec3, height: &HeightGrid) -> Vec3 {
+        let mut next = pos + delta;
+        if self.is_walkable_world(next.x, next.z) {
+            next.y = height.height_at(next.x, next.z);
+            return next;
+        }
+        next = pos + Vec3::new(delta.x, 0.0, 0.0);
+        if self.is_walkable_world(next.x, next.z) {
+            next.y = height.height_at(next.x, next.z);
+            return next;
+        }
+        next = pos + Vec3::new(0.0, 0.0, delta.z);
+        if self.is_walkable_world(next.x, next.z) {
+            next.y = height.height_at(next.x, next.z);
+            return next;
+        }
+        pos
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct NpcSpawn {
     pub model_id: u32,
@@ -100,6 +175,7 @@ pub struct SceneData {
     pub center: Vec3,
     pub placements: usize,
     pub height: HeightGrid,
+    pub collision: WorldCollision,
     pub npc_spawns: Vec<NpcSpawn>,
     pub player_spawn: Vec3,
 }
@@ -225,6 +301,52 @@ pub fn build(cache: &Cache, center_x: u32, center_y: u32, radius: u32) -> Result
         heights,
     };
 
+    // Collision: water and blocking scenery footprints. This is deliberately
+    // conservative; the editor will replace it with authored collision later.
+    let tiles_x = ((max_x - min_x + 1) * 64) as usize;
+    let tiles_y = ((max_y - min_y + 1) * 64) as usize;
+    let mut collision_grid = Grid::new(tiles_x, tiles_y);
+    for ((rx, ry), terrain) in &terrains {
+        for ty in 0..64 {
+            for tx in 0..64 {
+                let tile = terrain.tile(0, tx, ty);
+                if tile.underlay_id == 0 {
+                    let gx = (*rx as i32 * 64 + tx as i32) - origin_tile_x;
+                    let gy = (*ry as i32 * 64 + ty as i32) - origin_tile_y;
+                    collision_grid.set_blocked(gx, gy, true);
+                }
+            }
+        }
+    }
+
+    let mut def_cache: HashMap<u32, ObjectDefinition> = HashMap::new();
+    for (rx, ry, locations) in &all_locations {
+        for loc in &locations.locations {
+            if let std::collections::hash_map::Entry::Vacant(entry) = def_cache.entry(loc.id) {
+                if let Some(data) = object_files.get(&loc.id) {
+                    if let Ok(def) = ObjectDefinition::parse(loc.id, data) {
+                        entry.insert(def);
+                    }
+                }
+            }
+            let Some(def) = def_cache.get(&loc.id) else {
+                continue;
+            };
+            if !is_blocking_object(def) {
+                continue;
+            }
+            let mut w = def.size_x.max(1) as i32;
+            let mut h = def.size_y.max(1) as i32;
+            if loc.rotation % 2 == 1 {
+                std::mem::swap(&mut w, &mut h);
+            }
+            let gx = (*rx as i32 * 64 + loc.x as i32) - origin_tile_x;
+            let gy = (*ry as i32 * 64 + loc.y as i32) - origin_tile_y;
+            collision_grid.block_rect(gx, gy, w, h);
+        }
+    }
+    let collision = WorldCollision::new(collision_grid, origin_tile_x, origin_tile_y);
+
     let center = Vec3::new(
         (center_x as f32 * 64.0 + 32.0) * 128.0,
         height.height_at(
@@ -291,8 +413,8 @@ pub fn build(cache: &Cache, center_x: u32, center_y: u32, radius: u32) -> Result
         placements += 1;
     }
 
-    let player_spawn = find_walkable_spawn(&height, center, &terrains)?;
-    let npc_spawns = build_npc_spawns(&height, center, player_spawn, &terrains);
+    let player_spawn = find_walkable_spawn(&height, &collision, center, &terrains)?;
+    let npc_spawns = build_npc_spawns(&height, &collision, center, player_spawn, &terrains);
 
     tracing::info!(
         "scene: {} regions, {} terrain verts, {} model verts, {} placements, {} npcs, center {:?}",
@@ -310,6 +432,7 @@ pub fn build(cache: &Cache, center_x: u32, center_y: u32, radius: u32) -> Result
         center,
         placements,
         height,
+        collision,
         npc_spawns,
         player_spawn,
     })
@@ -317,6 +440,7 @@ pub fn build(cache: &Cache, center_x: u32, center_y: u32, radius: u32) -> Result
 
 fn find_walkable_spawn(
     height: &HeightGrid,
+    collision: &WorldCollision,
     center: Vec3,
     terrains: &HashMap<(u32, u32), Terrain>,
 ) -> Result<Vec3> {
@@ -334,6 +458,9 @@ fn find_walkable_spawn(
                 let ry = (tile_y >> 6) as u32;
                 let lx = (tile_x & 63) as usize;
                 let ly = (tile_y & 63) as usize;
+                if !collision.is_walkable_world(world_x, world_z) {
+                    continue;
+                }
                 if let Some(terrain) = terrains.get(&(rx, ry)) {
                     let tile = terrain.tile(0, lx, ly);
                     if tile.underlay_id > 0
@@ -360,6 +487,7 @@ fn find_walkable_spawn(
 
 fn build_npc_spawns(
     height: &HeightGrid,
+    collision: &WorldCollision,
     center: Vec3,
     player_spawn: Vec3,
     terrains: &HashMap<(u32, u32), Terrain>,
@@ -384,6 +512,9 @@ fn build_npc_spawns(
             if spots.iter().any(|p: &Vec3| {
                 Vec3::new(world_x, 0.0, world_z).distance(Vec3::new(p.x, 0.0, p.z)) < 4.0 * 128.0
             }) {
+                continue;
+            }
+            if !collision.is_walkable_world(world_x, world_z) {
                 continue;
             }
             let tile_x = (world_x / 128.0).floor() as i32;
@@ -437,6 +568,31 @@ fn build_npc_spawns(
         }
     }
     spawns
+}
+
+fn is_blocking_object(def: &ObjectDefinition) -> bool {
+    let name = def.name.to_lowercase();
+    if name.contains("plant")
+        || name.contains("flower")
+        || name.contains("grass")
+        || name.contains("fern")
+        || name.contains("vine")
+        || name.contains("reed")
+    {
+        return false;
+    }
+    if def.wall_or_door != 0 {
+        return true;
+    }
+    if def.size_x > 1 || def.size_y > 1 {
+        return true;
+    }
+    [
+        "tree", "rock", "wall", "fence", "ruin", "pillar", "statue", "crate", "barrel", "table",
+        "altar", "door", "gate", "bank", "chest", "stump",
+    ]
+    .iter()
+    .any(|needle| name.contains(needle))
 }
 
 fn is_scenery(def: &ObjectDefinition) -> bool {

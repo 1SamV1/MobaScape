@@ -98,3 +98,22 @@ precede any matchmaking service.
 
 Consequences: `crates/sim` must be deterministic and shared; netcode tests need
 simulated latency/loss from day one.
+
+## ADR-010 — A* on an integer tile grid in `crates/sim`
+
+**Status:** accepted.
+
+Pathfinding lives in the deterministic sim crate, not the renderer. The grid is
+integer tiles; movement costs are 10/14; diagonals may not cut blocked corners.
+The client uses the same code for click-to-move; the server will own the
+authoritative path. Collision is currently conservative (water + object
+footprints) and will be replaced by authored map collision.
+
+## ADR-011 — Screen-space HUD via a second pipeline
+
+**Status:** accepted.
+
+The HUD uses the same vertex format as the world but a second pipeline with an
+identity camera, alpha blending, and depth testing disabled. This keeps the HUD
+cheap and avoids a UI framework dependency. Text is deferred; numeric values are
+shown in the window title until a bitmap font atlas is added.

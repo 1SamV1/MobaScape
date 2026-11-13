@@ -1688,11 +1688,16 @@ dependencies = [
  "glam",
  "pollster",
  "rift-cache",
+ "rift-sim",
  "tracing",
  "tracing-subscriber",
  "wgpu",
  "winit",
 ]
+
+[[package]]
+name = "rift-sim"
+version = "0.1.0"
 
 [[package]]
 name = "rift-tools"
