@@ -1468,6 +1468,7 @@ pub fn build(
             base,
             angle,
             NATURAL_SCENERY_SCALE,
+            CasterStyle::Tree,
         );
         let shadow_size =
             (def.size_x.max(def.size_y) as f32 * 128.0 * 0.55 * NATURAL_SCENERY_SCALE)
@@ -1646,6 +1647,11 @@ pub fn build(
                 base,
                 angle,
                 POCKET_SCENERY_SCALE,
+                if is_plant_object(def) {
+                    CasterStyle::Tree
+                } else {
+                    CasterStyle::Building
+                },
             );
             let shadow_size =
                 (def.size_x.max(def.size_y) as f32 * 128.0 * 0.55 * POCKET_SCENERY_SCALE)
@@ -2420,7 +2426,14 @@ fn place_ruin(
         pick_texture(TEX_STONE, seed),
         false,
     );
-    append_model_caster(sink.shadow_caster_mesh, model, base, angle, scale);
+    append_model_caster(
+        sink.shadow_caster_mesh,
+        model,
+        base,
+        angle,
+        scale,
+        CasterStyle::Building,
+    );
     push_blob_quad(
         sink.shadow_mesh,
         base,
@@ -2502,7 +2515,14 @@ fn place_tree(
         pick_texture(TEX_LEAVES, seed),
         side < 0.0,
     );
-    append_model_caster(sink.shadow_caster_mesh, model, base, angle, scale);
+    append_model_caster(
+        sink.shadow_caster_mesh,
+        model,
+        base,
+        angle,
+        scale,
+        CasterStyle::Tree,
+    );
     push_blob_quad(
         sink.shadow_mesh,
         base,
@@ -2677,20 +2697,97 @@ fn append_ground_decor(
     );
 }
 
-/// Position-only copy of a static prop for the sun shadow map. Colours, UVs
-/// and materials are irrelevant to the depth pass, so this avoids re-running
-/// the texture/colour work for every caster triangle.
-fn append_model_caster(mesh: &mut MeshData, model: &Model, base: Vec3, angle: f32, scale: f32) {
+#[derive(Clone, Copy)]
+enum CasterStyle {
+    Tree,
+    Building,
+}
+
+/// Low-poly proxy for the sun shadow map. Re-rendering every static tree and
+/// ruin face into a 1024px map was the largest remaining renderer cost; a
+/// trunk/canopy box pair preserves the silhouette at shadow-map resolution
+/// for a fraction of the triangles.
+fn append_model_caster(
+    mesh: &mut MeshData,
+    model: &Model,
+    base: Vec3,
+    angle: f32,
+    scale: f32,
+    style: CasterStyle,
+) {
     let rot = Mat3::from_rotation_y(angle);
-    for &[a, b, c] in &model.faces {
-        let pa = model_vertex_scaled(model, a as usize, base, rot, scale);
-        let pb = model_vertex_scaled(model, b as usize, base, rot, scale);
-        let pc = model_vertex_scaled(model, c as usize, base, rot, scale);
-        let normal = (pb - pa).cross(pc - pa).normalize_or_zero();
+    let (bounds_min, bounds_max) = model.bounds();
+    let min = Vec3::new(
+        bounds_min[0] as f32,
+        -(bounds_max[1] as f32),
+        bounds_min[2] as f32,
+    ) * scale;
+    let max = Vec3::new(
+        bounds_max[0] as f32,
+        -(bounds_min[1] as f32),
+        bounds_max[2] as f32,
+    ) * scale;
+    match style {
+        CasterStyle::Tree => {
+            let height = (max.y - min.y).max(1.0);
+            let center = (min + max) * 0.5;
+            let half_w = (max.x - min.x).max(1.0) * 0.5;
+            let half_d = (max.z - min.z).max(1.0) * 0.5;
+            // Trunk: narrow column from the ground to the lower canopy.
+            append_box(
+                mesh,
+                rot,
+                base,
+                Vec3::new(center.x - half_w * 0.22, min.y, center.z - half_d * 0.22),
+                Vec3::new(
+                    center.x + half_w * 0.22,
+                    min.y + height * 0.42,
+                    center.z + half_d * 0.22,
+                ),
+            );
+            // Canopy: broad box from the lower branches to the crown.
+            append_box(
+                mesh,
+                rot,
+                base,
+                Vec3::new(min.x, min.y + height * 0.28, min.z),
+                max,
+            );
+        }
+        CasterStyle::Building => append_box(mesh, rot, base, min, max),
+    }
+}
+
+fn append_box(mesh: &mut MeshData, rot: Mat3, base: Vec3, min: Vec3, max: Vec3) {
+    let corners = [
+        Vec3::new(min.x, min.y, min.z),
+        Vec3::new(max.x, min.y, min.z),
+        Vec3::new(min.x, min.y, max.z),
+        Vec3::new(max.x, min.y, max.z),
+        Vec3::new(min.x, max.y, min.z),
+        Vec3::new(max.x, max.y, min.z),
+        Vec3::new(min.x, max.y, max.z),
+        Vec3::new(max.x, max.y, max.z),
+    ];
+    let corner = |index: usize| base + rot * corners[index];
+    for [a, b, c] in [
+        [0, 2, 1],
+        [1, 2, 3],
+        [4, 5, 6],
+        [5, 7, 6],
+        [0, 1, 4],
+        [1, 5, 4],
+        [2, 6, 3],
+        [3, 6, 7],
+        [0, 4, 2],
+        [2, 4, 6],
+        [1, 3, 5],
+        [3, 7, 5],
+    ] {
         mesh.push_triangle(
-            SceneVertex::new(pa, normal, [0, 0, 0]),
-            SceneVertex::new(pb, normal, [0, 0, 0]),
-            SceneVertex::new(pc, normal, [0, 0, 0]),
+            SceneVertex::new(corner(a), Vec3::Y, [0, 0, 0]),
+            SceneVertex::new(corner(b), Vec3::Y, [0, 0, 0]),
+            SceneVertex::new(corner(c), Vec3::Y, [0, 0, 0]),
         );
     }
 }

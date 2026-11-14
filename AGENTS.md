@@ -188,8 +188,9 @@ Cache location: `.cache/osrs-235/cache` by default. Pass `--cache` and
   static sun casters, cache model textures, imp/fairy lanes, cache-soil roads,
   red/wider jungle-camp bars, and camera-offset unit bars to prevent depth
   flicker. Static meshes are split into 16-tile AABB chunks and frustum-culled;
-  `--msaa 1|4` and `--present-mode fifo|immediate|mailbox` support performance
-  work. The engine backlog lives in `docs/ENGINE_ROADMAP.md`.
+  static sun casters use low-poly trunk/canopy proxies. `--msaa 1|4`,
+  `--present-mode fifo|immediate|mailbox` and `--benchmark <seconds>` support
+  performance work. The engine backlog lives in `docs/ENGINE_ROADMAP.md`.
 - `--graphics classic` preserves a flat baseline; `--debug-view albedo|normal|
   lighting|fog|lights|shadow|ao` helps tune the renderer.
 - **UI pass**: the Fountain Shop is a centered OSRS-style window with category

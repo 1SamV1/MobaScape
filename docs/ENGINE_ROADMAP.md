@@ -1,7 +1,7 @@
 # Engine road map
 
-Last updated: 2026-11-14, after M5.22 (imps/fairies, cache-soil lanes,
-walkable river, static sun shadows, MSAA and chunked culling).
+Last updated: 2026-11-14, after M5.23 (benchmark harness, chunk culling,
+shadow proxies, terrain fetch reduction and cache-soil lanes).
 
 This is the working performance/architecture backlog. It records what the
 engine does today, what was measured, and the next changes that should give
@@ -21,13 +21,17 @@ the largest wins per unit of risk.
 
 ### Measured (release, `--present-mode immediate`, 1280×720)
 
-| Configuration | FPS | Approx. frame |
-|---|---:|---:|
-| Shadows map, 4× MSAA | 69 | 14.5 ms |
-| Shadows map, 1× MSAA | 77 | 13.0 ms |
-| Shadows off, 4× MSAA | 82 | 12.2 ms |
-| Dev-profile, FIFO, before chunk culling | 40 | 25 ms |
-| Dev-profile, FIFO, after chunk culling | 60 | 16.7 ms (vsync capped) |
+| Configuration (release, immediate) | Avg | p50 | p95 | approx FPS |
+|---|---:|---:|---:|---:|
+| Shadows + 4× MSAA | 11.19 ms | 13.24 ms | 14.89 ms | 89 |
+| Shadows off + 4× MSAA | 10.94 ms | 12.93 ms | 14.20 ms | 91 |
+| Shadows + 1× MSAA | 10.60 ms | 12.17 ms | 13.88 ms | 94 |
+| Dev FIFO before chunk culling | — | — | — | 40 |
+| Dev FIFO after chunk culling | — | — | — | 60 (vsync) |
+
+The averages include fast frames where the app is idle; p50/p95 are the useful
+numbers. Background applications and compositor scheduling add noise, so run
+the benchmark with a clean desktop before using these as hard budgets.
 
 Interpretation: static vertex load was the biggest single bottleneck and chunk
 culling recovered most of it. The shadow map is now the next large cost
@@ -56,6 +60,17 @@ Current chunks/triangles:
 | Blob shadows | 173 | 3,662 |
 | Static shadow casters | 170 | 413,513 |
 
+### Shadow proxies and benchmark harness
+
+The full static caster mesh was 413,513 triangles. `append_model_caster` now
+emits a two-box trunk/canopy proxy for trees and a single AABB box for
+buildings and ruins (38,028 triangles total). The camera-relative shadow pass
+now costs roughly 0.3 ms p50 at the benchmarked view.
+
+`--benchmark <seconds>` records frame times after a one-second warm-up and
+prints avg/p50/p95/p99 plus approximate FPS. Combined with
+`--present-mode immediate` and `--msaa 1|4`, this is the first P0 harness.
+
 ### Other recent engine work
 
 - 4× MSAA on the HDR target with a single-sample resolve into post/bloom.
@@ -74,8 +89,9 @@ Current chunks/triangles:
 1. **Shadow pass**: full static casters plus dynamic casters are submitted into
    a camera-relative 1024 map every other frame. Disabling shadows recovers
    roughly 5 ms in the release build.
-2. **Terrain fragment cost**: base classification samples five ground textures,
-   plus dirt patch, road soil, slope and noise. 4× MSAA multiplies the cost.
+2. **Terrain fragment cost**: base classification now samples four ground
+   textures after dropping the redundant water fetch; dirt patch, road soil,
+   slope and noise remain. 4× MSAA multiplies the cost.
 3. **No GPU timing**: frame rate was measured through the window title. We need
    GPU timestamps and a repeatable benchmark scene before optimizing blind.
 4. **CPU-side animation allocations**: `Model::animated_positions` allocates a
@@ -93,39 +109,41 @@ Current chunks/triangles:
 
 ## 4. Priority road map
 
-### P0 — Instrumentation and performance gates (next)
+### P0 — Instrumentation and performance gates (started)
 
-- Add a frame statistics structure: CPU update, mesh build, queue submission,
-  shadow pass, scene pass, post, HUD.
-- Enable `wgpu` timestamp queries where supported; log p50/p95/p99 frame times.
-- Add `--benchmark <scene>` that fixes camera/hero/time, disables demos and
-  exits after N seconds with JSON output.
-- Add golden performance smoke tests for chunk counts and draw counts.
-- Make a 1080p capture the default benchmark before changing renderer code.
+- ✅ `--benchmark <seconds>` with avg/p50/p95/p99 frame logging.
+- ✅ `--present-mode fifo|immediate|mailbox` and `--msaa 1|4` controls.
+- [ ] Add CPU phase timing: update, mesh build, queue submission, shadow pass,
+  scene pass, post, HUD.
+- [ ] Enable `wgpu` timestamp queries where supported.
+- [ ] Add golden performance smoke tests for chunk counts and draw counts.
+- [ ] Make a 1080p capture the default benchmark before changing renderer code.
 
 Acceptance: one command produces reproducible CPU/GPU frame budgets on the dev
 machine, and regressions are visible in CI or a checked-in report.
 
-### P1 — Shadow map cost
+### P1 — Shadow map cost (largely done)
 
-- Build coarse static shadow proxies for trees/ruins (box or 2–3 box/cone LOD)
-  instead of re-submitting the full scenery mesh.
-- Cache static shadows by camera tile: re-render only when the camera crosses a
-  chunk boundary or the sun changes.
-- Consider cascaded shadow maps: tight cascade for units/near trees, broad
-  cascade for the lane.
-- Keep dynamic casters at every-other-frame updates; interpolate their shadow
-  matrices if visible lag persists.
+- ✅ Tree trunk/canopy and building AABB shadow proxies cut the static caster
+  mesh from 413,513 to 38,028 triangles.
+- ✅ Benchmarked shadow-on vs shadow-off is now within noise at the test view.
+- [ ] Cache static shadows by camera tile to eliminate even the proxy pass when
+  the camera is stationary.
+- [ ] Consider cascaded shadow maps for a larger camera-relative range.
+- [ ] Keep dynamic casters at every-other-frame updates; interpolate where lag
+  is visible at 1080p.
 
-Acceptance: shadows-on is within 1–1.5 ms of shadows-off at 1080p.
+Acceptance: shadows-on remains within 1–1.5 ms of shadows-off at 1080p.
 
-### P2 — Terrain fragment shader
+### P2 — Terrain fragment shader (started)
 
-- Profile with `--msaa 1 --shadows off` and a fixed camera.
-- Reduce ground samples: pack the five classification layers into a shared
-  palette/atlas or pre-bake classification weights per terrain chunk.
-- Move slow-changing terms (macro dirt patches, road mask blend) to a
-  low-resolution terrain control texture generated at build time.
+- ✅ Removed the redundant water-layer fetch underneath the water mesh.
+- ✅ Stopped green ground from falling into the cobblestone/stone classifier.
+- [ ] Pre-bake classification weights/top-two layers per terrain vertex instead
+  of sampling four ground layers in the fragment shader.
+- [ ] Move macro dirt patches and road masks into a low-resolution control
+  texture.
+- [ ] Profile 1080p with `--msaa 1 --shadows off`.
 - Keep nearest filtering and the OSRS look; use mips, not expensive PBR.
 
 Acceptance: terrain pass drops below 5 ms at 1080p and stays visually
@@ -181,6 +199,9 @@ toggled without restarting a match.
 ```sh
 # Release, uncapped, current defaults
 cargo run --release -p rift-client -- --present-mode immediate
+
+# Fixed-duration frame-time stats, then exit
+cargo run --release -p rift-client -- --present-mode immediate --benchmark 8
 
 # Shadow cost
 cargo run --release -p rift-client -- --present-mode immediate --shadows off

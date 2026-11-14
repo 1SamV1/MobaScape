@@ -110,6 +110,9 @@ struct Cli {
     /// Scene MSAA: 1 (off) or 4 (default).
     #[arg(long, default_value_t = 4)]
     msaa: u32,
+    /// Run a fixed-duration frame-time benchmark, then exit (seconds).
+    #[arg(long)]
+    benchmark: Option<f32>,
     /// Simulation speed multiplier for verification.
     #[arg(long, default_value_t = 1.0)]
     timescale: f32,
@@ -256,6 +259,9 @@ fn main() -> Result<()> {
         shadow_mode: cli.shadows.clone(),
         present_mode: cli.present_mode.clone(),
         msaa: cli.msaa,
+        benchmark_remaining: cli.benchmark,
+        benchmark_samples: Vec::new(),
+        benchmark_done: false,
         app_time: 0.0,
         lane_log_timer: 0.0,
         last_frame: Instant::now(),
@@ -327,6 +333,9 @@ struct App {
     shadow_mode: String,
     present_mode: String,
     msaa: u32,
+    benchmark_remaining: Option<f32>,
+    benchmark_samples: Vec<f32>,
+    benchmark_done: bool,
     app_time: f32,
     lane_log_timer: f32,
     last_frame: Instant,
@@ -618,7 +627,11 @@ impl ApplicationHandler for App {
         }
     }
 
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if self.benchmark_done {
+            event_loop.exit();
+            return;
+        }
         if let Some(window) = self.window.as_ref() {
             window.request_redraw();
         }
@@ -631,6 +644,41 @@ impl App {
         let dt = (now - self.last_frame).as_secs_f32().min(0.1);
         self.last_frame = now;
         self.app_time += dt;
+
+        if let Some(remaining) = self.benchmark_remaining.as_mut() {
+            *remaining -= dt;
+            // Ignore the first second of shader/present warm-up.
+            if self.app_time > 1.0 {
+                self.benchmark_samples.push(dt);
+            }
+            if *remaining <= 0.0 {
+                let mut samples = std::mem::take(&mut self.benchmark_samples);
+                samples.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                let percentile = |p: f32| {
+                    if samples.is_empty() {
+                        0.0
+                    } else {
+                        samples[((samples.len() - 1) as f32 * p) as usize] * 1000.0
+                    }
+                };
+                let avg = if samples.is_empty() {
+                    0.0
+                } else {
+                    samples.iter().sum::<f32>() / samples.len() as f32 * 1000.0
+                };
+                tracing::info!(
+                    "benchmark: frames={} avg={:.2}ms p50={:.2}ms p95={:.2}ms p99={:.2}ms fps={:.1}",
+                    samples.len(),
+                    avg,
+                    percentile(0.50),
+                    percentile(0.95),
+                    percentile(0.99),
+                    1000.0 / avg.max(0.001)
+                );
+                self.benchmark_remaining = None;
+                self.benchmark_done = true;
+            }
+        }
 
         if self.hero_select.open {
             if self.renderer.is_some() {

@@ -113,8 +113,8 @@ cargo run -p rift-client -- --graphics 117hd
 cargo run -p rift-client -- --graphics classic
 
 # Benchmark/quality overrides
-cargo run --release -p rift-client -- --present-mode immediate
-cargo run --release -p rift-client -- --msaa 1
+cargo run --release -p rift-client -- --present-mode immediate --benchmark 8
+cargo run --release -p rift-client -- --present-mode immediate --msaa 1
 
 # Inspect lighting, normals, albedo, fog, shadows, or AO
 cargo run -p rift-client -- --graphics 117hd --debug-view lighting

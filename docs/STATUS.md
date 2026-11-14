@@ -1,6 +1,6 @@
 # Status
 
-Last updated: M5.22 imps/fairies, cache-soil lanes + chunk culling, 2026-11-14.
+Last updated: M5.23 benchmark harness, shadow proxies + terrain fetch pass, 2026-11-14.
 
 ## Working
 
@@ -183,9 +183,10 @@ Last updated: M5.22 imps/fairies, cache-soil lanes + chunk culling, 2026-11-14.
   camera to stop depth flicker while moving.
 - Lane road: dirt-dominant, noise-warped 310-unit UVs remove the repeating
   cobble border while keeping the cache path sprite as a low-weight accent.
-- Chunk culling: 400 terrain + 212 model + 49 water chunks; release 1280×720
-  immediate-mode baseline is 69 fps with shadows + 4× MSAA, 77 fps at 1× MSAA,
-  and 82 fps with shadows off.
+- Chunk culling: 400 terrain + 212 model + 49 water chunks. Release 1280×720
+  immediate benchmark: p50 13.24 ms / p95 14.89 ms with shadows + 4× MSAA,
+  p50 12.93 ms / p95 14.20 ms with shadows off, p50 12.17 ms / p95 13.88 ms
+  with 1× MSAA. The `--benchmark <seconds>` harness prints these percentiles.
 - Fog run: visible enemies 7–13; dark fog mesh over unseen tiles.
 - Three-lane 20× run: victory states, towers/inhibitors/nexus live.
 - Jungle demo: camp killed, buff Might 58s.
@@ -281,9 +282,10 @@ Last updated: M5.22 imps/fairies, cache-soil lanes + chunk culling, 2026-11-14.
   camera to stop depth flicker while moving.
 - Lane road: dirt-dominant, noise-warped 310-unit UVs remove the repeating
   cobble border while keeping the cache path sprite as a low-weight accent.
-- Chunk culling: 400 terrain + 212 model + 49 water chunks; release 1280×720
-  immediate-mode baseline is 69 fps with shadows + 4× MSAA, 77 fps at 1× MSAA,
-  and 82 fps with shadows off.
+- Chunk culling: 400 terrain + 212 model + 49 water chunks. Release 1280×720
+  immediate benchmark: p50 13.24 ms / p95 14.89 ms with shadows + 4× MSAA,
+  p50 12.93 ms / p95 14.20 ms with shadows off, p50 12.17 ms / p95 13.88 ms
+  with 1× MSAA. The `--benchmark <seconds>` harness prints these percentiles.
 - Fog run: visible enemies 7–13; dark fog mesh over unseen tiles.
 - Three-lane 20× run: victory states, towers/inhibitors/nexus live.
 - Jungle demo: camp killed, buff Might 58s.
