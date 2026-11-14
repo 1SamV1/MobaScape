@@ -183,10 +183,13 @@ Cache location: `.cache/osrs-235/cache` by default. Pass `--cache` and
   updates every other frame and can be toggled with
   `--shadows off|blob|map`. Terrain and model vertices carry baked contact AO.
   Full screen-space SSAO and draw-distance streaming are not implemented yet.
-- **M5.21 presentation**: walkable river with a blended HD water surface
+- **M5.21/M5.22 presentation**: walkable river with a blended HD water surface
   (animated ripples, fresnel, sun specular), 4x MSAA resolved before post/bloom,
-  static sun casters, cache model textures, red/wider jungle-camp bars, and
-  camera-offset unit bars to prevent depth flicker.
+  static sun casters, cache model textures, imp/fairy lanes, cache-soil roads,
+  red/wider jungle-camp bars, and camera-offset unit bars to prevent depth
+  flicker. Static meshes are split into 16-tile AABB chunks and frustum-culled;
+  `--msaa 1|4` and `--present-mode fifo|immediate|mailbox` support performance
+  work. The engine backlog lives in `docs/ENGINE_ROADMAP.md`.
 - `--graphics classic` preserves a flat baseline; `--debug-view albedo|normal|
   lighting|fog|lights|shadow|ao` helps tune the renderer.
 - **UI pass**: the Fountain Shop is a centered OSRS-style window with category

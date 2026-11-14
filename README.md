@@ -112,6 +112,10 @@ cargo run -p rift-client -- --demo-watchtower
 cargo run -p rift-client -- --graphics 117hd
 cargo run -p rift-client -- --graphics classic
 
+# Benchmark/quality overrides
+cargo run --release -p rift-client -- --present-mode immediate
+cargo run --release -p rift-client -- --msaa 1
+
 # Inspect lighting, normals, albedo, fog, shadows, or AO
 cargo run -p rift-client -- --graphics 117hd --debug-view lighting
 cargo run -p rift-client -- --graphics 117hd --debug-view normal
@@ -179,6 +183,7 @@ commands, and how to contribute without breaking determinism or leaking assets.
 - [docs/ASSET_PIPELINE.md](docs/ASSET_PIPELINE.md)
 - [docs/ROADMAP.md](docs/ROADMAP.md)
 - [docs/STATUS.md](docs/STATUS.md)
+- [docs/ENGINE_ROADMAP.md](docs/ENGINE_ROADMAP.md)
 - [docs/MAP_FORMAT.md](docs/MAP_FORMAT.md)
 - [docs/NETCODE.md](docs/NETCODE.md)
 - [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md)

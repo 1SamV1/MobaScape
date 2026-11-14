@@ -89,6 +89,7 @@ impl SceneVertex {
     }
 }
 
+#[derive(Default)]
 pub struct MeshData {
     pub vertices: Vec<SceneVertex>,
     pub indices: Vec<u32>,
@@ -616,6 +617,53 @@ impl MapLayout {
             levels: river.levels.map(|l| (l[0], l[1])),
         });
 
+        // Keep authored structures out of the lane driving surface. Towers,
+        // inhibitors, watchtowers and nexuses are all allowed to sit beside a
+        // lane, but a 3x3 collision footprint on the centre line traps waves
+        // and reads as an object dropped on the road.
+        let clearance = 5.0 * 128.0;
+        let mut occupied: Vec<Vec3> = Vec::with_capacity(structures.len());
+        for structure in &mut structures {
+            if distance_to_lanes(&lanes, structure.pos.x, structure.pos.z) >= clearance {
+                occupied.push(structure.pos);
+                continue;
+            }
+            let origin = structure.pos;
+            let mut best = None;
+            'rings: for ring in 1..=12 {
+                let radius = ring as f32 * 64.0;
+                let steps = 16 + ring * 4;
+                for step in 0..steps {
+                    let angle = step as f32 * std::f32::consts::TAU / steps as f32;
+                    let x = origin.x + angle.cos() * radius;
+                    let z = origin.z + angle.sin() * radius;
+                    if !height.contains(x, z)
+                        || distance_to_lanes(&lanes, x, z) < clearance
+                        || occupied
+                            .iter()
+                            .any(|p| p.distance(Vec3::new(x, p.y, z)) < 3.0 * 128.0)
+                    {
+                        continue;
+                    }
+                    best = Some(Vec3::new(x, height.height_at(x, z), z));
+                    break 'rings;
+                }
+            }
+            if let Some(pos) = best {
+                tracing::info!(
+                    "structure {:?} moved off lane: tile {:.1},{:.1} -> {:.1},{:.1}",
+                    structure.kind,
+                    origin.x / 128.0,
+                    origin.z / 128.0,
+                    pos.x / 128.0,
+                    pos.z / 128.0
+                );
+                structure.pos = pos;
+                structure.tile = [pos.x / 128.0 - 0.5, pos.z / 128.0 - 0.5];
+            }
+            occupied.push(structure.pos);
+        }
+
         Ok(Self {
             name: map.name,
             lanes,
@@ -729,6 +777,19 @@ impl MapLayout {
             grid.block_rect(tx - 1, ty - 1, 3, 3);
         }
     }
+}
+
+fn distance_to_lanes(lanes: &[LaneSpawn], x: f32, z: f32) -> f32 {
+    let p = Vec2::new(x, z);
+    let mut best = f32::MAX;
+    for lane in lanes {
+        for pair in lane.waypoints.windows(2) {
+            let a = Vec2::new(pair[0].x, pair[0].z);
+            let b = Vec2::new(pair[1].x, pair[1].z);
+            best = best.min(point_segment_distance(p, a, b));
+        }
+    }
+    best
 }
 
 fn point_segment_distance(p: Vec2, a: Vec2, b: Vec2) -> f32 {
@@ -1038,8 +1099,8 @@ pub fn build(
     // the road seamless with the world and stops the overlay from
     // z-fighting with the terrain.
     // ------------------------------------------------------------------
-    const LANE_HALF_WIDTH: f32 = 300.0;
-    const LANE_PATH_COLOUR: [u8; 3] = [122, 96, 66];
+    const LANE_HALF_WIDTH: f32 = 235.0;
+    const LANE_PATH_COLOUR: [u8; 3] = [104, 86, 62];
     let mut lane_mask = vec![0.0f32; size * size];
     for gy in 0..size {
         for gx in 0..size {
@@ -1047,7 +1108,7 @@ pub fn build(
             let wz = (origin_tile_y + gy as i32) as f32 * 128.0;
             let (nearest, distance) = map.nearest_lane_point(wx, wz);
             // A slow noise keeps the road edge from looking ruler straight.
-            let wobble = (value_noise(wx * 0.0035, wz * 0.0035) - 0.5) * 150.0;
+            let wobble = (value_noise(wx * 0.0035, wz * 0.0035) - 0.5) * 190.0;
             let t = ((distance + wobble) / LANE_HALF_WIDTH).clamp(0.0, 2.0);
             let mask = 1.0 - smoothstep(0.78, 1.22, t);
             let idx = gy * size + gx;
@@ -1130,6 +1191,12 @@ pub fn build(
             v10.uv[0] = (1.0 - n10.y).clamp(0.0, 1.0);
             v01.uv[0] = (1.0 - n01.y).clamp(0.0, 1.0);
             v11.uv[0] = (1.0 - n11.y).clamp(0.0, 1.0);
+            // uv.y carries the river mask so the road shader can stop the
+            // lane soil from painting the river bed.
+            v00.uv[1] = water_mask[idx];
+            v10.uv[1] = water_mask[idx + 1];
+            v01.uv[1] = water_mask[idx + size];
+            v11.uv[1] = water_mask[idx + size + 1];
             v00.ao = ao00;
             v10.ao = ao10;
             v01.ao = ao01;
@@ -1393,6 +1460,7 @@ pub fn build(
             NATURAL_SCENERY_SCALE,
             [1.0, 1.0, 1.0],
             scenery_texture_hint(&def, is_plant_object(&def)),
+            is_dead_tree(&def),
         );
         append_model_caster(
             &mut shadow_caster_mesh,
@@ -1570,6 +1638,7 @@ pub fn build(
                 POCKET_SCENERY_SCALE,
                 biome.tint,
                 scenery_texture_hint(def, is_plant_object(def)),
+                is_dead_tree(def),
             );
             append_model_caster(
                 &mut shadow_caster_mesh,
@@ -2349,6 +2418,7 @@ fn place_ruin(
         scale,
         [0.92, 0.9, 0.86],
         pick_texture(TEX_STONE, seed),
+        false,
     );
     append_model_caster(sink.shadow_caster_mesh, model, base, angle, scale);
     push_blob_quad(
@@ -2418,7 +2488,7 @@ fn place_tree(
     let scale = TREE_LINE_SCALE_MIN
         + hash01(seed.wrapping_add(7)) * (TREE_LINE_SCALE_MAX - TREE_LINE_SCALE_MIN);
     let tint = if side < 0.0 {
-        [0.86f32, 0.90, 0.80]
+        [0.92f32, 0.82, 0.72]
     } else {
         [1.0, 1.06, 0.92]
     };
@@ -2430,6 +2500,7 @@ fn place_tree(
         scale,
         tint,
         pick_texture(TEX_LEAVES, seed),
+        side < 0.0,
     );
     append_model_caster(sink.shadow_caster_mesh, model, base, angle, scale);
     push_blob_quad(
@@ -2471,8 +2542,16 @@ fn push_blob_quad(mesh: &mut MeshData, center: Vec3, size: f32, alpha: f32) {
 
 #[derive(Debug, Clone, Copy)]
 enum ModelStyle {
-    Scenery { tint: [f32; 3], texture_hint: u32 },
-    Decor { kind: GroundDecor, seed: u32 },
+    Scenery {
+        tint: [f32; 3],
+        texture_hint: u32,
+        /// Dead, snowy and bare-branch trees use bark on every face.
+        wood_only: bool,
+    },
+    Decor {
+        kind: GroundDecor,
+        seed: u32,
+    },
 }
 
 /// A small palette of real cache texture IDs used when a model has no texture
@@ -2481,12 +2560,22 @@ enum ModelStyle {
 const TEX_LEAVES: &[u32] = &[8, 28, 30, 41, 60];
 const TEX_STONE: &[u32] = &[2, 10, 44, 45, 46, 47];
 const TEX_WOOD: &[u32] = &[5, 16, 22, 23];
+const TEX_BARK: &[u32] = &[5, 23];
 const TEX_FLOWERS: &[u32] = &[31, 40, 56];
 const TEX_ROOF: &[u32] = &[6, 50];
 
 fn pick_texture(pool: &[u32], seed: u32) -> u32 {
     let index = (hash01(seed) * pool.len() as f32) as usize;
     pool[index.min(pool.len() - 1)]
+}
+
+fn is_dead_tree(def: &ObjectDefinition) -> bool {
+    let name = def.name.to_lowercase();
+    [
+        "dead", "dying", "burnt", "charred", "bare", "snow", "winter",
+    ]
+    .iter()
+    .any(|needle| name.contains(needle))
 }
 
 fn scenery_texture_hint(def: &ObjectDefinition, foliage: bool) -> u32 {
@@ -2544,6 +2633,7 @@ pub fn model_dominant_texture(model: &Model) -> Option<u32> {
         .map(|(id, _)| id as u32)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn append_model_scaled_tinted(
     mesh: &mut MeshData,
     model: &Model,
@@ -2552,6 +2642,7 @@ fn append_model_scaled_tinted(
     scale: f32,
     tint: [f32; 3],
     texture_hint: u32,
+    wood_only: bool,
 ) {
     append_model_styled(
         mesh,
@@ -2559,7 +2650,11 @@ fn append_model_scaled_tinted(
         base,
         angle,
         scale,
-        ModelStyle::Scenery { tint, texture_hint },
+        ModelStyle::Scenery {
+            tint,
+            texture_hint,
+            wood_only,
+        },
     );
 }
 
@@ -2613,10 +2708,17 @@ fn append_model_styled(
     let (bounds_min, bounds_max) = model.bounds();
     let model_height = ((bounds_max[1] - bounds_min[1]).max(1) as f32 * scale).max(1.0);
     let wood_hint = pick_texture(
-        TEX_WOOD,
+        TEX_BARK,
         (base.x as u32)
             .wrapping_mul(0x9E37_79B9)
             .wrapping_add(base.z as u32),
+    );
+    let wood_only = matches!(
+        style,
+        ModelStyle::Scenery {
+            wood_only: true,
+            ..
+        }
     );
 
     for (face_idx, &[a, b, c]) in model.faces.iter().enumerate() {
@@ -2636,20 +2738,25 @@ fn append_model_styled(
                 );
         }
 
-        let mut texture_id = model
-            .face_textures
-            .as_ref()
-            .and_then(|t| t.get(face_idx))
-            .copied()
-            .map(|t| t as u32)
-            .filter(|&t| t < 256)
-            .or(dominant)
-            .unwrap_or_else(|| match style {
-                ModelStyle::Scenery { texture_hint, .. } => texture_hint,
-                ModelStyle::Decor { kind, seed } => decor_texture_hint(kind, seed),
-            });
-        let leaf_based = dominant.is_some_and(|id| TEX_LEAVES.contains(&id))
-            || matches!(style, ModelStyle::Scenery { texture_hint, .. } if TEX_LEAVES.contains(&texture_hint));
+        let mut texture_id = if wood_only {
+            wood_hint
+        } else {
+            model
+                .face_textures
+                .as_ref()
+                .and_then(|t| t.get(face_idx))
+                .copied()
+                .map(|t| t as u32)
+                .filter(|&t| t < 256)
+                .or(dominant)
+                .unwrap_or_else(|| match style {
+                    ModelStyle::Scenery { texture_hint, .. } => texture_hint,
+                    ModelStyle::Decor { kind, seed } => decor_texture_hint(kind, seed),
+                })
+        };
+        let leaf_based = !wood_only
+            && (dominant.is_some_and(|id| TEX_LEAVES.contains(&id))
+                || matches!(style, ModelStyle::Scenery { texture_hint, .. } if TEX_LEAVES.contains(&texture_hint)));
         if leaf_based && model_height > 300.0 {
             let centroid = (pa + pb + pc) / 3.0;
             let top = (centroid.y - base.y) / model_height;

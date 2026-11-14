@@ -1,6 +1,6 @@
 # Status
 
-Last updated: M5.21 HD water + MSAA + static sun shadows, 2026-11-14.
+Last updated: M5.22 imps/fairies, cache-soil lanes + chunk culling, 2026-11-14.
 
 ## Working
 
@@ -35,11 +35,10 @@ Last updated: M5.21 HD water + MSAA + static sun shadows, 2026-11-14.
   scattered critters are weak camps too (220 HP, 14 damage, 420 aggro). The two
   camps that accidentally used a table prop model now use creature models
   (General Graardor Jr. 27660 and Zilyana Jr. 27989).
-- Ground textures: stable world-space planar UVs keep patterns identifiable;
-  steep ground keeps its natural grass/dirt texture with contact darkening
-  instead of a vertically projected stone overlay, and two noise scales add
-  broad dirt patches and fine break-up over the tiling. Lane roads fade on
-  steep ground.
+- Ground textures: lush green-boosted grass, stable world-space planar UVs,
+  contact darkening instead of a projected cliff overlay, and two noise scales
+  for natural break-up. Lane roads use cache soil textures and are suppressed
+  under the river. Dead and snowy trees use bark on every face.
 - Presentation: HDR `Rgba16Float` scene target with a real bloom chain
   (bright pass, separable Gaussian, ACES tonemap), cache-native ground
   texture array with world-space UVs, two-sided lighting with a camera fill,
@@ -86,9 +85,10 @@ Last updated: M5.21 HD water + MSAA + static sun shadows, 2026-11-14.
 - Delivery: chest model 1249 with a gold ring while loaded; guard model 28019
   (Kree'arra Jr., the closest Armadylean model in this cache) at 1100 u/s.
   `--demo-delivery` verifies buy-away-from-base -> dispatch -> handover.
-- Lane: three-minion waves per lane every 25 s, spawned in a lane-relative
-  wedge (melee front, ranged behind, staggered super minion); minion AI,
-  tower targeting, inhibitor-gated nexus, victory/defeat.
+- Lane: three-minion waves per lane every 25 s, now composed of cache-native
+  imps (melee) and fairies (ranged), spawned in a lane-relative wedge with
+  parallel lane tracks and staggered spawn delays. Small team rings and
+  wider health bars read the two sides at a glance.
 - Inhibitors: destroyed inhibitors respawn after 120 s. While an enemy
   inhibitor is down, that lane's waves include a super minion (2.5x health,
   2x damage, 1.6x scale, gold minimap marker). Respawn re-shields the nexus.
@@ -153,7 +153,7 @@ Last updated: M5.21 HD water + MSAA + static sun shadows, 2026-11-14.
 
 ## Verified
 
-- `cargo test --workspace`: 39 tests pass (9 cache, 23 client, 7 sim).
+- `cargo test --workspace`: 40 tests pass (9 cache, 24 client, 7 sim).
 - `cargo clippy --workspace --all-targets`: no warnings.
 - 117HD Core runs at **60–68 fps at 1280×720** on the dev machine at timescale 1;
   shadow modes measured **67 fps (off)**, **68 fps (blob)**, **66 fps (map)**.
@@ -183,6 +183,9 @@ Last updated: M5.21 HD water + MSAA + static sun shadows, 2026-11-14.
   camera to stop depth flicker while moving.
 - Lane road: dirt-dominant, noise-warped 310-unit UVs remove the repeating
   cobble border while keeping the cache path sprite as a low-weight accent.
+- Chunk culling: 400 terrain + 212 model + 49 water chunks; release 1280×720
+  immediate-mode baseline is 69 fps with shadows + 4× MSAA, 77 fps at 1× MSAA,
+  and 82 fps with shadows off.
 - Fog run: visible enemies 7–13; dark fog mesh over unseen tiles.
 - Three-lane 20× run: victory states, towers/inhibitors/nexus live.
 - Jungle demo: camp killed, buff Might 58s.
@@ -194,7 +197,8 @@ Last updated: M5.21 HD water + MSAA + static sun shadows, 2026-11-14.
   draw-distance streaming**. Terrain still uses pre-baked ground sprites in
   `assets/osrs-ground` rather than cache-native ground-layer blending.
 - The post bloom is a cheap 8-tap screen-space glow, not a full HDR bloom chain.
-- Draw-distance streaming/LOD is still pending; the map remains a 5×5 block.
+- Static meshes are split into 16-tile chunks and frustum-culled, but there is
+  no distance LOD or streaming yet; the map remains a resident 5×5 block.
 - The shadow map covers dynamic units/structures/camps and large static props;
   small ground decorations still use cheap blob shadows. Chunked caster/LOD
   caching is pending.
@@ -232,6 +236,7 @@ Last updated: M5.21 HD water + MSAA + static sun shadows, 2026-11-14.
 5. Item selling/combining/passives and five champions with distinct kits.
 6. Server-authoritative fog, economy, and shop transactions.
 7. Deterministic 30 Hz sim tick in `crates/sim` + state hash.
+8. Engine performance follow-ups: see [ENGINE_ROADMAP.md](ENGINE_ROADMAP.md).
 
 ## Verification log
 
@@ -239,9 +244,9 @@ Last updated: M5.21 HD water + MSAA + static sun shadows, 2026-11-14.
   walkable, no corner cutting, simplification, bounds, LOS).
 - `cargo test -p rift-cache`: 9 tests (smart reads, chained smart, XTEA, HSL,
   group rejection, framemap/frame parse, sprite bounds, texture reference).
-- `cargo test -p rift-client`: 23 tests (5 items/layout, 2 font, 2 minimap,
+- `cargo test -p rift-client`: 24 tests (5 items/layout, 2 font, 2 minimap,
   3 hero-select layout/cycling, 2 portrait raster, 2 wave formation,
-  1 parallel lane offset, 4 scene/lighting, 2 shadow matrix/defaults).
+  2 lane offset/distance, 4 scene/lighting, 2 shadow matrix/defaults).
 - Shop demo: 6/6 items, dmg 45, HP 730/730, MP 260/260, speed 460, AP 45%,
   gold 300.
 - Base demo: 200/500 -> 410/500 HP; gold 8 -> 64.
@@ -276,6 +281,9 @@ Last updated: M5.21 HD water + MSAA + static sun shadows, 2026-11-14.
   camera to stop depth flicker while moving.
 - Lane road: dirt-dominant, noise-warped 310-unit UVs remove the repeating
   cobble border while keeping the cache path sprite as a low-weight accent.
+- Chunk culling: 400 terrain + 212 model + 49 water chunks; release 1280×720
+  immediate-mode baseline is 69 fps with shadows + 4× MSAA, 77 fps at 1× MSAA,
+  and 82 fps with shadows off.
 - Fog run: visible enemies 7–13; dark fog mesh over unseen tiles.
 - Three-lane 20× run: victory states, towers/inhibitors/nexus live.
 - Jungle demo: camp killed, buff Might 58s.

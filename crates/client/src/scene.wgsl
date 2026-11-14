@@ -224,9 +224,6 @@ fn albedo(input: VsOut) -> vec3<f32> {
     var c = input.color.rgb;
     if (input.material == 5u) {
         let tex = sample_model_texture(input);
-        if (is_leaf_texture(input.texture_id) && tex.a < 0.35) {
-            discard;
-        }
         return tex.rgb * input.color.rgb;
     }
     if (input.material == 4u) {
@@ -235,7 +232,11 @@ fn albedo(input: VsOut) -> vec3<f32> {
         // instead and only used to blend in cliff detail.
         let slope = clamp(input.uv.x, 0.0, 1.0);
         let uv = input.world.xz / 384.0;
-        let grass = textureSample(terrain_textures, terrain_sampler, uv, 0).rgb;
+        let grass_raw = textureSample(terrain_textures, terrain_sampler, uv, 0).rgb;
+        // Push the base grass toward a cooler, more saturated green. The
+        // stock sprite has a lot of yellow in it, which reads dry under the
+        // warm Karamja sun.
+        let grass = grass_raw * vec3<f32>(0.78, 1.38, 0.68);
         let dirt = textureSample(terrain_textures, terrain_sampler, uv, 1).rgb;
         let stone = textureSample(terrain_textures, terrain_sampler, uv, 2).rgb;
         let sand = textureSample(terrain_textures, terrain_sampler, uv, 3).rgb;
@@ -269,24 +270,27 @@ fn albedo(input: VsOut) -> vec3<f32> {
         tex *= 1.0 - steep * 0.16;
 
         // Roads fade out on steep ground instead of stretching up cliffs.
-        let lane = clamp(input.color.a, 0.0, 1.0) * (1.0 - smoothstep(0.08, 0.30, slope));
+        let water_mask = clamp(input.uv.y, 0.0, 1.0);
+        let lane = clamp(input.color.a, 0.0, 1.0)
+            * (1.0 - smoothstep(0.08, 0.30, slope))
+            * (1.0 - smoothstep(0.02, 0.35, water_mask));
         if (lane > 0.002) {
-            // The dirt layer is the dominant road surface. The cobbled path
-            // sprite is only a low-weight gravel accent, which hides its dark
-            // repeating border and keeps the lane from looking like a pasted
-            // tile. A large, slowly warped UV scale breaks the grid further.
-            let road_uv = input.world.xz / 310.0;
+            // The road is the cache's brown soil textures rather than the
+            // cobbled path sprite. Two scales and a slow warp keep the dirt
+            // continuous and natural, with no repeating dark border.
+            let road_uv = input.world.xz / 240.0;
             let warp = vec2<f32>(
-                noise2(input.world.xz / 520.0),
-                noise2(input.world.zx / 610.0 + 31.0)
-            ) * 0.045;
-            let road = textureSample(
-                terrain_textures, terrain_sampler, road_uv + warp, 1
+                noise2(input.world.xz / 500.0),
+                noise2(input.world.zx / 590.0 + 31.0)
+            ) * 0.035;
+            let soil = textureSample(
+                model_textures, model_sampler, road_uv + warp, 32
             ).rgb;
-            let gravel = textureSample(
-                terrain_textures, terrain_sampler, road_uv * 0.72 + warp, 5
+            let dark_soil = textureSample(
+                model_textures, model_sampler, road_uv * 0.63 - warp * 0.7, 11
             ).rgb;
-            tex = mix(tex, mix(road, gravel, 0.22), lane * 0.94);
+            let road = mix(soil, dark_soil, 0.38);
+            tex = mix(tex, road * (0.90 + c * 0.35), lane * 0.96);
         }
 
         // A second, much larger noise scale lays broad dirt patches over the

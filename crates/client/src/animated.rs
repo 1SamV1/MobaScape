@@ -475,21 +475,23 @@ impl AnimatedScene {
             find_nexus(&units, 1).unwrap_or(scene.player_spawn),
         ];
 
+        // OSRS imp (melee) and fairy (ranged). The smaller imp models need a
+        // larger scale to read at MOBA camera distance; fairies are taller.
         let melee_template = MinionTemplate {
-            model: load_model(cache, 2944)?,
-            idle: AnimationClip::load(cache, 262)?,
-            walk: AnimationClip::load(cache, 259)?,
+            model: load_model(cache, 19982)?,
+            idle: AnimationClip::load(cache, 171)?,
+            walk: AnimationClip::load(cache, 168)?,
             health: 90.0,
             range: 100.0,
             damage: 7.0,
             interval: 1.0,
             speed: 400.0,
-            scale: 1.15,
+            scale: 3.6,
         };
         let ranged_template = MinionTemplate {
-            model: load_model(cache, 21193)?,
-            idle: AnimationClip::load(cache, 5483)?,
-            walk: AnimationClip::load(cache, 5479)?,
+            model: load_model(cache, 2857)?,
+            idle: AnimationClip::load(cache, 112)?,
+            walk: AnimationClip::load(cache, 106)?,
             health: 65.0,
             range: 380.0,
             damage: 9.0,
@@ -823,6 +825,34 @@ impl AnimatedScene {
             .iter()
             .find(|u| u.kind == UnitKind::Nexus && u.team == team)
             .map(|u| (u.health, u.max_health))
+    }
+
+    /// Diagnostic snapshot used during lane-pathing investigations.
+    pub fn debug_minion_states(&self) -> Vec<String> {
+        self.units
+            .iter()
+            .filter(|unit| unit.kind.is_minion() && unit.health > 0.0)
+            .map(|unit| {
+                let dist = unit
+                    .lane
+                    .get(unit.lane_index)
+                    .map(|waypoint| unit.pos.distance(*waypoint))
+                    .unwrap_or(0.0);
+                format!(
+                    "t{} wp{}/{} pos({:.0},{:.0}) spd{:.0} d{:.0} moving={} target={:?} delay={:.1}",
+                    unit.team,
+                    unit.lane_index,
+                    unit.lane.len(),
+                    unit.pos.x / 128.0,
+                    unit.pos.z / 128.0,
+                    unit.speed,
+                    dist,
+                    unit.moving,
+                    unit.attack_target,
+                    unit.spawn_delay
+                )
+            })
+            .collect()
     }
 
     pub fn minion_count(&self) -> usize {
@@ -1205,8 +1235,8 @@ impl AnimatedScene {
                     "RED NEXUS".to_string()
                 }
             }
-            UnitKind::MeleeMinion => "MELEE MINION".to_string(),
-            UnitKind::RangedMinion => "RANGED MINION".to_string(),
+            UnitKind::MeleeMinion => "IMP".to_string(),
+            UnitKind::RangedMinion => "FAIRY".to_string(),
             UnitKind::Dummy => "TRAINING DUMMY".to_string(),
             UnitKind::Ambient => "AMBIENT NPC".to_string(),
             UnitKind::Watchtower => {
@@ -1772,7 +1802,10 @@ impl AnimatedScene {
         speed_mult: f32,
     ) {
         let unit = &mut self.units[index];
-        let delta = target - unit.pos;
+        // Lateral lane offsets sit at different terrain heights from the
+        // original waypoint; always move in the XZ plane and let the height
+        // grid place the unit afterwards.
+        let delta = planar_delta(unit.pos, target);
         let distance = delta.length();
         if distance < 4.0 {
             unit.moving = false;
@@ -1802,7 +1835,7 @@ impl AnimatedScene {
             return;
         }
         let waypoint = unit.lane[unit.lane_index];
-        let delta = waypoint - unit.pos;
+        let delta = planar_delta(unit.pos, waypoint);
         let distance = delta.length();
         if distance < 10.0 {
             unit.lane_index += 1;
@@ -2284,8 +2317,14 @@ impl AnimatedScene {
                 attack_interval: template.interval,
                 speed,
                 spawn_delay,
-                hit_radius: if super_minion { 120.0 } else { 90.0 },
-                bar_height: if super_minion { 220.0 } else { 170.0 },
+                hit_radius: if super_minion {
+                    140.0
+                } else if ranged {
+                    90.0
+                } else {
+                    105.0
+                },
+                bar_height: if super_minion { 450.0 } else { 330.0 },
                 lane: unit_lane.clone(),
                 lane_index: 1.min(unit_lane.len()),
                 respawn_time: 0.0,
@@ -2476,6 +2515,28 @@ impl AnimatedScene {
         let player = &self.units[self.player_index];
         if player.health > 0.0 {
             append_ring(self, height, player.pos, 95.0, [90, 180, 255]);
+        }
+
+        // Small team-coloured rings under lane imps/fairies mirror the Dota
+        // style reference and make the two sides readable at a glance.
+        let minion_rings = self
+            .units
+            .iter()
+            .filter(|u| u.visible && u.kind.is_minion() && u.health > 0.0)
+            .map(|u| (u.pos, u.team))
+            .collect::<Vec<_>>();
+        for (pos, team) in minion_rings {
+            append_ring(
+                self,
+                height,
+                pos,
+                46.0,
+                if team == 0 {
+                    [90, 160, 255]
+                } else {
+                    [255, 90, 80]
+                },
+            );
         }
 
         let structure_rings = self
@@ -2743,6 +2804,14 @@ fn offset_lane(lane: &[Vec3], offset: f32) -> Vec<Vec3> {
     out
 }
 
+/// Horizontal (XZ) delta between two world positions. Lane offsets sit at
+/// slightly different terrain heights than their source waypoints, so a
+/// 3D distance can never fall below the waypoint threshold and leaves units
+/// oscillating in place.
+fn planar_delta(from: Vec3, to: Vec3) -> Vec3 {
+    Vec3::new(to.x - from.x, 0.0, to.z - from.z)
+}
+
 fn follow_path(unit: &mut AnimatedUnit, dt: f32, height: &HeightGrid, speed_mult: f32) {
     let mut budget = unit.speed * speed_mult * dt;
     unit.moving = false;
@@ -2819,6 +2888,18 @@ fn append_unit(scene: &mut AnimatedScene, unit: &AnimatedUnit, positions: &[[f32
         } else {
             hsl_to_rgb(unit.model.face_colors[face_idx], 1.0)
         };
+        if unit.kind.is_minion() {
+            let tint = if unit.team == 0 {
+                [0.80f32, 0.95, 1.25]
+            } else {
+                [1.25, 0.85, 0.80]
+            };
+            rgb = [
+                (rgb[0] as f32 * tint[0]).clamp(0.0, 255.0) as u8,
+                (rgb[1] as f32 * tint[1]).clamp(0.0, 255.0) as u8,
+                (rgb[2] as f32 * tint[2]).clamp(0.0, 255.0) as u8,
+            ];
+        }
         if matches!(unit.kind, UnitKind::Nexus | UnitKind::Inhibitor) && unit.team == 1 {
             rgb[0] = rgb[0].saturating_add(90);
             rgb[1] = (rgb[1] as f32 * 0.5) as u8;
@@ -3043,6 +3124,15 @@ mod tests {
             .expect("super minion")
             .0;
         assert!(super_pos.z > nexus.z + 128.0);
+    }
+
+    #[test]
+    fn planar_delta_ignores_height() {
+        let from = Vec3::new(100.0, 50.0, 200.0);
+        let to = Vec3::new(100.0, 900.0, 260.0);
+        let delta = planar_delta(from, to);
+        assert_eq!(delta.y, 0.0);
+        assert!((delta.length() - 60.0).abs() < 1e-4);
     }
 
     #[test]
