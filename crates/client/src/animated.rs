@@ -263,10 +263,10 @@ impl AnimatedScene {
                 spawn.scale,
                 UnitKind::Camp,
                 2,
-                220.0,
                 150.0,
-                14.0,
-                1.5,
+                150.0,
+                9.0,
+                1.7,
                 260.0,
                 160.0,
                 260.0,
@@ -2425,32 +2425,34 @@ impl AnimatedScene {
                     && !matches!(unit.kind, UnitKind::DeliveryGuard | UnitKind::StorageChest)
             })
             .map(|unit| {
-                let width = match unit.kind {
-                    UnitKind::Nexus => 190.0,
-                    UnitKind::Tower => 150.0,
-                    UnitKind::Player => 150.0,
-                    _ => 55.0,
-                } * (unit.scale / 2.8).clamp(0.7, 1.5);
+                let (width, height) = match unit.kind {
+                    UnitKind::Nexus => (190.0 * (unit.scale / 2.8).clamp(0.7, 1.5), 14.0),
+                    UnitKind::Tower => (150.0 * (unit.scale / 2.8).clamp(0.7, 1.5), 14.0),
+                    UnitKind::Player => (160.0, 16.0),
+                    UnitKind::Camp => (145.0 * (unit.scale / 1.4).clamp(0.9, 1.3), 20.0),
+                    _ => (55.0, 12.0),
+                };
                 (
                     unit.pos + Vec3::Y * unit.bar_height,
                     width,
+                    height,
                     (unit.health / unit.max_health).clamp(0.0, 1.0),
                     if unit.team == 0 {
                         [95u8, 225, 120]
                     } else if unit.team == 2 {
-                        [235u8, 185, 65]
+                        [242u8, 64, 52]
                     } else {
                         [235u8, 70, 60]
                     },
                 )
             })
             .collect::<Vec<_>>();
-        for (center, width, fill, color) in bars {
+        for (center, width, height, fill, color) in bars {
             append_bar(
                 self,
                 center,
                 width,
-                14.0,
+                height,
                 fill,
                 color,
                 camera_right,
@@ -2900,6 +2902,10 @@ fn append_bar(
     up: Vec3,
     forward: Vec3,
 ) {
+    // Pull the whole bar several units toward the camera. The previous 1.5u
+    // fill offset was below the depth-buffer epsilon at MOBA camera distance,
+    // which made the fill flicker against its background while units moved.
+    let center = center + forward * 12.0;
     let bg = [18u8, 18, 20];
     append_quad(
         scene,
@@ -2908,7 +2914,7 @@ fn append_bar(
         up * (height * 0.5),
         bg,
     );
-    let fill_center = center + forward * 1.5 + right * (-width * 0.5 + width * fill * 0.5);
+    let fill_center = center + forward * 6.0 + right * (-width * 0.5 + width * fill * 0.5);
     append_quad(
         scene,
         fill_center,
