@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -11,8 +12,6 @@ use crate::model_textures::ModelTextures;
 use crate::scene::{Atmosphere, HeightGrid, MeshData, SceneData, SceneVertex, srgb_to_linear};
 use crate::terrain_textures::TerrainTextures;
 use crate::ui_assets::UiAtlas;
-
-const MSAA_SAMPLES: u32 = 4;
 
 #[repr(C)]
 #[derive(Copy, Clone, Default, bytemuck::Pod, bytemuck::Zeroable)]
@@ -158,6 +157,146 @@ impl GpuMesh {
             index_count: mesh.indices.len() as u32,
         }
     }
+
+    fn draw(&self, pass: &mut wgpu::RenderPass<'_>) {
+        if self.index_count == 0 {
+            return;
+        }
+        pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+        pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+        pass.draw_indexed(0..self.index_count, 0, 0..1);
+    }
+}
+
+/// A world-space AABB chunk of a static mesh. Large triangles that span
+/// multiple chunks (the distant backdrop) live in an always-visible bucket.
+struct MeshChunk {
+    mesh: GpuMesh,
+    min: Vec3,
+    max: Vec3,
+    always: bool,
+}
+
+struct ChunkedMesh {
+    chunks: Vec<MeshChunk>,
+}
+
+impl ChunkedMesh {
+    fn upload(device: &wgpu::Device, mesh: &MeshData, chunk_size: f32, label: &str) -> Self {
+        let mut buckets: HashMap<(i32, i32), MeshData> = HashMap::new();
+        let mut always = MeshData::new();
+
+        for triangle in mesh.indices.chunks_exact(3) {
+            let a = mesh.vertices[triangle[0] as usize];
+            let b = mesh.vertices[triangle[1] as usize];
+            let c = mesh.vertices[triangle[2] as usize];
+            let pa = Vec3::from_array(a.position);
+            let pb = Vec3::from_array(b.position);
+            let pc = Vec3::from_array(c.position);
+            let centroid = (pa + pb + pc) / 3.0;
+            let min = pa.min(pb).min(pc);
+            let max = pa.max(pb).max(pc);
+            let extent = max - min;
+            if extent.x > chunk_size * 2.0
+                || extent.z > chunk_size * 2.0
+                || extent.y > chunk_size * 8.0
+            {
+                always.push_triangle(a, b, c);
+                continue;
+            }
+            let key = (
+                (centroid.x / chunk_size).floor() as i32,
+                (centroid.z / chunk_size).floor() as i32,
+            );
+            buckets.entry(key).or_default().push_triangle(a, b, c);
+        }
+
+        let mut chunks = Vec::with_capacity(buckets.len() + 1);
+        for (key, bucket) in buckets {
+            let (min, max) = mesh_bounds(&bucket);
+            chunks.push(MeshChunk {
+                mesh: GpuMesh::upload(device, &bucket, &format!("{label} chunk {key:?}")),
+                min,
+                max,
+                always: false,
+            });
+        }
+        if !always.indices.is_empty() {
+            let (min, max) = mesh_bounds(&always);
+            chunks.push(MeshChunk {
+                mesh: GpuMesh::upload(device, &always, &format!("{label} overlay")),
+                min,
+                max,
+                always: true,
+            });
+        }
+        tracing::info!(
+            "{label}: {} chunks, {} triangles",
+            chunks.len(),
+            mesh.indices.len() / 3
+        );
+        Self { chunks }
+    }
+
+    fn draw(&self, pass: &mut wgpu::RenderPass<'_>, frustum: &Frustum) {
+        for chunk in &self.chunks {
+            if chunk.always || frustum.intersects_aabb(chunk.min, chunk.max) {
+                chunk.mesh.draw(pass);
+            }
+        }
+    }
+}
+
+fn mesh_bounds(mesh: &MeshData) -> (Vec3, Vec3) {
+    let mut min = Vec3::splat(f32::INFINITY);
+    let mut max = Vec3::splat(f32::NEG_INFINITY);
+    for vertex in &mesh.vertices {
+        let p = Vec3::from_array(vertex.position);
+        min = min.min(p);
+        max = max.max(p);
+    }
+    (min, max)
+}
+
+/// Six view-frustum planes extracted from a WebGPU (0..1 depth) view-projection.
+struct Frustum {
+    planes: [Vec4; 6],
+}
+
+impl Frustum {
+    fn from_view_proj(view_proj: Mat4) -> Self {
+        let r0 = view_proj.row(0);
+        let r1 = view_proj.row(1);
+        let r2 = view_proj.row(2);
+        let r3 = view_proj.row(3);
+        Self {
+            planes: [r3 + r0, r3 - r0, r3 + r1, r3 - r1, r2, r3 - r2].map(normalize_plane),
+        }
+    }
+
+    fn intersects_aabb(&self, min: Vec3, max: Vec3) -> bool {
+        for plane in &self.planes {
+            let p = Vec3::new(
+                if plane.x >= 0.0 { max.x } else { min.x },
+                if plane.y >= 0.0 { max.y } else { min.y },
+                if plane.z >= 0.0 { max.z } else { min.z },
+            );
+            if plane.x * p.x + plane.y * p.y + plane.z * p.z + plane.w < 0.0 {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+fn normalize_plane(plane: Vec4) -> Vec4 {
+    let normal = Vec3::new(plane.x, plane.y, plane.z);
+    let length = normal.length();
+    if length <= 1e-6 {
+        plane
+    } else {
+        plane / length
+    }
 }
 
 pub struct Renderer {
@@ -183,6 +322,7 @@ pub struct Renderer {
     _scene_color_texture: wgpu::Texture,
     scene_msaa_view: wgpu::TextureView,
     _scene_msaa_texture: wgpu::Texture,
+    msaa_samples: u32,
     bloom_bright_pipeline: wgpu::RenderPipeline,
     bloom_blur_pipeline: wgpu::RenderPipeline,
     bloom_bright_bind_group_layout: wgpu::BindGroupLayout,
@@ -210,11 +350,11 @@ pub struct Renderer {
     shadow_mode: u32,
     shadow_tick: u32,
     depth_view: wgpu::TextureView,
-    terrain: GpuMesh,
-    models: GpuMesh,
-    water: GpuMesh,
-    static_shadows: GpuMesh,
-    static_casters: GpuMesh,
+    terrain: ChunkedMesh,
+    models: ChunkedMesh,
+    water: ChunkedMesh,
+    static_shadows: ChunkedMesh,
+    static_casters: ChunkedMesh,
     caster_vertex_buffer: wgpu::Buffer,
     caster_index_buffer: wgpu::Buffer,
     caster_vertex_capacity: usize,
@@ -244,9 +384,12 @@ impl Renderer {
         window: Arc<Window>,
         scene: &SceneData,
         initial_camera: Camera,
+        present_mode: wgpu::PresentMode,
+        msaa_samples: u32,
         model_textures: ModelTextures,
         ui_atlas: Arc<UiAtlas>,
     ) -> Result<Self> {
+        let msaa_samples = if msaa_samples >= 4 { 4 } else { 1 };
         let size = window.inner_size();
         let width = size.width.max(1);
         let height = size.height.max(1);
@@ -284,6 +427,11 @@ impl Renderer {
             .copied()
             .find(|f| f.is_srgb())
             .unwrap_or(caps.formats[0]);
+        let present_mode = if caps.present_modes.contains(&present_mode) {
+            present_mode
+        } else {
+            wgpu::PresentMode::Fifo
+        };
 
         let scene_format = wgpu::TextureFormat::Rgba16Float;
 
@@ -293,7 +441,7 @@ impl Renderer {
             color_space: wgpu::SurfaceColorSpace::Auto,
             width,
             height,
-            present_mode: wgpu::PresentMode::Fifo,
+            present_mode,
             alpha_mode: caps.alpha_modes[0],
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
@@ -697,7 +845,7 @@ impl Renderer {
                 bias: wgpu::DepthBiasState::default(),
             }),
             multisample: wgpu::MultisampleState {
-                count: MSAA_SAMPLES,
+                count: msaa_samples,
                 ..Default::default()
             },
             multiview_mask: None,
@@ -744,7 +892,7 @@ impl Renderer {
                 bias: wgpu::DepthBiasState::default(),
             }),
             multisample: wgpu::MultisampleState {
-                count: MSAA_SAMPLES,
+                count: msaa_samples,
                 ..Default::default()
             },
             multiview_mask: None,
@@ -864,7 +1012,7 @@ impl Renderer {
                 bias: wgpu::DepthBiasState::default(),
             }),
             multisample: wgpu::MultisampleState {
-                count: MSAA_SAMPLES,
+                count: msaa_samples,
                 ..Default::default()
             },
             multiview_mask: None,
@@ -915,7 +1063,7 @@ impl Renderer {
                 },
             }),
             multisample: wgpu::MultisampleState {
-                count: MSAA_SAMPLES,
+                count: msaa_samples,
                 ..Default::default()
             },
             multiview_mask: None,
@@ -1053,7 +1201,7 @@ impl Renderer {
         let (scene_color_texture, scene_color_view) =
             create_hdr_target(&device, width, height, "hdr scene");
         let (scene_msaa_texture, scene_msaa_view) =
-            create_msaa_target(&device, width, height, "hdr scene msaa");
+            create_msaa_target(&device, width, height, msaa_samples, "hdr scene msaa");
         let (bloom_half_texture, bloom_half_view) =
             create_hdr_target(&device, 640, 360, "bloom half");
         let (bloom_temp_texture, bloom_temp_view) =
@@ -1136,12 +1284,15 @@ impl Renderer {
             &post_sampler,
         );
 
-        let depth_view = create_depth_view(&device, width, height);
-        let terrain = GpuMesh::upload(&device, &scene.terrain, "terrain");
-        let models = GpuMesh::upload(&device, &scene.models, "models");
-        let water = GpuMesh::upload(&device, &scene.water, "water");
-        let static_shadows = GpuMesh::upload(&device, &scene.shadows, "static shadows");
-        let static_casters = GpuMesh::upload(&device, &scene.shadow_casters, "static casters");
+        let depth_view = create_depth_view(&device, width, height, msaa_samples);
+        let chunk_size = 16.0 * 128.0;
+        let terrain = ChunkedMesh::upload(&device, &scene.terrain, chunk_size, "terrain");
+        let models = ChunkedMesh::upload(&device, &scene.models, chunk_size, "models");
+        let water = ChunkedMesh::upload(&device, &scene.water, chunk_size, "water");
+        let static_shadows =
+            ChunkedMesh::upload(&device, &scene.shadows, chunk_size, "static shadows");
+        let static_casters =
+            ChunkedMesh::upload(&device, &scene.shadow_casters, chunk_size, "static casters");
 
         let dynamic_vertex_capacity = 1024;
         let dynamic_index_capacity = 3072;
@@ -1226,6 +1377,7 @@ impl Renderer {
             _scene_color_texture: scene_color_texture,
             scene_msaa_view,
             _scene_msaa_texture: scene_msaa_texture,
+            msaa_samples,
             bloom_bright_pipeline,
             bloom_blur_pipeline,
             bloom_bright_bind_group_layout,
@@ -1294,12 +1446,17 @@ impl Renderer {
         self.config.width = width;
         self.config.height = height;
         self.surface.configure(&self.device, &self.config);
-        self.depth_view = create_depth_view(&self.device, width, height);
+        self.depth_view = create_depth_view(&self.device, width, height, self.msaa_samples);
         let (texture, view) = create_hdr_target(&self.device, width, height, "hdr scene");
         self._scene_color_texture = texture;
         self.scene_color_view = view;
-        let (msaa_texture, msaa_view) =
-            create_msaa_target(&self.device, width, height, "hdr scene msaa");
+        let (msaa_texture, msaa_view) = create_msaa_target(
+            &self.device,
+            width,
+            height,
+            self.msaa_samples,
+            "hdr scene msaa",
+        );
         self._scene_msaa_texture = msaa_texture;
         self.scene_msaa_view = msaa_view;
         self.bloom_bright_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -1659,14 +1816,10 @@ impl Renderer {
             // Large static props (trees, ruins, pocket buildings) cast into
             // the same camera-relative map as units. Decorations stay on blob
             // shadows because their contribution is invisible at this scale.
-            if self.static_casters.index_count > 0 {
-                shadow_pass.set_vertex_buffer(0, self.static_casters.vertex_buffer.slice(..));
-                shadow_pass.set_index_buffer(
-                    self.static_casters.index_buffer.slice(..),
-                    wgpu::IndexFormat::Uint32,
-                );
-                shadow_pass.draw_indexed(0..self.static_casters.index_count, 0, 0..1);
-            }
+            let shadow_frustum = Frustum::from_view_proj(Mat4::from_cols_array_2d(
+                &self.scene_globals.light_view_proj,
+            ));
+            self.static_casters.draw(&mut shadow_pass, &shadow_frustum);
             if self.caster_index_count > 0 {
                 shadow_pass.set_vertex_buffer(0, self.caster_vertex_buffer.slice(..));
                 shadow_pass.set_index_buffer(
@@ -1678,12 +1831,23 @@ impl Renderer {
         }
 
         {
+            let use_msaa = self.msaa_samples > 1;
+            let color_view = if use_msaa {
+                &self.scene_msaa_view
+            } else {
+                &self.scene_color_view
+            };
+            let resolve_target = if use_msaa {
+                Some(&self.scene_color_view)
+            } else {
+                None
+            };
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("scene pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &self.scene_msaa_view,
+                    view: color_view,
                     depth_slice: None,
-                    resolve_target: Some(&self.scene_color_view),
+                    resolve_target,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
                             r: 0.58,
@@ -1691,7 +1855,11 @@ impl Renderer {
                             b: 0.82,
                             a: 1.0,
                         }),
-                        store: wgpu::StoreOp::Discard,
+                        store: if use_msaa {
+                            wgpu::StoreOp::Discard
+                        } else {
+                            wgpu::StoreOp::Store
+                        },
                     },
                 })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
@@ -1713,23 +1881,15 @@ impl Renderer {
 
             pass.set_pipeline(&self.scene_pipeline);
             pass.set_bind_group(0, &self.bind_group, &[]);
-            for mesh in [&self.terrain, &self.models] {
-                if mesh.index_count == 0 {
-                    continue;
-                }
-                pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
-                pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-                pass.draw_indexed(0..mesh.index_count, 0, 0..1);
-            }
-            if self.water.index_count > 0 {
-                pass.set_pipeline(&self.water_pipeline);
-                pass.set_bind_group(0, &self.bind_group, &[]);
-                pass.set_vertex_buffer(0, self.water.vertex_buffer.slice(..));
-                pass.set_index_buffer(self.water.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-                pass.draw_indexed(0..self.water.index_count, 0, 0..1);
-                pass.set_pipeline(&self.scene_pipeline);
-                pass.set_bind_group(0, &self.bind_group, &[]);
-            }
+            let scene_frustum =
+                Frustum::from_view_proj(Mat4::from_cols_array_2d(&self.scene_globals.view_proj));
+            self.terrain.draw(&mut pass, &scene_frustum);
+            self.models.draw(&mut pass, &scene_frustum);
+            pass.set_pipeline(&self.water_pipeline);
+            pass.set_bind_group(0, &self.bind_group, &[]);
+            self.water.draw(&mut pass, &scene_frustum);
+            pass.set_pipeline(&self.scene_pipeline);
+            pass.set_bind_group(0, &self.bind_group, &[]);
             if self.dynamic_index_count > 0 {
                 pass.set_vertex_buffer(0, self.dynamic_vertex_buffer.slice(..));
                 pass.set_index_buffer(
@@ -1738,18 +1898,11 @@ impl Renderer {
                 );
                 pass.draw_indexed(0..self.dynamic_index_count, 0, 0..1);
             }
-            if self.static_shadows.index_count > 0 || self.shadow_index_count > 0 {
+            if !self.static_shadows.chunks.is_empty() || self.shadow_index_count > 0 {
                 pass.set_pipeline(&self.blob_pipeline);
                 pass.set_bind_group(0, &self.bind_group, &[]);
             }
-            if self.static_shadows.index_count > 0 {
-                pass.set_vertex_buffer(0, self.static_shadows.vertex_buffer.slice(..));
-                pass.set_index_buffer(
-                    self.static_shadows.index_buffer.slice(..),
-                    wgpu::IndexFormat::Uint32,
-                );
-                pass.draw_indexed(0..self.static_shadows.index_count, 0, 0..1);
-            }
+            self.static_shadows.draw(&mut pass, &scene_frustum);
             if self.shadow_index_count > 0 {
                 pass.set_vertex_buffer(0, self.shadow_vertex_buffer.slice(..));
                 pass.set_index_buffer(
@@ -1923,6 +2076,7 @@ fn create_msaa_target(
     device: &wgpu::Device,
     width: u32,
     height: u32,
+    sample_count: u32,
     label: &str,
 ) -> (wgpu::Texture, wgpu::TextureView) {
     let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -1933,7 +2087,7 @@ fn create_msaa_target(
             depth_or_array_layers: 1,
         },
         mip_level_count: 1,
-        sample_count: MSAA_SAMPLES,
+        sample_count,
         dimension: wgpu::TextureDimension::D2,
         format: wgpu::TextureFormat::Rgba16Float,
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -2025,7 +2179,12 @@ fn create_post_bind_group(
     })
 }
 
-fn create_depth_view(device: &wgpu::Device, width: u32, height: u32) -> wgpu::TextureView {
+fn create_depth_view(
+    device: &wgpu::Device,
+    width: u32,
+    height: u32,
+    sample_count: u32,
+) -> wgpu::TextureView {
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("depth"),
         size: wgpu::Extent3d {
@@ -2034,7 +2193,7 @@ fn create_depth_view(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Te
             depth_or_array_layers: 1,
         },
         mip_level_count: 1,
-        sample_count: MSAA_SAMPLES,
+        sample_count,
         dimension: wgpu::TextureDimension::D2,
         format: wgpu::TextureFormat::Depth32Float,
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,

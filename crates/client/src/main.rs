@@ -104,6 +104,12 @@ struct Cli {
     /// Shadows: off, blob, or map.
     #[arg(long, default_value = "map")]
     shadows: String,
+    /// Present mode: fifo (vsync), immediate (uncapped), or mailbox.
+    #[arg(long, default_value = "fifo")]
+    present_mode: String,
+    /// Scene MSAA: 1 (off) or 4 (default).
+    #[arg(long, default_value_t = 4)]
+    msaa: u32,
     /// Simulation speed multiplier for verification.
     #[arg(long, default_value_t = 1.0)]
     timescale: f32,
@@ -248,6 +254,8 @@ fn main() -> Result<()> {
         graphics_classic: cli.graphics.eq_ignore_ascii_case("classic"),
         debug_view: parse_debug_view(&cli.debug_view),
         shadow_mode: cli.shadows.clone(),
+        present_mode: cli.present_mode.clone(),
+        msaa: cli.msaa,
         app_time: 0.0,
         lane_log_timer: 0.0,
         last_frame: Instant::now(),
@@ -317,6 +325,8 @@ struct App {
     graphics_classic: bool,
     debug_view: u32,
     shadow_mode: String,
+    present_mode: String,
+    msaa: u32,
     app_time: f32,
     lane_log_timer: f32,
     last_frame: Instant,
@@ -357,6 +367,8 @@ impl ApplicationHandler for App {
             window.clone(),
             &scene,
             camera,
+            parse_present_mode(&self.present_mode),
+            self.msaa,
             model_textures,
             self.hud.atlas.clone(),
         )) {
@@ -1036,6 +1048,7 @@ impl App {
             self.lane_log_timer += dt;
             if self.lane_log_timer >= 5.0 {
                 self.lane_log_timer = 0.0;
+                tracing::debug!("minion states: {:?}", animated.debug_minion_states());
                 tracing::info!(
                     "lane: minions={} supers={} visible_enemies={} towers0={:?} towers1={:?} inhib0={:?} inhib1={:?} nexus0={:?} nexus1={:?} vulnerable0={} vulnerable1={}",
                     animated.minion_count(),
@@ -1709,6 +1722,14 @@ fn has_demo_flags(cli: &Cli) -> bool {
 fn log_event(events: &mut Vec<String>, message: String) {
     events.insert(0, message);
     events.truncate(5);
+}
+
+fn parse_present_mode(name: &str) -> wgpu::PresentMode {
+    match name.to_ascii_lowercase().as_str() {
+        "immediate" => wgpu::PresentMode::Immediate,
+        "mailbox" => wgpu::PresentMode::Mailbox,
+        _ => wgpu::PresentMode::Fifo,
+    }
 }
 
 fn parse_shadow_mode(name: &str) -> u32 {
