@@ -127,6 +127,75 @@ pub struct AnimationClip {
 }
 
 impl AnimationClip {
+    /// Duration of one pass through the clip in milliseconds.
+    pub fn loop_ms(&self) -> f32 {
+        self.sequence
+            .frame_lengths
+            .iter()
+            .map(|&length| length.max(1) as f32 * 20.0)
+            .sum::<f32>()
+            .max(1.0)
+    }
+
+    /// Damp the sideways component of every rotation key. Rotations around
+    /// the cache X axis are left alone so limbs still swing forward and back;
+    /// the Y/Z components are the torso twist and side lean that can look
+    /// extreme on large models.
+    pub fn damp_side_rotation(&mut self, factor: f32) {
+        let factor = factor.clamp(0.0, 1.0);
+        for frame in &mut self.frames {
+            let Some(framemap) = self
+                .framemaps
+                .iter()
+                .find(|framemap| framemap.id == frame.framemap_id as u32)
+            else {
+                continue;
+            };
+            for (index, &group) in frame.index_frame_ids.iter().enumerate() {
+                if framemap.types.get(group as usize).copied() != Some(2) {
+                    continue;
+                }
+                frame.translator_y[index] = (frame.translator_y[index] as f32 * factor) as i32;
+                frame.translator_z[index] = (frame.translator_z[index] as f32 * factor) as i32;
+            }
+        }
+    }
+
+    /// Scale translation and rotation keys whose frame-map targets lie
+    /// entirely inside `groups`. Used to freeze a character's arm swing while
+    /// leaving the torso, head and legs on the same clip.
+    pub fn scale_group_transforms(&mut self, groups: &[u8], factor: f32) {
+        let factor = factor.clamp(0.0, 1.0);
+        for frame in &mut self.frames {
+            let Some(framemap) = self
+                .framemaps
+                .iter()
+                .find(|framemap| framemap.id == frame.framemap_id as u32)
+            else {
+                continue;
+            };
+            for (index, &group) in frame.index_frame_ids.iter().enumerate() {
+                let Some(mapped) = framemap.frame_maps.get(group as usize) else {
+                    continue;
+                };
+                if mapped.is_empty()
+                    || !mapped
+                        .iter()
+                        .all(|model_group| groups.contains(model_group))
+                {
+                    continue;
+                }
+                // Origins (0) are pivots, not animation; keep them intact.
+                if !matches!(framemap.types.get(group as usize).copied(), Some(1 | 2)) {
+                    continue;
+                }
+                frame.translator_x[index] = (frame.translator_x[index] as f32 * factor) as i32;
+                frame.translator_y[index] = (frame.translator_y[index] as f32 * factor) as i32;
+                frame.translator_z[index] = (frame.translator_z[index] as f32 * factor) as i32;
+            }
+        }
+    }
+
     pub fn load(cache: &Cache, sequence_id: u32) -> Result<Self> {
         let sequence_data = cache.file(2, 12, sequence_id)?;
         let sequence = Sequence::load(sequence_id, &sequence_data)?;
@@ -324,5 +393,65 @@ mod tests {
         assert_eq!(frame.framemap_id, 0);
         assert_eq!(frame.index_frame_ids, vec![0, 1]);
         assert_eq!(frame.translator_x, vec![0, 0]);
+    }
+
+    #[test]
+    fn group_transform_scale_can_freeze_arm_maps() {
+        let framemap = Framemap {
+            id: 0,
+            length: 2,
+            types: vec![2, 2],
+            frame_maps: vec![vec![11, 12], vec![23]],
+        };
+        let frame = Frame {
+            id: 0,
+            framemap_id: 0,
+            index_frame_ids: vec![0, 1],
+            translator_x: vec![20, 20],
+            translator_y: vec![10, 10],
+            translator_z: vec![5, 5],
+            showing: false,
+        };
+        let mut clip = AnimationClip {
+            sequence: Sequence::default(),
+            frames: vec![frame],
+            framemaps: vec![framemap],
+        };
+        clip.scale_group_transforms(&[11, 12], 0.0);
+        assert_eq!(clip.frames[0].translator_x, vec![0, 20]);
+        assert_eq!(clip.frames[0].translator_y, vec![0, 10]);
+        assert_eq!(clip.frames[0].translator_z, vec![0, 5]);
+    }
+
+    #[test]
+    fn damp_side_rotation_only_scales_y_and_z_rotation_keys() {
+        let framemap = Framemap {
+            id: 0,
+            length: 2,
+            types: vec![2, 1],
+            frame_maps: vec![vec![0], vec![1]],
+        };
+        let frame = Frame {
+            id: 0,
+            framemap_id: 0,
+            index_frame_ids: vec![0, 1],
+            translator_x: vec![20, 20],
+            translator_y: vec![100, 100],
+            translator_z: vec![60, 60],
+            showing: false,
+        };
+        let mut clip = AnimationClip {
+            sequence: Sequence::default(),
+            frames: vec![frame],
+            framemaps: vec![framemap],
+        };
+
+        clip.damp_side_rotation(0.25);
+
+        // Entry 0 is a rotation, so its Y/Z angles shrink. Entry 1 is a
+        // translation and must keep all three components.
+        assert_eq!(clip.frames[0].translator_x, vec![20, 20]);
+        assert_eq!(clip.frames[0].translator_y, vec![25, 100]);
+        assert_eq!(clip.frames[0].translator_z, vec![15, 60]);
     }
 }

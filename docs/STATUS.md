@@ -1,6 +1,6 @@
 # Status
 
-Last updated: M5.23 benchmark harness, shadow proxies + terrain fetch pass, 2026-11-14.
+Last updated: M5.24 weighty movement, ambient creatures + cache group fix, 2026-11-14.
 
 ## Working
 
@@ -189,6 +189,46 @@ Last updated: M5.23 benchmark harness, shadow proxies + terrain fetch pass, 2026
   with 1× MSAA. The `--benchmark <seconds>` harness prints these percentiles.
 - Fog run: visible enemies 7–13; dark fog mesh over unseen tiles.
 - Three-lane 20× run: victory states, towers/inhibitors/nexus live.
+- Weighty champion movement: champion files carry `weight` (plus optional
+  `turn_time`, `accel_time`, `stop_time`, `stride` and `bounce`). The player
+  turns at a finite rate, accelerates and coasts to a stop, moves while
+  turning, and waits until facing its target before auto-attacking. The walk
+  cycle advances from distance covered instead of wall-clock time, so feet no
+  longer slide while speeding up or slowing down. This was ported from the
+  `MobaScape Movement System Branch` reference checkout.
+- Animation pass: the player's walk clock is now adjusted by distance
+  covered (the reference branch's `walk_ms_for` logic), and idle/walk poses
+  cross-fade over roughly a tenth of a second instead of snapping. The
+  `--demo-anim` mode loops King Awowogei through idle, eastward walk, turn and
+  westward walk, coasting stop, and attacking the training dummy.
+- Monkey walk baseline: `walk_sway: 0` removes torso side rotation and
+  `walk_arm: 0` removes local arm transforms from the walk clip while leaving
+  global body motion, head bob and leg swing intact. `walk_arm` accepts a
+  0–1 blend so arm swing can be reintroduced and tuned without touching code.
+  `--walk-sway` and `--walk-arm` override the champion file for quick tuning.
+- Walk animation is now distance-driven for every mobile unit, not only the
+  player. A central post-update pass replaces the clock's share of animation
+  time with the distance each unit actually covered, so minions, camps, cows,
+  crabs and the champion all keep their feet planted while speeding up,
+  turning and stopping. Minions, camps and delivery guards also turn toward
+  their heading at a finite rate instead of snapping on waypoint corners.
+- Attack commitment: champion files carry `attack_windup` (0.3 s Monkey/Kree,
+  0.5 s Jad). The player turns to face before starting the swing, holds the
+  pose for the wind-up, then lands the hit or fires the projectile. An orange
+  charge ring grows around the champion during the wind-up so the commitment
+  is readable.
+- Ambient scenery creatures: 44 cache-coloured butterflies, 16 monkey-riding
+  pasture cows around the map edge, and 28 shore crabs beside the river. They
+  wander on their own schedules, are neutral, cannot be selected or damaged,
+  never attack, and never show health bars. Crab NPC 4819 is unreadable in this
+  cache revision, so the equivalent beach crab NPC 1553 (same models) is used.
+- Cache groups compressed with type 0 (uncompressed) are decoded correctly:
+  they carry a two-byte version trailer and no decompressed-length header.
+  This unblocked butterfly sequences and other uncompressed assets.
+- Tree lines now use only full-canopy models with bark trunks; bare tropical
+  stems, stumps and dead-stem models are skipped so they cannot become solid
+  green pillars.
+
 - Jungle demo: camp killed, buff Might 58s.
 
 ## Known issues
@@ -288,4 +328,23 @@ Last updated: M5.23 benchmark harness, shadow proxies + terrain fetch pass, 2026
   with 1× MSAA. The `--benchmark <seconds>` harness prints these percentiles.
 - Fog run: visible enemies 7–13; dark fog mesh over unseen tiles.
 - Three-lane 20× run: victory states, towers/inhibitors/nexus live.
+- Weighty champion movement: champion files carry `weight` (plus optional
+  `turn_time`, `accel_time`, `stop_time`, `stride` and `bounce`). The player
+  turns at a finite rate, accelerates and coasts to a stop, moves while
+  turning, and waits until facing its target before auto-attacking. The walk
+  cycle advances from distance covered instead of wall-clock time, so feet no
+  longer slide while speeding up or slowing down. This was ported from the
+  `MobaScape Movement System Branch` reference checkout.
+- Ambient scenery creatures: 44 cache-coloured butterflies, 16 monkey-riding
+  pasture cows around the map edge, and 28 shore crabs beside the river. They
+  wander on their own schedules, are neutral, cannot be selected or damaged,
+  never attack, and never show health bars. Crab NPC 4819 is unreadable in this
+  cache revision, so the equivalent beach crab NPC 1553 (same models) is used.
+- Cache groups compressed with type 0 (uncompressed) are decoded correctly:
+  they carry a two-byte version trailer and no decompressed-length header.
+  This unblocked butterfly sequences and other uncompressed assets.
+- Tree lines now use only full-canopy models with bark trunks; bare tropical
+  stems, stumps and dead-stem models are skipped so they cannot become solid
+  green pillars.
+
 - Jungle demo: camp killed, buff Might 58s.

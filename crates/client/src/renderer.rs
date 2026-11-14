@@ -80,7 +80,7 @@ impl SceneGlobals {
             sky_horizon: color(atmosphere.sky_horizon),
             sun_screen: [0.0; 4],
             light_view_proj: Mat4::IDENTITY.to_cols_array_2d(),
-            shadow_params: [1.0 / 1024.0, 0.0020, 0.0, 0.0],
+            shadow_params: [1.0 / 1024.0, 0.0032, 0.0, 0.0],
             tuning: [1.0, 4.0, 0.0, 0.0],
             vision: [0.0, 0.0, 0.0, 1500.0],
             lights: [GpuLight::default(); 16],

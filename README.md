@@ -83,6 +83,12 @@ cargo run -p rift-client
 # Skip hero select with an explicit champion
 cargo run -p rift-client -- --champion monkey
 
+# Loop King Awowogei through idle, walk, turn, stop and attack animations
+cargo run -p rift-client -- --demo-anim
+
+# Tune the Monkey walk baseline live (0 = frozen arms / no torso strafe)
+cargo run -p rift-client -- --demo-anim --walk-arm 0.25 --walk-sway 0.1
+
 # Deterministic combat check: target a dummy and fire Q
 cargo run -p rift-client -- --demo-combat
 

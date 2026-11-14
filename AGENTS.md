@@ -203,7 +203,16 @@ Cache location: `.cache/osrs-235/cache` by default. Pass `--cache` and
 - Three data-driven champions (`monkey`, `jad`, `kree`) with distinct models,
   stats, and ability numbers. A hero-select screen chooses among them and
   bakes cache-model portraits. They share the Q/W/E/R shape; Kree has ranged
-  auto-attacks. No passives yet.
+  auto-attacks. No passives yet. Champion files also carry movement weight:
+  `weight`, optional `turn_time` / `accel_time` / `stop_time`, `stride`, and
+  `bounce`. The player turns and accelerates with weight, coasts to a stop,
+  and drives its walk cycle from distance covered. `walk_sway` scales torso
+  side rotation and `walk_arm` scales local arm transforms; King Awowogei's
+  current baseline is 0 for both. `attack_windup` adds committed attack timing
+  with an orange charge ring during the wind-up.
+- Ambient, non-combat scenery creatures (butterflies, monkey-riding pasture
+  cows, shore crabs) share the unit renderer but use `UnitKind::Ambient`, team
+  2, no health bars, and no targeting or attacks.
 - Six data-driven items in `data/items/items.json`, six inventory slots, gold
   spending, hover tooltips, and a fountain-range shop (`B`, then `1`–`6`).
   Passive gold is 8/s and the fountain heals 6% max HP/MP per second within

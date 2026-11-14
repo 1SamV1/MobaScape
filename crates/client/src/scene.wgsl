@@ -86,7 +86,11 @@ fn shadow_factor(input: VsOut) -> f32 {
     if (scene.shadow_params.w < 0.5) {
         return 1.0;
     }
-    let coord = scene.light_view_proj * vec4<f32>(input.world, 1.0);
+    // Push the lookup along the surface normal. The static tree/building
+    // shadow proxies are deliberately coarse boxes; without a normal offset
+    // they self-shadow canopy tops with visible rectangular acne.
+    let shadow_world = input.world + normalize(input.normal) * 8.0;
+    let coord = scene.light_view_proj * vec4<f32>(shadow_world, 1.0);
     let proj = coord.xyz / coord.w;
     let uv = vec2<f32>(proj.x * 0.5 + 0.5, -proj.y * 0.5 + 0.5);
     if (any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0))
@@ -121,7 +125,8 @@ fn lighting(input: VsOut) -> vec3<f32> {
         N.y * 0.5 + 0.5
     );
 
-    let sun = scene.sun_color.rgb * 0.82 * shadow_factor(input);
+    let shadow = select(shadow_factor(input), 1.0, input.material == 7u);
+    let sun = scene.sun_color.rgb * 0.82 * shadow;
     // Camera facing fill keeps the fronts of models readable even when the
     // sun is behind them, which a top down MOBA camera hits constantly.
     let unit_fill = select(0.26, 0.48, input.material == 3u);
@@ -174,8 +179,15 @@ fn sample_model_texture(input: VsOut) -> vec4<f32> {
     // harder than wood/stone so canopies read like OSRS rather than black
     // silhouettes.
     if (is_leaf_texture(input.texture_id)) {
+        // The stock canopy atlas is yellow-green. Push red down and green up
+        // for a bright spruce palette while keeping the texture's leaf detail.
+        let leaf = vec3<f32>(
+            sampled.r * 0.18 + sampled.g * 0.04,
+            sampled.g * 1.38,
+            sampled.b * 0.78 + sampled.g * 0.08
+        );
         return vec4<f32>(
-            pow(max(sampled.rgb, vec3<f32>(0.0)), vec3<f32>(0.62)) * 1.75,
+            pow(max(leaf, vec3<f32>(0.0)), vec3<f32>(0.62)) * 1.62,
             sampled.a
         );
     }
@@ -222,7 +234,7 @@ fn water_surface(input: VsOut) -> vec4<f32> {
 
 fn albedo(input: VsOut) -> vec3<f32> {
     var c = input.color.rgb;
-    if (input.material == 5u) {
+    if (input.material == 5u || input.material == 7u) {
         let tex = sample_model_texture(input);
         return tex.rgb * input.color.rgb;
     }
@@ -258,7 +270,8 @@ fn albedo(input: VsOut) -> vec3<f32> {
         let green_dominance = smoothstep(0.015, 0.11, green);
         let gray = (1.0 - smoothstep(0.05, 0.25, sat))
             * (1.0 - smoothstep(0.12, 0.30, d.r - d.b))
-            * (1.0 - green_dominance);
+            * (1.0 - green_dominance)
+            * smoothstep(0.045, 0.20, slope);
         let sandy = max(d.r - d.b, 0.0) * max(d.g - d.b, 0.0) * 4.0;
         let total = max(green + brown + blue + gray + sandy, 0.0001);
         var tex = grass * (green / total)

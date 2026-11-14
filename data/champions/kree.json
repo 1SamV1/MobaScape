@@ -3,6 +3,10 @@
   "role": "RANGED SKIRMISHER",
   "tagline": "Pokes from range and blinks out of trouble.",
   "model": 28019,
+  "attachments": [
+    28021,
+    28020
+  ],
   "idle": 7166,
   "walk": 7167,
   "scale": 0.8,
@@ -17,5 +21,8 @@
   "r_damage": 100,
   "e_heal": 60,
   "e_shield": 90,
-  "w_distance": 896
+  "w_distance": 896,
+  "weight": 45,
+  "stop_time": 0.25,
+  "attack_windup": 0.3
 }

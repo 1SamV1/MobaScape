@@ -1,11 +1,14 @@
 {
-  "name": "Monkey",
+  "name": "King Awowogei",
   "role": "BALANCED FIGHTER",
-  "tagline": "A nimble all-rounder with a reliable spell kit.",
-  "model": 7744,
-  "idle": 222,
-  "walk": 219,
-  "scale": 4.2,
+  "tagline": "The monkey king rules Ape Atoll with a heavy fist and a heavier crown.",
+  "model": 4816,
+  "attachments": [
+    4823
+  ],
+  "idle": 1386,
+  "walk": 1380,
+  "scale": 3.8,
   "health": 500,
   "mana": 200,
   "damage": 12,
@@ -17,5 +20,10 @@
   "r_damage": 120,
   "e_heal": 80,
   "e_shield": 120,
-  "w_distance": 768
+  "w_distance": 768,
+  "model_yaw": 3.1415927,
+  "walk_sway": 0.0,
+  "weight": 82,
+  "walk_arm": 0.0,
+  "attack_windup": 0.3
 }

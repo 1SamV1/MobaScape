@@ -437,6 +437,27 @@ impl Model {
     /// The caller converts Y to engine space (engine Y is up; cache Y is negative
     /// up).
     pub fn animated_positions(&self, clip: &AnimationClip, time_ms: f32) -> Vec<[f32; 3]> {
+        self.animated_positions_impl(clip, time_ms, None)
+    }
+
+    /// Animate while ignoring local transforms for `masked_groups`. Root and
+    /// other whole-body transforms still move those vertices, which lets an
+    /// arm keep following the torso while its own swing is frozen.
+    pub fn animated_positions_masked(
+        &self,
+        clip: &AnimationClip,
+        time_ms: f32,
+        masked_groups: &[u8],
+    ) -> Vec<[f32; 3]> {
+        self.animated_positions_impl(clip, time_ms, Some(masked_groups))
+    }
+
+    fn animated_positions_impl(
+        &self,
+        clip: &AnimationClip,
+        time_ms: f32,
+        masked_groups: Option<&[u8]>,
+    ) -> Vec<[f32; 3]> {
         let original = self
             .vertex_x
             .iter()
@@ -486,8 +507,8 @@ impl Model {
 
         let mut a = original.clone();
         let mut b = original;
-        self.apply_frame(frame_a, framemap_a, &mut a);
-        self.apply_frame(frame_b, framemap_b, &mut b);
+        self.apply_frame(frame_a, framemap_a, &mut a, masked_groups);
+        self.apply_frame(frame_b, framemap_b, &mut b, masked_groups);
 
         a.iter()
             .zip(&b)
@@ -501,7 +522,102 @@ impl Model {
             .collect()
     }
 
-    fn apply_frame(&self, frame: &Frame, framemap: &Framemap, positions: &mut [[i32; 3]]) {
+    /// Apply an NPC palette swap. Values are cache HSL palette indices; the
+    /// first matching `find` wins for each face, matching the client's
+    /// sequential recolor opcodes.
+    pub fn recolor(&mut self, find: &[i16], replace: &[i16]) {
+        for (&wanted, &replacement) in find.iter().zip(replace) {
+            for color in &mut self.face_colors {
+                if *color as i16 == wanted {
+                    *color = replacement as u16;
+                }
+            }
+        }
+    }
+
+    /// Combine several cache models into one mesh, the way multi-model NPCs
+    /// are rendered by the OSRS client. Merging the vertex groups is required
+    /// for animation: parts such as a crown or armour must share the body's
+    /// group transforms instead of being animated as isolated meshes.
+    pub fn merge(parts: &[Model]) -> Model {
+        let mut out = Model {
+            id: parts.first().map(|part| part.id).unwrap_or(0),
+            vertex_count: 0,
+            face_count: 0,
+            num_texture_faces: 0,
+            vertex_x: Vec::new(),
+            vertex_y: Vec::new(),
+            vertex_z: Vec::new(),
+            faces: Vec::new(),
+            face_colors: Vec::new(),
+            face_render_types: Vec::new(),
+            face_textures: None,
+            texture_coords: None,
+            face_normals: Vec::new(),
+            vertex_groups: None,
+            priority: parts.iter().map(|part| part.priority).max().unwrap_or(0),
+        };
+        let any_textures = parts.iter().any(|part| part.face_textures.is_some());
+        let any_coords = parts.iter().any(|part| part.texture_coords.is_some());
+        if any_textures {
+            out.face_textures = Some(Vec::new());
+        }
+        if any_coords {
+            out.texture_coords = Some(Vec::new());
+        }
+
+        for part in parts {
+            let base = out.vertex_x.len() as u32;
+            out.vertex_x.extend_from_slice(&part.vertex_x);
+            out.vertex_y.extend_from_slice(&part.vertex_y);
+            out.vertex_z.extend_from_slice(&part.vertex_z);
+            out.faces.extend(
+                part.faces
+                    .iter()
+                    .map(|&[a, b, c]| [a + base, b + base, c + base]),
+            );
+            out.face_colors.extend_from_slice(&part.face_colors);
+            out.face_render_types
+                .extend_from_slice(&part.face_render_types);
+            out.face_normals.extend_from_slice(&part.face_normals);
+            out.num_texture_faces += part.num_texture_faces;
+
+            if let Some(textures) = &mut out.face_textures {
+                match &part.face_textures {
+                    Some(part_textures) => textures.extend_from_slice(part_textures),
+                    None => textures.extend(std::iter::repeat_n(-1, part.face_count)),
+                }
+            }
+            if let Some(coords) = &mut out.texture_coords {
+                match &part.texture_coords {
+                    Some(part_coords) => coords.extend_from_slice(part_coords),
+                    None => coords.extend(std::iter::repeat_n(-1, part.face_count)),
+                }
+            }
+
+            if let Some(groups) = &part.vertex_groups {
+                let merged = out.vertex_groups.get_or_insert_with(Vec::new);
+                if merged.len() < groups.len() {
+                    merged.resize(groups.len(), Vec::new());
+                }
+                for (index, vertices) in groups.iter().enumerate() {
+                    merged[index].extend(vertices.iter().map(|&vertex| vertex + base));
+                }
+            }
+        }
+
+        out.vertex_count = out.vertex_x.len();
+        out.face_count = out.faces.len();
+        out
+    }
+
+    fn apply_frame(
+        &self,
+        frame: &Frame,
+        framemap: &Framemap,
+        positions: &mut [[i32; 3]],
+        masked_groups: Option<&[u8]>,
+    ) {
         let mut offset = [0i32; 3];
 
         for (entry, &group_index) in frame.index_frame_ids.iter().enumerate() {
@@ -518,8 +634,17 @@ impl Model {
             let dy = frame.translator_y.get(entry).copied().unwrap_or(0);
             let dz = frame.translator_z.get(entry).copied().unwrap_or(0);
 
+            // Whole-body transforms (root, torso rotation) must keep moving
+            // the masked limbs; only local joint transforms are skipped.
+            let global = self
+                .vertex_groups
+                .as_ref()
+                .is_some_and(|groups| group_ids.len() * 2 >= groups.len());
             let mut vertices = Vec::new();
             for &group in group_ids {
+                if !global && masked_groups.is_some_and(|masked| masked.contains(&group)) {
+                    continue;
+                }
                 if let Some(group_vertices) = self
                     .vertex_groups
                     .as_ref()
@@ -785,5 +910,52 @@ mod tests {
             let rgb = hsl_to_rgb(hsl, 0.7);
             assert!(rgb.iter().all(|&v| v > 0));
         }
+    }
+
+    fn tiny_model(id: u32, vertices: [[i32; 3]; 3], group: u8) -> Model {
+        let mut groups = vec![Vec::new(); group as usize + 1];
+        groups[group as usize] = vec![0, 1, 2];
+        Model {
+            id,
+            vertex_count: 3,
+            face_count: 1,
+            num_texture_faces: 0,
+            vertex_x: vertices.iter().map(|v| v[0]).collect(),
+            vertex_y: vertices.iter().map(|v| v[1]).collect(),
+            vertex_z: vertices.iter().map(|v| v[2]).collect(),
+            faces: vec![[0, 1, 2]],
+            face_colors: vec![20],
+            face_render_types: Vec::new(),
+            face_textures: None,
+            texture_coords: None,
+            face_normals: vec![[0.0, 1.0, 0.0]],
+            vertex_groups: Some(groups),
+            priority: 0,
+        }
+    }
+
+    #[test]
+    fn merge_offsets_faces_and_vertex_groups() {
+        let body = tiny_model(1, [[0, 0, 0], [1, 0, 0], [0, 1, 0]], 2);
+        let crown = tiny_model(2, [[0, 0, 1], [1, 0, 1], [0, 1, 1]], 1);
+
+        let merged = Model::merge(&[body, crown]);
+
+        assert_eq!(merged.vertex_count, 6);
+        assert_eq!(merged.face_count, 2);
+        assert_eq!(merged.faces, vec![[0, 1, 2], [3, 4, 5]]);
+        assert_eq!(merged.vertex_groups.as_ref().unwrap()[2], vec![0, 1, 2]);
+        assert_eq!(merged.vertex_groups.as_ref().unwrap()[1], vec![3, 4, 5]);
+    }
+
+    #[test]
+    fn recolor_swaps_matching_palette_indices_in_order() {
+        let mut model = tiny_model(1, [[0, 0, 0], [1, 0, 0], [0, 1, 0]], 2);
+        model.face_colors = vec![20, 30, 40];
+        model.recolor(&[20, 30], &[500, 600]);
+        // 500 is itself a find value in the second pass, exercising the
+        // sequential opcode behaviour.
+        model.recolor(&[500], &[700]);
+        assert_eq!(model.face_colors, vec![700, 600, 40]);
     }
 }

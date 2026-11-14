@@ -4,8 +4,9 @@ use rift_cache::{AnimationClip, Cache, Model, model::hsl_to_rgb};
 
 use crate::champion::ChampionConfig;
 use crate::items::ItemConfig;
+use crate::motion::PlayerMotion;
 use crate::scene::{
-    CampBuff, HeightGrid, SceneData, SceneVertex, StructureKind, WorldCollision,
+    AmbientKind, CampBuff, HeightGrid, SceneData, SceneVertex, StructureKind, WorldCollision,
     model_dominant_texture, model_vertex_animated,
 };
 
@@ -13,6 +14,8 @@ const Q_COOLDOWN: f32 = 5.0;
 const PLAYER_RESPAWN: f32 = 5.0;
 const MINION_AGGRO: f32 = 520.0;
 const MAX_MINIONS_PER_TEAM: usize = 36;
+/// Model vertex groups used by King Awowogei's arms and hands.
+const MONKEY_ARM_GROUPS: &[u8] = &[11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 37];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnitKind {
@@ -48,6 +51,18 @@ pub struct AnimatedUnit {
     pub walk: Option<AnimationClip>,
     pub pos: Vec3,
     pub yaw: f32,
+    /// Model-space forward correction (usually 0 or PI).
+    pub model_yaw_offset: f32,
+    /// Weighty locomotion for the player's champion; `None` for everything
+    /// else, which keeps minion movement cheap and predictable.
+    pub motion: Option<PlayerMotion>,
+    /// 0 = idle pose, 1 = walk pose. Player only; smooths the clip change.
+    pub walk_blend: f32,
+    /// Per-champion multiplier for local arm transforms while walking.
+    pub walk_arm: f32,
+    /// One pass of this unit's walk clip, and the distance one pass covers.
+    pub walk_loop_ms: f32,
+    pub walk_stride: f32,
     pub scale: f32,
     pub anim_time_ms: f32,
     pub moving: bool,
@@ -62,6 +77,10 @@ pub struct AnimatedUnit {
     pub path_index: usize,
     pub attack_target: Option<usize>,
     pub attack_cooldown: f32,
+    /// Time left before a committed player attack lands.
+    pub attack_windup_timer: f32,
+    pub attack_windup: f32,
+    pub attack_pending: bool,
     pub attack_range: f32,
     pub attack_damage: f32,
     pub attack_interval: f32,
@@ -98,6 +117,9 @@ pub struct AnimatedUnit {
     pub leash_range: f32,
     pub camp_aggro: bool,
     pub camp_wander_timer: f32,
+    /// Scenery-creature variant and deterministic wander phase.
+    pub ambient_kind: Option<AmbientKind>,
+    pub ambient_seed: u32,
     /// Range at which a watchtower acquires its first target.
     pub lock_range: f32,
 }
@@ -242,6 +264,9 @@ pub struct AnimatedScene {
     pub vision_origin: (i32, i32),
     pub team_buffs: [Option<TeamBuff>; 2],
     pub champion_name: String,
+    /// Direction requested by hold-to-steer this frame. Consumed by
+    /// `update_player` so both movement modes share the same weighted model.
+    steer_wish: Option<Vec3>,
     melee_template: MinionTemplate,
     ranged_template: MinionTemplate,
 }
@@ -281,6 +306,53 @@ impl AnimatedScene {
             units.push(unit);
         }
 
+        // Non-combat scenery creatures. They use team 2 so every targeting
+        // path treats them as neutral, and the health-bar pass explicitly
+        // skips UnitKind::Ambient.
+        for spawn in &scene.ambient_spawns {
+            let speed = match spawn.kind {
+                AmbientKind::Butterfly => 92.0,
+                AmbientKind::Cow => 46.0,
+                AmbientKind::Crab => 26.0,
+            };
+            let mut unit = load_unit(
+                cache,
+                spawn.model_id,
+                Some(spawn.idle_sequence),
+                Some(spawn.walk_sequence),
+                spawn.pos,
+                spawn.scale,
+                UnitKind::Ambient,
+                2,
+                1.0,
+                0.0,
+                0.0,
+                0.0,
+                speed,
+                0.0,
+                0.0,
+                Vec::new(),
+            )?;
+            if !spawn.attachments.is_empty() {
+                let mut parts = Vec::with_capacity(1 + spawn.attachments.len());
+                parts.push(load_model(cache, spawn.model_id)?);
+                for &model_id in &spawn.attachments {
+                    parts.push(load_model(cache, model_id)?);
+                }
+                unit.model = Model::merge(&parts);
+            }
+            for &(find, replace) in &spawn.recolors {
+                unit.model.recolor(&[find], &[replace]);
+            }
+            unit.home = spawn.pos;
+            unit.ambient_kind = Some(spawn.kind);
+            unit.ambient_seed = spawn.pos.x.to_bits()
+                ^ spawn.pos.z.to_bits().rotate_left(13)
+                ^ (units.len() as u32).wrapping_mul(0x9E37_79B9);
+            unit.anim_time_ms = (unit.ambient_seed % 4_000) as f32;
+            units.push(unit);
+        }
+
         let player_index = units.len();
         units.push(load_unit(
             cache,
@@ -301,17 +373,45 @@ impl AnimatedScene {
             Vec::new(),
         )?);
         {
+            if !champion.attachments.is_empty() {
+                let mut parts = Vec::with_capacity(1 + champion.attachments.len());
+                parts.push(load_model(cache, champion.model)?);
+                for &model_id in &champion.attachments {
+                    parts.push(load_model(cache, model_id)?);
+                }
+                units[player_index].model = Model::merge(&parts);
+            }
             let player = &mut units[player_index];
             player.mana = champion.mana;
             player.max_mana = champion.mana;
             player.level = 1;
             player.ranged_auto = champion.ranged_auto;
+            player.model_yaw_offset = champion.model_yaw;
+            player.walk_arm = champion.walk_arm;
+            player.attack_windup = champion.attack_windup;
             player.q_damage = champion.q_damage;
             player.r_damage = champion.r_damage;
             player.e_heal = champion.e_heal;
             player.e_shield = champion.e_shield;
             player.w_distance = champion.w_distance;
         }
+        if champion.walk_sway < 1.0 {
+            if let Some(walk) = units[player_index].walk.as_mut() {
+                walk.damp_side_rotation(champion.walk_sway);
+            }
+        }
+        let walk_loop_ms = units[player_index]
+            .walk
+            .as_ref()
+            .map_or(1000.0, |walk| walk.loop_ms());
+        let walk_stride = if champion.stride > 0.0 {
+            champion.stride
+        } else {
+            champion.speed * walk_loop_ms / 1000.0
+        };
+        units[player_index].walk_loop_ms = walk_loop_ms;
+        units[player_index].walk_stride = walk_stride;
+        units[player_index].motion = Some(PlayerMotion::new(champion, walk_loop_ms));
 
         // A training dummy next to the spawn keeps combat testable without
         // waiting for the first wave to meet in the middle.
@@ -566,6 +666,7 @@ impl AnimatedScene {
             vision_origin: (vision_origin_x, vision_origin_y),
             team_buffs: [None, None],
             champion_name: champion.name.clone(),
+            steer_wish: None,
             melee_template,
             ranged_template,
         };
@@ -893,6 +994,7 @@ impl AnimatedScene {
         collision: &WorldCollision,
         height: &HeightGrid,
     ) -> usize {
+        self.steer_wish = None;
         let start = self.player_pos();
         let path = collision.path_world(start, target, height);
         let unit = &mut self.units[self.player_index];
@@ -900,6 +1002,8 @@ impl AnimatedScene {
         unit.path_index = 0;
         unit.target = Some(target);
         unit.attack_target = None;
+        unit.attack_pending = false;
+        unit.attack_windup_timer = 0.0;
         self.marker = Some((target, 1.1));
         unit.path.len()
     }
@@ -922,8 +1026,11 @@ impl AnimatedScene {
             return false;
         }
         let target_pos = target.pos;
+        self.steer_wish = None;
         let player = &mut self.units[self.player_index];
         player.attack_target = Some(index);
+        player.attack_pending = false;
+        player.attack_windup_timer = 0.0;
         player.target = Some(target_pos);
         let distance = player.pos.distance(target_pos);
         if distance > player.attack_range {
@@ -937,30 +1044,121 @@ impl AnimatedScene {
         true
     }
 
-    pub fn steer_player(
-        &mut self,
-        direction: Vec3,
-        dt: f32,
-        height: &HeightGrid,
-        collision: &WorldCollision,
-    ) {
-        let speed_mult = self.team_speed_mult(self.units[self.player_index].team);
+    /// Drop paths, steering and attack orders. Used by the animation demo
+    /// and whenever the player should come to a clean stop.
+    pub fn clear_player_orders(&mut self) {
+        self.steer_wish = None;
         let unit = &mut self.units[self.player_index];
         unit.path.clear();
         unit.path_index = 0;
         unit.target = None;
         unit.attack_target = None;
+        unit.attack_pending = false;
+        unit.attack_windup_timer = 0.0;
+    }
+
+    pub fn steer_player(&mut self, direction: Vec3) {
         let flat = Vec3::new(direction.x, 0.0, direction.z);
         if flat.length_squared() < 1e-6 {
-            unit.moving = false;
+            self.steer_wish = None;
             return;
         }
-        let dir = flat.normalize();
-        let next = collision.slide_move(unit.pos, dir * unit.speed * speed_mult * dt, height);
-        let moved = next.distance(unit.pos) > 0.01;
-        unit.pos = next;
-        unit.yaw = dir.x.atan2(dir.z);
-        unit.moving = moved;
+        self.steer_wish = Some(flat.normalize());
+        let unit = &mut self.units[self.player_index];
+        unit.attack_pending = false;
+        unit.attack_windup_timer = 0.0;
+        unit.path.clear();
+        unit.path_index = 0;
+        unit.target = None;
+        unit.attack_target = None;
+        unit.attack_pending = false;
+        unit.attack_windup_timer = 0.0;
+    }
+
+    /// Move the player with weight. Shared by tap-to-move, hold-to-steer and
+    /// turning to attack so every mode feels the same.
+    fn drive_player(
+        &mut self,
+        dt: f32,
+        height: &HeightGrid,
+        collision: &WorldCollision,
+        desired: Option<Vec3>,
+        top_speed: f32,
+        speed_mult: f32,
+    ) -> Option<crate::motion::StepResult> {
+        let unit = &mut self.units[self.player_index];
+        let mut motion = unit.motion.take()?;
+        let result = motion.step(
+            unit.pos, unit.yaw, desired, top_speed, speed_mult, dt, height, collision,
+        );
+        unit.pos = result.pos;
+        unit.yaw = result.yaw;
+        unit.moving = result.moving;
+        unit.motion = Some(motion);
+        Some(result)
+    }
+
+    /// Follow the player's A* path with the weighted motor. Waypoints are
+    /// consumed at a radius instead of teleporting the champion onto them, so
+    /// a heavy turn keeps its arc.
+    fn drive_player_path(
+        &mut self,
+        dt: f32,
+        height: &HeightGrid,
+        collision: &WorldCollision,
+        speed_mult: f32,
+    ) {
+        let pi = self.player_index;
+        loop {
+            if self.units[pi].path.is_empty() {
+                return;
+            }
+            let index = self.units[pi].path_index;
+            let waypoint = self.units[pi].path[index];
+            let delta = planar_delta(self.units[pi].pos, waypoint);
+            let distance = delta.length();
+            if distance < 24.0 {
+                self.units[pi].path_index += 1;
+                if self.units[pi].path_index >= self.units[pi].path.len() {
+                    self.units[pi].path.clear();
+                    self.units[pi].path_index = 0;
+                    self.units[pi].target = None;
+                }
+                continue;
+            }
+            let dir = delta / distance;
+            let speed = self.units[pi].speed;
+            self.drive_player(dt, height, collision, Some(dir), speed, speed_mult);
+            return;
+        }
+    }
+
+    fn player_land_attack(&mut self, target: usize) {
+        let pi = self.player_index;
+        let unit = &mut self.units[pi];
+        unit.attack_cooldown = unit.attack_interval;
+        let damage = unit.attack_damage;
+        let ranged = unit.ranged_auto;
+        let from = unit.pos + Vec3::Y * (unit.scale * 80.0);
+        let team = unit.team;
+        let target_pos = self.units[target].pos;
+        if ranged {
+            let dir = (target_pos - from).normalize_or_zero();
+            self.projectiles.push(Projectile {
+                pos: from,
+                dir,
+                speed: 900.0,
+                life: 1.4,
+                damage,
+                team,
+                attacker: None,
+            });
+        } else {
+            self.damage_unit(target, damage, 0);
+            if self.units[target].health <= 0.0 {
+                self.units[pi].attack_target = None;
+            }
+        }
     }
 
     pub fn cast_q(&mut self, target: Vec3) -> bool {
@@ -1174,6 +1372,11 @@ impl AnimatedScene {
         unit.path.clear();
         unit.path_index = 0;
         unit.moving = false;
+        unit.attack_pending = false;
+        unit.attack_windup_timer = 0.0;
+        if let Some(motion) = unit.motion.as_mut() {
+            motion.reset();
+        }
     }
 
     /// Name of the biome pocket the hero is standing in.
@@ -1364,7 +1567,14 @@ impl AnimatedScene {
         for unit in &mut self.units {
             unit.hit_flash = (unit.hit_flash - dt).max(0.0);
             unit.attack_cooldown = (unit.attack_cooldown - dt).max(0.0);
+            unit.attack_windup_timer = (unit.attack_windup_timer - dt).max(0.0);
             unit.anim_time_ms += dt * 1000.0;
+            if unit.kind == UnitKind::Player {
+                let target = if unit.moving { 1.0 } else { 0.0 };
+                let rate = if target > unit.walk_blend { 9.0 } else { 6.0 };
+                unit.walk_blend += (target - unit.walk_blend) * (1.0 - (-rate * dt).exp());
+                unit.walk_blend = unit.walk_blend.clamp(0.0, 1.0);
+            }
             if unit.health <= 0.0
                 && matches!(
                     unit.kind,
@@ -1389,6 +1599,7 @@ impl AnimatedScene {
             }
         }
 
+        let start_positions: Vec<Vec3> = self.units.iter().map(|unit| unit.pos).collect();
         self.update_player(dt, height, collision);
         self.update_delivery(dt, height);
 
@@ -1408,17 +1619,31 @@ impl AnimatedScene {
                 self.update_tower(i);
             } else if kind == UnitKind::Camp {
                 self.update_camp(i, dt, height);
+            } else if kind == UnitKind::Ambient {
+                self.update_ambient(i, dt, height);
             } else if kind == UnitKind::Watchtower {
                 self.update_watchtower(i);
             }
         }
 
         self.update_projectiles(dt, height);
+
+        // Replace the clock's share of every moving unit's animation time
+        // with the distance it actually covered. This fixes foot sliding for
+        // minions, camps and ambient creatures as well as the player.
+        for (index, unit) in self.units.iter_mut().enumerate() {
+            let moved = planar_delta(start_positions[index], unit.pos).length();
+            let limit = unit.speed * dt * 4.0 + 64.0;
+            if moved > 0.01 && moved <= limit && unit.walk_loop_ms > 0.0 && unit.walk_stride > 0.0 {
+                unit.anim_time_ms += moved / unit.walk_stride * unit.walk_loop_ms - dt * 1000.0;
+            }
+        }
     }
 
     fn update_player(&mut self, dt: f32, height: &HeightGrid, collision: &WorldCollision) {
         let pi = self.player_index;
         let speed_mult = self.team_speed_mult(0);
+        let steer = self.steer_wish.take();
         if self.units[pi].health <= 0.0 {
             self.units[pi].dead_timer -= dt;
             if self.units[pi].dead_timer <= 0.0 {
@@ -1428,10 +1653,23 @@ impl AnimatedScene {
                 unit.health = unit.max_health;
                 unit.dead_timer = 0.0;
                 unit.attack_target = None;
+                unit.attack_pending = false;
+                unit.attack_windup_timer = 0.0;
                 unit.path.clear();
                 unit.path_index = 0;
                 unit.moving = false;
+                unit.anim_time_ms = 0.0;
+                if let Some(motion) = unit.motion.as_mut() {
+                    motion.reset();
+                }
             }
+            return;
+        }
+
+        // Hold-to-steer and tap-to-move share the same weighted motor.
+        if let Some(direction) = steer {
+            let speed = self.units[pi].speed;
+            self.drive_player(dt, height, collision, Some(direction), speed, speed_mult);
             return;
         }
 
@@ -1446,6 +1684,8 @@ impl AnimatedScene {
                 let distance = player_pos.distance(target_pos);
                 if distance > self.units[pi].attack_range {
                     let unit = &mut self.units[pi];
+                    unit.attack_pending = false;
+                    unit.attack_windup_timer = 0.0;
                     if unit.path.is_empty()
                         || unit
                             .path
@@ -1455,52 +1695,96 @@ impl AnimatedScene {
                         unit.path = collision.path_world(player_pos, target_pos, height);
                         unit.path_index = 0;
                     }
-                    follow_path(unit, dt, height, speed_mult);
+                    self.drive_player_path(dt, height, collision, speed_mult);
                 } else {
-                    let unit = &mut self.units[pi];
-                    unit.path.clear();
-                    unit.path_index = 0;
-                    unit.moving = false;
                     let dir = target_pos - player_pos;
-                    if dir.length_squared() > 1e-6 {
-                        unit.yaw = dir.x.atan2(dir.z);
-                    }
-                    if unit.attack_cooldown <= 0.0 {
-                        unit.attack_cooldown = unit.attack_interval;
-                        let damage = unit.attack_damage;
-                        let ranged = unit.ranged_auto;
-                        let from = unit.pos + Vec3::Y * (unit.scale * 80.0);
-                        let team = unit.team;
-                        if ranged {
-                            let dir = (target_pos - from).normalize_or_zero();
-                            self.projectiles.push(Projectile {
-                                pos: from,
-                                dir,
-                                speed: 900.0,
-                                life: 1.4,
-                                damage,
-                                team,
-                                attacker: None,
-                            });
+                    let desired = (dir.length_squared() > 1e-6).then_some(dir);
+                    let facing = self
+                        .drive_player(dt, height, collision, desired, 0.0, speed_mult)
+                        .map_or(0.0, |step| step.facing_error);
+                    self.units[pi].path.clear();
+                    self.units[pi].path_index = 0;
+                    let pending = self.units[pi].attack_pending;
+                    let timer = self.units[pi].attack_windup_timer;
+                    let cooldown = self.units[pi].attack_cooldown;
+                    let windup = self.units[pi].attack_windup;
+                    if pending {
+                        if timer <= 0.0 && facing < 0.35 {
+                            self.player_land_attack(ti);
+                            self.units[pi].attack_pending = false;
+                        }
+                    } else if cooldown <= 0.0 && facing < 0.35 {
+                        if windup > 0.0 {
+                            self.units[pi].attack_pending = true;
+                            self.units[pi].attack_windup_timer = windup;
                         } else {
-                            self.damage_unit(ti, damage, 0);
-                            if self.units[ti].health <= 0.0 {
-                                self.units[pi].attack_target = None;
-                            }
+                            self.player_land_attack(ti);
                         }
                     }
                 }
                 return;
             } else {
                 self.units[pi].attack_target = None;
+                self.units[pi].attack_pending = false;
+                self.units[pi].attack_windup_timer = 0.0;
             }
         }
 
-        let unit = &mut self.units[pi];
-        unit.moving = false;
-        if !unit.path.is_empty() {
-            follow_path(unit, dt, height, speed_mult);
+        if !self.units[pi].path.is_empty() {
+            self.drive_player_path(dt, height, collision, speed_mult);
+        } else {
+            // No command: coast to a stop in the current facing.
+            let speed = self.units[pi].speed;
+            self.drive_player(dt, height, collision, None, speed, speed_mult);
         }
+    }
+
+    fn update_ambient(&mut self, index: usize, dt: f32, height: &HeightGrid) {
+        let unit = &mut self.units[index];
+        let kind = unit.ambient_kind.unwrap_or(AmbientKind::Butterfly);
+        let time = unit.anim_time_ms * 0.001;
+        let phase = (unit.ambient_seed % 4096) as f32 * 0.0015;
+        let home = unit.home;
+
+        // Cows graze for roughly half of their cycle and only amble between
+        // nearby patches. Butterflies stay in constant fluttering motion.
+        if kind == AmbientKind::Cow && (time * 0.45 + phase).sin() < 0.1 {
+            unit.moving = false;
+            return;
+        }
+
+        let (radius, speed, hover) = match kind {
+            AmbientKind::Butterfly => (55.0 + (unit.ambient_seed % 5) as f32 * 22.0, 92.0, 30.0),
+            AmbientKind::Cow => (4.5 * 128.0, 46.0, 0.0),
+            AmbientKind::Crab => (1.2 * 128.0, 26.0, 0.0),
+        };
+        let target = home
+            + Vec3::new(
+                (time * 0.73 + phase).sin() * radius,
+                0.0,
+                (time * 0.51 + phase * 1.7).cos() * radius,
+            );
+        let delta = planar_delta(unit.pos, target);
+        let distance = delta.length();
+        if distance > 8.0 {
+            let dir = delta / distance;
+            unit.pos += dir * (speed * dt).min(distance);
+            unit.yaw = if kind == AmbientKind::Crab {
+                // Crabs scuttle sideways.
+                dir.x.atan2(dir.z) + std::f32::consts::FRAC_PI_2
+            } else {
+                dir.x.atan2(dir.z)
+            };
+            unit.moving = true;
+        } else {
+            unit.moving = false;
+        }
+        let flutter = if kind == AmbientKind::Butterfly {
+            hover + (time * 5.1 + phase).sin() * 9.0
+        } else {
+            0.0
+        };
+        unit.pos.y = height.height_at(unit.pos.x, unit.pos.z) + flutter;
     }
 
     fn update_minion(&mut self, index: usize, dt: f32, height: &HeightGrid) {
@@ -1518,7 +1802,7 @@ impl AnimatedScene {
                 unit.attack_target = Some(target);
                 let dir = target_pos - unit.pos;
                 if dir.length_squared() > 1e-6 {
-                    unit.yaw = dir.x.atan2(dir.z);
+                    turn_toward(unit, dir.x.atan2(dir.z), dt);
                 }
                 if unit.attack_cooldown <= 0.0 {
                     unit.attack_cooldown = unit.attack_interval;
@@ -1583,7 +1867,8 @@ impl AnimatedScene {
                 self.units[index].moving = false;
                 let dir = target_pos - self.units[index].pos;
                 if dir.length_squared() > 1e-6 {
-                    self.units[index].yaw = dir.x.atan2(dir.z);
+                    let yaw = dir.x.atan2(dir.z);
+                    turn_toward(&mut self.units[index], yaw, dt);
                 }
                 if self.units[index].attack_cooldown <= 0.0 {
                     self.units[index].attack_cooldown = self.units[index].attack_interval;
@@ -1815,7 +2100,7 @@ impl AnimatedScene {
         let step = (unit.speed * speed_mult * dt).min(distance);
         unit.pos += dir * step;
         unit.pos.y = height.height_at(unit.pos.x, unit.pos.z);
-        unit.yaw = dir.x.atan2(dir.z);
+        turn_toward(unit, dir.x.atan2(dir.z), dt);
         unit.moving = true;
     }
 
@@ -2136,6 +2421,7 @@ impl AnimatedScene {
                     && u.visible
                     && !u.kind.is_structure()
                     && u.kind != UnitKind::Watchtower
+                    && u.kind != UnitKind::Ambient
             })
             .count()
     }
@@ -2288,12 +2574,20 @@ impl AnimatedScene {
                 template.speed
             };
             pos.y = height.height_at(pos.x, pos.z);
+            let walk_loop_ms = template.walk.loop_ms();
+            let walk_stride = speed * walk_loop_ms / 1000.0;
             let unit = AnimatedUnit {
                 model: template.model.clone(),
                 idle: template.idle.clone(),
                 walk: Some(template.walk.clone()),
                 pos,
                 yaw: if team == 0 { 0.0 } else { std::f32::consts::PI },
+                model_yaw_offset: 0.0,
+                motion: None,
+                walk_blend: 0.0,
+                walk_arm: 1.0,
+                walk_loop_ms,
+                walk_stride,
                 scale,
                 anim_time_ms: 0.0,
                 moving: false,
@@ -2312,6 +2606,9 @@ impl AnimatedScene {
                 path_index: 0,
                 attack_target: None,
                 attack_cooldown: 0.0,
+                attack_windup_timer: 0.0,
+                attack_windup: 0.0,
+                attack_pending: false,
                 attack_range: template.range,
                 attack_damage: damage,
                 attack_interval: template.interval,
@@ -2352,6 +2649,8 @@ impl AnimatedScene {
                 leash_range: 0.0,
                 camp_aggro: false,
                 camp_wander_timer: 0.0,
+                ambient_kind: None,
+                ambient_seed: 0,
                 lock_range: 0.0,
             };
             self.units.push(unit);
@@ -2443,12 +2742,61 @@ impl AnimatedScene {
         let units = std::mem::take(&mut self.units);
         for unit in &units {
             if unit.health > 0.0 && unit.visible && unit.spawn_delay <= 0.0 {
-                let clip = if unit.moving {
-                    unit.walk.as_ref().unwrap_or(&unit.idle)
+                let positions = if let Some(walk) = unit.walk.as_ref() {
+                    if unit.kind == UnitKind::Player && unit.walk_arm < 0.999 {
+                        let idle = unit.model.animated_positions(&unit.idle, unit.anim_time_ms);
+                        let normal = unit.model.animated_positions(walk, unit.anim_time_ms);
+                        let masked = unit.model.animated_positions_masked(
+                            walk,
+                            unit.anim_time_ms,
+                            MONKEY_ARM_GROUPS,
+                        );
+                        let arm = unit.walk_arm.clamp(0.0, 1.0);
+                        let mut walking = normal.clone();
+                        for ((out, normal_pose), masked) in
+                            walking.iter_mut().zip(&normal).zip(&masked)
+                        {
+                            for axis in 0..3 {
+                                let rigid = normal_pose[axis]
+                                    + (masked[axis] - normal_pose[axis]) * (1.0 - arm);
+                                out[axis] = rigid;
+                            }
+                        }
+                        if unit.walk_blend >= 0.999 {
+                            walking
+                        } else {
+                            let blend = unit.walk_blend.clamp(0.0, 1.0);
+                            let mut out = idle.clone();
+                            for ((out, idle_pose), walking) in
+                                out.iter_mut().zip(&idle).zip(&walking)
+                            {
+                                for axis in 0..3 {
+                                    out[axis] =
+                                        idle_pose[axis] + (walking[axis] - idle_pose[axis]) * blend;
+                                }
+                            }
+                            out
+                        }
+                    } else {
+                        let clip = if unit.moving { walk } else { &unit.idle };
+                        let mut positions = unit.model.animated_positions(clip, unit.anim_time_ms);
+                        if unit.walk_blend > 0.001 && unit.walk_blend < 0.999 {
+                            let idle = unit.model.animated_positions(&unit.idle, unit.anim_time_ms);
+                            let walking = unit.model.animated_positions(walk, unit.anim_time_ms);
+                            let blend = unit.walk_blend;
+                            for ((out, idle), walking) in
+                                positions.iter_mut().zip(&idle).zip(&walking)
+                            {
+                                for axis in 0..3 {
+                                    out[axis] = idle[axis] + (walking[axis] - idle[axis]) * blend;
+                                }
+                            }
+                        }
+                        positions
+                    }
                 } else {
-                    &unit.idle
+                    unit.model.animated_positions(&unit.idle, unit.anim_time_ms)
                 };
-                let positions = unit.model.animated_positions(clip, unit.anim_time_ms);
                 append_unit(self, unit, &positions);
             }
         }
@@ -2461,7 +2809,10 @@ impl AnimatedScene {
                 unit.health > 0.0
                     && unit.spawn_delay <= 0.0
                     && (unit.team != 2 || unit.kind == UnitKind::Camp)
-                    && !matches!(unit.kind, UnitKind::DeliveryGuard | UnitKind::StorageChest)
+                    && !matches!(
+                        unit.kind,
+                        UnitKind::Ambient | UnitKind::DeliveryGuard | UnitKind::StorageChest
+                    )
             })
             .map(|unit| {
                 let (width, height) = match unit.kind {
@@ -2513,8 +2864,22 @@ impl AnimatedScene {
         }
 
         let player = &self.units[self.player_index];
+        let player_pos = player.pos;
+        let attack_pending = player.attack_pending;
+        let attack_windup = player.attack_windup;
+        let windup_timer = player.attack_windup_timer;
         if player.health > 0.0 {
-            append_ring(self, height, player.pos, 95.0, [90, 180, 255]);
+            append_ring(self, height, player_pos, 95.0, [90, 180, 255]);
+        }
+        if attack_pending {
+            let progress = 1.0 - (windup_timer / attack_windup.max(0.001)).clamp(0.0, 1.0);
+            append_ring(
+                self,
+                height,
+                player_pos,
+                100.0 + 55.0 * progress,
+                [255, 150, 55],
+            );
         }
 
         // Small team-coloured rings under lane imps/fairies mirror the Dota
@@ -2687,12 +3052,20 @@ fn load_unit(
         Some(seq) => Some(AnimationClip::load(cache, seq)?),
         None => None,
     };
+    let walk_loop_ms = walk.as_ref().map_or(0.0, AnimationClip::loop_ms);
+    let walk_stride = speed * walk_loop_ms / 1000.0;
     Ok(AnimatedUnit {
         model,
         idle,
         walk,
         pos,
         yaw: 0.0,
+        model_yaw_offset: 0.0,
+        motion: None,
+        walk_blend: 0.0,
+        walk_arm: 1.0,
+        walk_loop_ms,
+        walk_stride,
         scale,
         anim_time_ms: 0.0,
         moving: false,
@@ -2707,6 +3080,9 @@ fn load_unit(
         path_index: 0,
         attack_target: None,
         attack_cooldown: 0.0,
+        attack_windup_timer: 0.0,
+        attack_windup: 0.0,
+        attack_pending: false,
         attack_range,
         attack_damage,
         attack_interval,
@@ -2741,6 +3117,8 @@ fn load_unit(
         leash_range: 0.0,
         camp_aggro: false,
         camp_wander_timer: 0.0,
+        ambient_kind: None,
+        ambient_seed: 0,
         lock_range: 0.0,
     })
 }
@@ -2812,50 +3190,46 @@ fn planar_delta(from: Vec3, to: Vec3) -> Vec3 {
     Vec3::new(to.x - from.x, 0.0, to.z - from.z)
 }
 
-fn follow_path(unit: &mut AnimatedUnit, dt: f32, height: &HeightGrid, speed_mult: f32) {
-    let mut budget = unit.speed * speed_mult * dt;
-    unit.moving = false;
-    while budget > 0.0 && unit.path_index < unit.path.len() {
-        let waypoint = unit.path[unit.path_index];
-        let delta = waypoint - unit.pos;
-        let distance = delta.length();
-        if distance <= budget.max(4.0) {
-            unit.pos = waypoint;
-            unit.path_index += 1;
-            budget = (budget - distance).max(0.0);
-            unit.moving = true;
-            if unit.path_index >= unit.path.len() {
-                unit.path.clear();
-                unit.path_index = 0;
-                unit.target = None;
-                unit.moving = false;
-                break;
-            }
-        } else {
-            let dir = delta / distance;
-            unit.pos += dir * budget;
-            unit.pos.y = height.height_at(unit.pos.x, unit.pos.z);
-            unit.yaw = dir.x.atan2(dir.z);
-            unit.moving = true;
-            budget = 0.0;
-        }
-    }
+/// Turn a unit toward a heading at a species-appropriate rate instead of
+/// snapping. The player has its own weighted motor.
+fn turn_toward(unit: &mut AnimatedUnit, target_yaw: f32, dt: f32) {
+    let rate = match unit.kind {
+        UnitKind::MeleeMinion | UnitKind::RangedMinion => 12.0,
+        UnitKind::Camp => 7.0,
+        UnitKind::DeliveryGuard => 10.0,
+        _ => 15.0,
+    };
+    let delta = (target_yaw - unit.yaw + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU)
+        - std::f32::consts::PI;
+    unit.yaw += delta.clamp(-rate * dt, rate * dt);
 }
 
 fn append_unit(scene: &mut AnimatedScene, unit: &AnimatedUnit, positions: &[[f32; 3]]) {
-    let rot = Mat3::from_rotation_y(unit.yaw);
-    let dominant_texture = model_dominant_texture(&unit.model);
+    append_unit_model(scene, unit, &unit.model, positions);
+}
 
-    for (face_idx, &[a, b, c]) in unit.model.faces.iter().enumerate() {
-        let pa = model_vertex_animated(positions, a as usize, unit.pos, rot, unit.scale);
-        let pb = model_vertex_animated(positions, b as usize, unit.pos, rot, unit.scale);
-        let pc = model_vertex_animated(positions, c as usize, unit.pos, rot, unit.scale);
+fn append_unit_model(
+    scene: &mut AnimatedScene,
+    unit: &AnimatedUnit,
+    model: &Model,
+    positions: &[[f32; 3]],
+) {
+    let rot = Mat3::from_rotation_y(unit.yaw + unit.model_yaw_offset);
+    let dominant_texture = model_dominant_texture(model);
+    // The step spring is drawing only: bars and selection rings remain on
+    // the ground while the body lifts.
+    let origin = unit.pos + Vec3::Y * unit.motion.as_ref().map_or(0.0, |motion| motion.lift);
+
+    for (face_idx, &[a, b, c]) in model.faces.iter().enumerate() {
+        let pa = model_vertex_animated(positions, a as usize, origin, rot, unit.scale);
+        let pb = model_vertex_animated(positions, b as usize, origin, rot, unit.scale);
+        let pc = model_vertex_animated(positions, c as usize, origin, rot, unit.scale);
 
         let mut normal = (pb - pa).cross(pc - pa).normalize_or_zero();
         if normal.length_squared() < 1e-8 {
             normal = rot
                 * Vec3::from_array(
-                    unit.model
+                    model
                         .face_normals
                         .get(face_idx)
                         .copied()
@@ -2863,8 +3237,7 @@ fn append_unit(scene: &mut AnimatedScene, unit: &AnimatedUnit, positions: &[[f32
                 );
         }
 
-        let texture_id = unit
-            .model
+        let texture_id = model
             .face_textures
             .as_ref()
             .and_then(|t| t.get(face_idx))
@@ -2873,20 +3246,19 @@ fn append_unit(scene: &mut AnimatedScene, unit: &AnimatedUnit, positions: &[[f32
             .filter(|&t| t < 256)
             .or(dominant_texture);
         let textured = texture_id.is_some();
-        let plain_face = !textured && unit.model.face_colors[face_idx] != 127;
         let mut rgb = if textured {
             // The sampled model texture supplies the detail; vertex colour is
             // only a team/hit-flash tint.
             [255, 255, 255]
         } else if unit.kind == UnitKind::Tower {
             [125, 117, 102]
-        } else if unit.model.face_colors[face_idx] == 127 {
+        } else if model.face_colors[face_idx] == 127 {
             [84, 142, 58]
-        } else if plain_face {
-            let raw = hsl_to_rgb(unit.model.face_colors[face_idx], 1.0);
-            [raw[0].min(150), raw[1].min(120), raw[2].min(95)]
         } else {
-            hsl_to_rgb(unit.model.face_colors[face_idx], 1.0)
+            // Use the cache palette unchanged. An old darkening clamp here
+            // turned bright NPC palettes (the snakeling's white hood, for
+            // example) into muddy near-black shapes.
+            hsl_to_rgb(model.face_colors[face_idx], 1.0)
         };
         if unit.kind.is_minion() {
             let tint = if unit.team == 0 {
@@ -2912,7 +3284,7 @@ fn append_unit(scene: &mut AnimatedScene, unit: &AnimatedUnit, positions: &[[f32
         }
 
         let ao_at = |p: Vec3| {
-            (0.74 + 0.26 * ((p.y - unit.pos.y).max(0.0) / (unit.scale * 220.0)).clamp(0.0, 1.0))
+            (0.74 + 0.26 * ((p.y - origin.y).max(0.0) / (unit.scale * 220.0)).clamp(0.0, 1.0))
                 .clamp(0.66, 1.0)
         };
         let mut va = SceneVertex::new(pa, normal, rgb);
@@ -2921,7 +3293,7 @@ fn append_unit(scene: &mut AnimatedScene, unit: &AnimatedUnit, positions: &[[f32
         let material = if let Some(texture_id) = texture_id {
             let abs_normal = normal.abs();
             let uv_for = |p: Vec3| {
-                let local = p - unit.pos;
+                let local = p - origin;
                 if abs_normal.y >= abs_normal.x && abs_normal.y >= abs_normal.z {
                     [local.x / 128.0, local.z / 128.0]
                 } else if abs_normal.x >= abs_normal.z {

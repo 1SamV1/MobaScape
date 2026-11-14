@@ -30,6 +30,23 @@ pub fn decode(raw: &[u8], key: Option<[u32; 4]>) -> Result<Group> {
         xtea::decrypt(&mut body, key);
     }
 
+    if compression == 0 {
+        // Uncompressed groups have no decompressed-length header. They store
+        // `compressed_len` bytes of data directly after the length field and a
+        // two-byte version trailer at the end of the group.
+        let payload = body.get(..compressed_len).ok_or_else(|| {
+            Error::parse(format!(
+                "uncompressed payload out of range: need {compressed_len}, have {}",
+                body.len()
+            ))
+        })?;
+        return Ok(Group {
+            compression,
+            decompressed_len: compressed_len as u32,
+            data: payload.to_vec(),
+        });
+    }
+
     if body.len() < 4 {
         return Err(Error::parse("group body missing decompressed length"));
     }
@@ -46,7 +63,6 @@ pub fn decode(raw: &[u8], key: Option<[u32; 4]>) -> Result<Group> {
     })?;
 
     let data = match compression {
-        0 => payload.to_vec(),
         1 => decompress_bzip2(payload)?,
         2 => decompress_gzip(payload)?,
         3 => decompress_lzma(payload)?,
@@ -145,5 +161,16 @@ mod tests {
     #[test]
     fn rejects_short_group() {
         assert!(decode(&[0u8; 4], None).is_err());
+    }
+
+    #[test]
+    fn decodes_uncompressed_group_with_version_trailer() {
+        // Uncompressed groups store the payload directly after the length
+        // field and finish with a two-byte version trailer. They do not have
+        // the four-byte decompressed-length header used by compressed groups.
+        let raw = [0, 0, 0, 0, 3, 10, 20, 30, 0, 2];
+        let group = decode(&raw, None).unwrap();
+        assert_eq!(group.data, vec![10, 20, 30]);
+        assert_eq!(group.decompressed_len, 3);
     }
 }

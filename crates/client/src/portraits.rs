@@ -13,18 +13,46 @@ const RENDER_SIZE: u32 = PORTRAIT_SIZE * 2;
 /// z-buffer and an orthographic camera. It keeps the hero-select screen
 /// cache-native without adding a second render target or a screenshot
 /// dependency.
-pub fn bake_portrait(cache: &Cache, model_id: u32, idle_sequence: u32) -> Result<RgbaImage> {
-    let clip = AnimationClip::load(cache, idle_sequence)
-        .with_context(|| format!("loading champion idle sequence {idle_sequence}"))?;
-    bake_model_with_clip(cache, model_id, &clip)
+pub fn bake_portrait(
+    cache: &Cache,
+    model_id: u32,
+    attachments: &[u32],
+    idle_sequence: u32,
+) -> Result<RgbaImage> {
+    bake_portrait_at(cache, model_id, attachments, idle_sequence, 0.0)
 }
 
-fn bake_model_with_clip(cache: &Cache, model_id: u32, clip: &AnimationClip) -> Result<RgbaImage> {
-    let group = cache
-        .group(7, model_id)
-        .with_context(|| format!("loading model {model_id}"))?;
-    let model = Model::load(model_id, &group.data)?;
-    let positions = model.animated_positions(clip, 0.0);
+/// Debug variant that samples the idle animation at an arbitrary time.
+pub fn bake_portrait_at(
+    cache: &Cache,
+    model_id: u32,
+    attachments: &[u32],
+    idle_sequence: u32,
+    time_ms: f32,
+) -> Result<RgbaImage> {
+    let clip = AnimationClip::load(cache, idle_sequence)
+        .with_context(|| format!("loading champion idle sequence {idle_sequence}"))?;
+    bake_models_with_clip(cache, model_id, attachments, &clip, time_ms)
+}
+
+fn bake_models_with_clip(
+    cache: &Cache,
+    model_id: u32,
+    attachments: &[u32],
+    clip: &AnimationClip,
+    time_ms: f32,
+) -> Result<RgbaImage> {
+    let mut parts = Vec::with_capacity(1 + attachments.len());
+    for id in std::iter::once(model_id).chain(attachments.iter().copied()) {
+        let group = cache
+            .group(7, id)
+            .with_context(|| format!("loading model {id}"))?;
+        parts.push(Model::load(id, &group.data)?);
+    }
+    // Multi-model NPCs must be merged before animation so the parts share the
+    // body's vertex-group transforms.
+    let model = Model::merge(&parts);
+    let positions = model.animated_positions(clip, time_ms);
     if positions.is_empty() || model.faces.is_empty() {
         anyhow::bail!("model {model_id} has no geometry");
     }

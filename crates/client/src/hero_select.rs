@@ -85,9 +85,14 @@ mod tests {
             role: String::new(),
             tagline: String::new(),
             model: 0,
+            attachments: Vec::new(),
             idle: 0,
             walk: 0,
             scale: 1.0,
+            model_yaw: 0.0,
+            walk_sway: 1.0,
+            walk_arm: 1.0,
+            attack_windup: 0.0,
             health: 1.0,
             mana: 1.0,
             damage: 1.0,
@@ -100,6 +105,12 @@ mod tests {
             e_heal: 1.0,
             e_shield: 1.0,
             w_distance: 1.0,
+            weight: None,
+            turn_time: None,
+            accel_time: None,
+            stop_time: None,
+            stride: 0.0,
+            bounce: 1.0,
         }
     }
 

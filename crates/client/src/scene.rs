@@ -4,7 +4,8 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use glam::{Mat3, Vec2, Vec3};
 use rift_cache::{
-    Cache, Locations, Model, ObjectDefinition, OverlayDefinition, Terrain, UnderlayDefinition,
+    Cache, Locations, Model, NpcDefinition, ObjectDefinition, OverlayDefinition, Terrain,
+    UnderlayDefinition,
 };
 use rift_sim::{Grid, find_path, simplify_path};
 use serde::Deserialize;
@@ -811,6 +812,27 @@ pub struct NpcSpawn {
     pub scale: f32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AmbientKind {
+    Butterfly,
+    Cow,
+    Crab,
+}
+
+/// Non-combat scenery creatures: they wander, cannot be selected or damaged,
+/// and never show health bars.
+#[derive(Debug, Clone)]
+pub struct AmbientSpawn {
+    pub kind: AmbientKind,
+    pub model_id: u32,
+    pub attachments: Vec<u32>,
+    pub idle_sequence: u32,
+    pub walk_sequence: u32,
+    pub pos: Vec3,
+    pub scale: f32,
+    pub recolors: Vec<(i16, i16)>,
+}
+
 pub struct SceneData {
     pub terrain: MeshData,
     pub models: MeshData,
@@ -822,6 +844,7 @@ pub struct SceneData {
     pub collision: WorldCollision,
     pub map: MapLayout,
     pub npc_spawns: Vec<NpcSpawn>,
+    pub ambient_spawns: Vec<AmbientSpawn>,
     pub player_spawn: Vec3,
     pub atmosphere: Atmosphere,
 }
@@ -1704,6 +1727,7 @@ pub fn build(
         origin: (origin_tile_x, origin_tile_y),
     };
     let mut tree_count = 0usize;
+    let mut prop_count = 0usize;
     let mut rng = Rng::new(0x5EED_9E37_79B9_7F4A);
     {
         let mut sink = ScenerySink {
@@ -1737,19 +1761,34 @@ pub fn build(
                         let along = rng.range(-1.4, 1.4) * 128.0;
                         let pos = point + perp * (offset * side) + dir * along;
                         let seed = rng.next_u32();
-                        place_tree(&tree_context, &mut sink, pos, seed, &mut tree_count);
+                        if rng.chance(0.30) {
+                            place_lane_prop(&tree_context, &mut sink, pos, seed, &mut prop_count);
+                        } else {
+                            place_tree(&tree_context, &mut sink, pos, seed, &mut tree_count);
+                        }
                         // Occasional cluster behind the first tree.
                         if rng.chance(0.10) {
                             let extra = point
                                 + perp * (rng.range(6.5, 12.0) * 128.0 * side)
                                 + dir * rng.range(-1.6, 1.6) * 128.0;
-                            place_tree(
-                                &tree_context,
-                                &mut sink,
-                                extra,
-                                rng.next_u32(),
-                                &mut tree_count,
-                            );
+                            let extra_seed = rng.next_u32();
+                            if rng.chance(0.30) {
+                                place_lane_prop(
+                                    &tree_context,
+                                    &mut sink,
+                                    extra,
+                                    extra_seed,
+                                    &mut prop_count,
+                                );
+                            } else {
+                                place_tree(
+                                    &tree_context,
+                                    &mut sink,
+                                    extra,
+                                    extra_seed,
+                                    &mut tree_count,
+                                );
+                            }
                         }
                     }
                     travelled += rng.range(380.0, 880.0);
@@ -1757,7 +1796,11 @@ pub fn build(
             }
         }
     }
-    tracing::info!("tree lines: {} trees", tree_count);
+    tracing::info!(
+        "tree lines: {} trees, {} boulders/bushes",
+        tree_count,
+        prop_count
+    );
 
     // ------------------------------------------------------------------
     // Castle wall ruins: broken OSRS walls and ruin clusters ring the
@@ -1826,6 +1869,15 @@ pub fn build(
         .unwrap_or(center);
     let player_spawn = find_walkable_spawn(&height, &collision, spawn_hint, &terrains)?;
     let npc_spawns = build_npc_spawns(&height, &collision, center, player_spawn, &terrains);
+    let ambient_spawns = build_ambient_spawns(
+        cache,
+        &height,
+        &collision,
+        &map,
+        &colors,
+        size,
+        (origin_tile_x, origin_tile_y),
+    );
 
     tracing::info!(
         "scene: {} regions, {} terrain verts, {} model verts, {} placements ({} ground decor), {} npcs, map {:?} lanes {:?}, center {:?}",
@@ -1875,6 +1927,7 @@ pub fn build(
         atmosphere: map.atmosphere.clone(),
         map,
         npc_spawns,
+        ambient_spawns,
         player_spawn,
     })
 }
@@ -2001,11 +2054,334 @@ fn build_npc_spawns(
     spawns
 }
 
+struct AmbientTemplate {
+    models: Vec<u32>,
+    idle_sequence: u32,
+    walk_sequence: u32,
+    scale: f32,
+    recolors: Vec<(i16, i16)>,
+}
+
+fn ambient_template(cache: &Cache, npc_id: u32, scale: f32) -> Option<AmbientTemplate> {
+    let data = cache.file(2, 9, npc_id).ok()?;
+    let def = NpcDefinition::parse(npc_id, &data).ok()?;
+    if def.models.is_empty() {
+        return None;
+    }
+    let models = def.models.clone();
+    let idle_sequence = u32::try_from(def.standing_animation).ok()?;
+    let walk_sequence = u32::try_from(def.walking_animation).unwrap_or(idle_sequence);
+    let recolors = def
+        .recolor_to_find
+        .iter()
+        .copied()
+        .zip(def.recolor_to_replace.iter().copied())
+        .collect();
+    Some(AmbientTemplate {
+        models,
+        idle_sequence,
+        walk_sequence,
+        scale,
+        recolors,
+    })
+}
+
+fn ground_color_at(
+    colors: &[[u8; 3]],
+    size: usize,
+    origin: (i32, i32),
+    x: f32,
+    z: f32,
+) -> Option<[u8; 3]> {
+    let gx = (x / 128.0 - origin.0 as f32).floor() as isize;
+    let gy = (z / 128.0 - origin.1 as f32).floor() as isize;
+    if gx < 0 || gy < 0 || gx >= size as isize || gy >= size as isize {
+        return None;
+    }
+    Some(colors[gy as usize * size + gx as usize])
+}
+
+fn ground_is_green(colors: &[[u8; 3]], size: usize, origin: (i32, i32), x: f32, z: f32) -> bool {
+    ground_color_at(colors, size, origin, x, z).is_some_and(|color| {
+        color[1] > color[0].saturating_add(6) && color[1] > color[2].saturating_add(6)
+    })
+}
+
+fn ground_is_land(colors: &[[u8; 3]], size: usize, origin: (i32, i32), x: f32, z: f32) -> bool {
+    ground_color_at(colors, size, origin, x, z)
+        .is_some_and(|color| color[2] <= color[1].saturating_add(8))
+}
+
+/// Butterflies across the natural ground and a slow herd of monkey-riding
+/// cows in the grass ring around the map edge.
+fn build_ambient_spawns(
+    cache: &Cache,
+    height: &HeightGrid,
+    collision: &WorldCollision,
+    map: &MapLayout,
+    colors: &[[u8; 3]],
+    size: usize,
+    origin: (i32, i32),
+) -> Vec<AmbientSpawn> {
+    const BUTTERFLY_NPCS: &[u32] = &[234, 235, 236, 237, 238, 1854, 1855, 3923];
+    const COW_NPC: u32 = 10598;
+
+    let butterflies = BUTTERFLY_NPCS
+        .iter()
+        .filter_map(|&npc_id| ambient_template(cache, npc_id, 5.0))
+        .collect::<Vec<_>>();
+    let cow = ambient_template(cache, COW_NPC, 1.7);
+
+    let mut rng = Rng::new(0xA3B1_7F2D_9C4E_51B7);
+    let mut spawns = Vec::new();
+    let mut butterfly_count = 0usize;
+    let butterfly_target = butterflies.len() * 5;
+    let mut butterfly_attempts = 0usize;
+    while butterfly_count < butterfly_target && butterfly_attempts < 12_000 {
+        butterfly_attempts += 1;
+        let tile_x = rng.range(5.0, size as f32 - 6.0);
+        let tile_y = rng.range(5.0, size as f32 - 6.0);
+        let x = (origin.0 as f32 + tile_x) * 128.0 + 64.0;
+        let z = (origin.1 as f32 + tile_y) * 128.0 + 64.0;
+        if !height.contains(x, z)
+            || !ground_is_green(colors, size, origin, x, z)
+            || !collision.is_walkable_world(x, z)
+            || map.distance_to_lane(x, z) < 1.5 * 128.0
+        {
+            continue;
+        }
+        let pos = Vec3::new(x, height.height_at(x, z), z);
+        if spawns
+            .iter()
+            .any(|spawn: &AmbientSpawn| spawn.pos.distance(pos) < 2.5 * 128.0)
+        {
+            continue;
+        }
+        let template = &butterflies[butterfly_count % butterflies.len()];
+        spawns.push(AmbientSpawn {
+            kind: AmbientKind::Butterfly,
+            model_id: template.models[0],
+            attachments: template.models[1..].to_vec(),
+            idle_sequence: template.idle_sequence,
+            walk_sequence: template.walk_sequence,
+            pos,
+            scale: template.scale,
+            recolors: template.recolors.clone(),
+        });
+        butterfly_count += 1;
+    }
+
+    // A few butterflies near each nexus guarantee the coloured variants are
+    // seen without hunting the whole map.
+    if !butterflies.is_empty() {
+        let mut bases = Vec::new();
+        for lane in &map.lanes {
+            for end in [lane.waypoints.first(), lane.waypoints.last()]
+                .into_iter()
+                .flatten()
+            {
+                if !bases
+                    .iter()
+                    .any(|base: &Vec3| base.distance(*end) < 8.0 * 128.0)
+                {
+                    bases.push(*end);
+                }
+            }
+        }
+        let mut placed = 0usize;
+        for base in bases {
+            let mut attempts = 0usize;
+            let mut here = 0usize;
+            while here < 4 && attempts < 120 {
+                attempts += 1;
+                let angle = (here as f32 / 4.0) * std::f32::consts::TAU + rng.range(-0.45, 0.45);
+                let radius = rng.range(6.0, 15.0) * 128.0;
+                let x = base.x + angle.cos() * radius;
+                let z = base.z + angle.sin() * radius;
+                if !height.contains(x, z)
+                    || !ground_is_green(colors, size, origin, x, z)
+                    || !collision.is_walkable_world(x, z)
+                    || map.distance_to_lane(x, z) < 2.0 * 128.0
+                {
+                    continue;
+                }
+                let pos = Vec3::new(x, height.height_at(x, z), z);
+                if spawns
+                    .iter()
+                    .any(|spawn: &AmbientSpawn| spawn.pos.distance(pos) < 4.0 * 128.0)
+                {
+                    continue;
+                }
+                let template = &butterflies[placed % butterflies.len()];
+                spawns.push(AmbientSpawn {
+                    kind: AmbientKind::Butterfly,
+                    model_id: template.models[0],
+                    attachments: template.models[1..].to_vec(),
+                    idle_sequence: template.idle_sequence,
+                    walk_sequence: template.walk_sequence,
+                    pos,
+                    scale: template.scale,
+                    recolors: template.recolors.clone(),
+                });
+                butterfly_count += 1;
+                placed += 1;
+                here += 1;
+            }
+        }
+    }
+
+    let mut cow_count = 0usize;
+    if let Some(template) = cow {
+        let min_x = origin.0 as f32 + 5.0;
+        let max_x = origin.0 as f32 + size as f32 - 6.0;
+        let min_y = origin.1 as f32 + 5.0;
+        let max_y = origin.1 as f32 + size as f32 - 6.0;
+        for side in 0..4 {
+            let mut placed = 0usize;
+            let mut attempts = 0usize;
+            while placed < 4 && attempts < 800 {
+                attempts += 1;
+                let depth = rng.range(5.0, 24.0);
+                let (tile_x, tile_y) = match side {
+                    0 => (rng.range(min_x + 3.0, max_x - 3.0), min_y + depth),
+                    1 => (rng.range(min_x + 3.0, max_x - 3.0), max_y - depth),
+                    2 => (min_x + depth, rng.range(min_y + 3.0, max_y - 3.0)),
+                    _ => (max_x - depth, rng.range(min_y + 3.0, max_y - 3.0)),
+                };
+                let x = tile_x * 128.0 + 64.0;
+                let z = tile_y * 128.0 + 64.0;
+                if !height.contains(x, z)
+                    || !ground_is_green(colors, size, origin, x, z)
+                    || !collision.is_walkable_world(x, z)
+                    || map.distance_to_lane(x, z) < 7.0 * 128.0
+                    || map.in_biome(tile_x as i32, tile_y as i32)
+                    || map
+                        .structures
+                        .iter()
+                        .any(|structure| structure.pos.distance(Vec3::new(x, 0.0, z)) < 6.0 * 128.0)
+                {
+                    continue;
+                }
+                let pos = Vec3::new(x, height.height_at(x, z), z);
+                if spawns.iter().any(|spawn| {
+                    spawn.kind == AmbientKind::Cow && spawn.pos.distance(pos) < 10.0 * 128.0
+                }) {
+                    continue;
+                }
+                spawns.push(AmbientSpawn {
+                    kind: AmbientKind::Cow,
+                    model_id: template.models[0],
+                    attachments: template.models[1..].to_vec(),
+                    idle_sequence: template.idle_sequence,
+                    walk_sequence: template.walk_sequence,
+                    pos,
+                    scale: template.scale,
+                    recolors: template.recolors.clone(),
+                });
+                placed += 1;
+                cow_count += 1;
+            }
+        }
+    }
+
+    let mut crab_count = 0usize;
+    if let (Some(template), Some(river)) = (ambient_template(cache, 1553, 2.0), &map.river) {
+        if river.points.len() >= 2 {
+            for pair in river.points.windows(2) {
+                let (ax, ay) = pair[0];
+                let (bx, by) = pair[1];
+                let dx = bx - ax;
+                let dy = by - ay;
+                let len = (dx * dx + dy * dy).sqrt().max(0.001);
+                let nx = -dy / len;
+                let ny = dx / len;
+                let steps = ((len / 4.0).ceil() as usize).max(1);
+                for step in 0..steps {
+                    if crab_count >= 28 {
+                        break;
+                    }
+                    let t = (step as f32 + 0.5) / steps as f32;
+                    let cx = ax + dx * t;
+                    let cy = ay + dy * t;
+                    for side in [-1.0f32, 1.0] {
+                        if rng.chance(0.45) {
+                            continue;
+                        }
+                        let offset = river.width + 1.6 + (step % 3) as f32 * 0.55;
+                        let tile_x = cx + nx * offset * side;
+                        let tile_y = cy + ny * offset * side;
+                        let x = tile_x * 128.0 + 64.0;
+                        let z = tile_y * 128.0 + 64.0;
+                        if !height.contains(x, z)
+                            || !ground_is_land(colors, size, origin, x, z)
+                            || !collision.is_walkable_world(x, z)
+                            || map.distance_to_lane(x, z) < 2.5 * 128.0
+                            || spawns.iter().any(|spawn: &AmbientSpawn| {
+                                spawn.kind == AmbientKind::Crab
+                                    && spawn.pos.distance(Vec3::new(x, 0.0, z)) < 2.5 * 128.0
+                            })
+                        {
+                            continue;
+                        }
+                        let pos = Vec3::new(x, height.height_at(x, z), z);
+                        spawns.push(AmbientSpawn {
+                            kind: AmbientKind::Crab,
+                            model_id: template.models[0],
+                            attachments: template.models[1..].to_vec(),
+                            idle_sequence: template.idle_sequence,
+                            walk_sequence: template.walk_sequence,
+                            pos,
+                            scale: template.scale,
+                            recolors: template.recolors.clone(),
+                        });
+                        crab_count += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    tracing::info!(
+        "ambient creatures: {} butterflies ({} variants, {} attempts), {} pasture cows, {} shore crabs",
+        butterfly_count,
+        butterflies.len(),
+        butterfly_attempts,
+        cow_count,
+        crab_count
+    );
+    spawns
+}
+
 fn is_scenery(def: &ObjectDefinition) -> bool {
     let name = def.name.to_lowercase();
+    // Palms and jungle trees use tall bare trunks that read as green pillars
+    // at MOBA scale. The lane bands use broadleaf trees, bushes, boulders and
+    // ruins instead.
+    if name.contains("palm") || name.contains("jungle") || name.contains("tropical tree") {
+        return false;
+    }
+    // Several cache revisions reuse bare stems, dead branches and palm
+    // models under generic "Tree" names. With a leaf hint those become solid
+    // green columns. Keep them only when the object is explicitly a dead
+    // tree (which is rendered with bark on every face).
+    // Stumps, logs and young cuttings are trunk-only meshes; tinting them
+    // with a leaf texture produces the tall green columns this pass removed.
+    if ["stump", "fallen", "hollow", "sapling", "log"]
+        .iter()
+        .any(|needle| name.contains(needle))
+    {
+        return false;
+    }
+    const BARE_TREE_MODELS: &[u32] = &[1605, 1621, 1681, 1682, 1683, 1687, 1701, 1702, 1715, 1716];
+    if !name.contains("dead")
+        && def
+            .models
+            .iter()
+            .any(|model| BARE_TREE_MODELS.contains(model))
+    {
+        return false;
+    }
     name.contains("tree")
-        || name.contains("palm")
-        || name.contains("jungle")
         || name.contains("plant")
         || name.contains("bush")
         || name.contains("fern")
@@ -2324,6 +2700,7 @@ fn is_pocket_scenery(def: &ObjectDefinition) -> bool {
     }
     ![
         "flower", "daisies", "grass", "fern", "plant", "weed", "herb", "sapling", "mushroom",
+        "palm", "jungle",
     ]
     .iter()
     .any(|needle| name.contains(needle))
@@ -2445,6 +2822,77 @@ fn place_ruin(
     *count += 1;
 }
 
+/// Larger thematic props that break up the tree line without bringing back
+/// the tall palm/jungle pillars: mossy boulders, low bushes and ferns.
+fn place_lane_prop(
+    ctx: &TreeContext<'_>,
+    sink: &mut ScenerySink<'_>,
+    pos: Vec3,
+    seed: u32,
+    count: &mut usize,
+) {
+    let tile_x = (pos.x / 128.0).floor() as i32;
+    let tile_y = (pos.z / 128.0).floor() as i32;
+    if !ctx.height.contains(pos.x, pos.z)
+        || ctx.structures.iter().any(|s| s.distance(pos) < 9.0 * 128.0)
+        || ctx.map.distance_to_lane(pos.x, pos.z) < 5.2 * 128.0
+        || ctx.map.in_biome(tile_x, tile_y)
+    {
+        return;
+    }
+    let gx = tile_x - ctx.origin.0;
+    let gy = tile_y - ctx.origin.1;
+    if ctx.river_blocked.contains(&(gx, gy)) {
+        return;
+    }
+
+    // Boulders use stone; bushes and ferns use foliage.
+    let props: &[(u32, bool)] = &[
+        (1669, true),
+        (1670, true),
+        (1671, true),
+        (1672, true),
+        (1773, false),
+        (1805, false),
+        (1391, false),
+    ];
+    let (model_id, leafy) = props[(seed as usize) % props.len()];
+    let model = if let Some(model) = sink.model_cache.get(&model_id) {
+        model
+    } else {
+        let Ok(group) = ctx.cache.group(7, model_id) else {
+            return;
+        };
+        let Ok(model) = Model::load(model_id, &group.data) else {
+            return;
+        };
+        sink.model_cache.insert(model_id, model);
+        sink.model_cache.get(&model_id).unwrap()
+    };
+    let base = Vec3::new(pos.x, ctx.height.height_at(pos.x, pos.z), pos.z);
+    let angle = hash01(seed ^ 0x7a3d_2b19) * std::f32::consts::TAU;
+    let scale = 0.75 + hash01(seed.wrapping_add(9)) * 0.45;
+    append_model_scaled_tinted(
+        sink.model_mesh,
+        model,
+        base,
+        angle,
+        scale,
+        if leafy {
+            [0.92, 1.0, 0.88]
+        } else {
+            [0.96, 0.94, 0.88]
+        },
+        pick_texture(if leafy { TEX_LEAVES } else { TEX_STONE }, seed),
+        false,
+    );
+    push_blob_quad(sink.shadow_mesh, base, 110.0 * scale, 0.2);
+    if !leafy {
+        sink.collision_grid.block_rect(gx, gy, 1, 1);
+    }
+    *count += 1;
+}
+
 /// Plant one OSRS tree model. Trees skirt the lanes, avoid structures and
 /// pockets, and tint themselves by the side of the river they stand on.
 fn place_tree(
@@ -2477,10 +2925,13 @@ fn place_tree(
     // Dire side gets dead and dark species, the radiant side keeps the lush
     // green canopy.
     let side = ctx.map.river_side(tile_x as f32, tile_y as f32);
+    // Only models with a real brown trunk and a full canopy belong in the
+    // lane tree line. The older pool mixed in bare tropical stems and dead
+    // trunks, which rendered as tall green pillars when given a leaf texture.
     let pool: &[u32] = if side < 0.0 {
-        &[1715, 1716, 1621, 1676, 1687, 1605, 1611, 1715]
+        &[1570, 1611, 1637, 1650, 1614]
     } else {
-        &[1570, 1637, 1681, 1683, 1611, 1605, 1676, 1637]
+        &[1570, 1637, 1611, 1650, 1614]
     };
     let model_id = pool[(seed as usize) % pool.len()];
     let model = if let Some(model) = sink.model_cache.get(&model_id) {
@@ -2501,9 +2952,9 @@ fn place_tree(
     let scale = TREE_LINE_SCALE_MIN
         + hash01(seed.wrapping_add(7)) * (TREE_LINE_SCALE_MAX - TREE_LINE_SCALE_MIN);
     let tint = if side < 0.0 {
-        [0.92f32, 0.82, 0.72]
+        [0.86f32, 0.84, 0.76]
     } else {
-        [1.0, 1.06, 0.92]
+        [0.78, 1.06, 0.94]
     };
     append_model_scaled_tinted(
         sink.model_mesh,
@@ -2854,17 +3305,18 @@ fn append_model_styled(
         let leaf_based = !wood_only
             && (dominant.is_some_and(|id| TEX_LEAVES.contains(&id))
                 || matches!(style, ModelStyle::Scenery { texture_hint, .. } if TEX_LEAVES.contains(&texture_hint)));
-        if leaf_based && model_height > 300.0 {
+        if leaf_based {
             let centroid = (pa + pb + pc) / 3.0;
             let top = (centroid.y - base.y) / model_height;
             let radial = Vec2::new(centroid.x - base.x, centroid.z - base.z).length();
             let trunk_radius =
                 (((bounds_max[0] - bounds_min[0]).max(bounds_max[2] - bounds_min[2])) as f32
                     * scale
-                    * 0.18)
-                    .max(24.0);
-            if top < 0.38 && radial < trunk_radius {
-                // Tree trunks and low stems are wood, not canopy.
+                    * 0.20)
+                    .max(28.0);
+            // Some broadleaf cache models carry their trunk almost to the
+            // crown; only the outer canopy should receive leaf texture.
+            if top < 0.85 && radial < trunk_radius {
                 texture_id = wood_hint;
             }
         }
@@ -2898,9 +3350,12 @@ fn append_model_styled(
         let mut va = SceneVertex::new(pa, normal, rgb);
         let mut vb = SceneVertex::new(pb, normal, rgb);
         let mut vc = SceneVertex::new(pc, normal, rgb);
-        va.material = 5;
-        vb.material = 5;
-        vc.material = 5;
+        // Material 7 = static cache-textured scenery. It samples textures and
+        // lighting but does not receive the coarse static shadow proxies, which
+        // otherwise paint box-shaped self-shadow patches across tree canopies.
+        va.material = 7;
+        vb.material = 7;
+        vc.material = 7;
         va.texture_id = texture_id;
         vb.texture_id = texture_id;
         vc.texture_id = texture_id;

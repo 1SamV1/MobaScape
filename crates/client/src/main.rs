@@ -6,6 +6,7 @@ mod hud;
 mod items;
 mod minimap;
 mod model_textures;
+mod motion;
 mod portraits;
 mod renderer;
 mod scene;
@@ -62,6 +63,12 @@ struct Cli {
     /// Champion config name (monkey, jad, kree). Skips the hero-select screen.
     #[arg(long)]
     champion: Option<String>,
+    /// Override King Awowogei's walk torso side movement (0..1) for tuning.
+    #[arg(long)]
+    walk_sway: Option<f32>,
+    /// Override King Awowogei's walk arm movement (0..1) for tuning.
+    #[arg(long)]
+    walk_arm: Option<f32>,
     /// Start directly in the match with the default champion.
     #[arg(long)]
     skip_hero_select: bool,
@@ -74,6 +81,10 @@ struct Cli {
     /// Demo: auto-target a dummy and fire Q to verify combat.
     #[arg(long)]
     demo_combat: bool,
+    /// Demo: loop through King Awowogei's idle, walk, turn-around, stop and
+    /// attack animations with a close camera.
+    #[arg(long)]
+    demo_anim: bool,
     /// Demo: teleport to a jungle camp, attack it, and verify the buff.
     #[arg(long)]
     demo_camp: bool,
@@ -136,8 +147,13 @@ fn main() -> Result<()> {
         cli.region_x,
         cli.region_y
     );
-    let champions = ChampionConfig::load_all()?;
-    let selected_champion = match cli.champion.as_deref() {
+    let mut champions = ChampionConfig::load_all()?;
+    let requested_champion = if cli.demo_anim {
+        Some("monkey")
+    } else {
+        cli.champion.as_deref()
+    };
+    let selected_champion = match requested_champion {
         Some(name) => champions
             .iter()
             .position(|champion| {
@@ -149,6 +165,12 @@ fn main() -> Result<()> {
             .position(|champion| champion.id == "monkey")
             .unwrap_or(0),
     };
+    if let Some(value) = cli.walk_sway {
+        champions[selected_champion].walk_sway = value.clamp(0.0, 1.0);
+    }
+    if let Some(value) = cli.walk_arm {
+        champions[selected_champion].walk_arm = value.clamp(0.0, 1.0);
+    }
     let champion = champions[selected_champion].clone();
     let hero_select_open = cli.champion.is_none() && !cli.skip_hero_select && !has_demo_flags(&cli);
     let shop = ItemShop::load()?;
@@ -163,6 +185,14 @@ fn main() -> Result<()> {
         let point = Vec3::new(x, height.height_at(x, z), z);
         animated.teleport_player(point);
         tracing::info!("spawned hero at tile {},{}", spawn[0], spawn[1]);
+    } else if cli.demo_anim {
+        // A quiet stretch of the radiant lane; friendly base behind it and
+        // enough room for the east/west walk and turn drills.
+        let x = 2748.5 * 128.0;
+        let z = 3010.5 * 128.0;
+        let point = Vec3::new(x, height.height_at(x, z), z);
+        animated.teleport_player(point);
+        tracing::info!("animation demo: spawned hero at tile 2748,3010");
     }
     tracing::info!(
         "scene ready: {} placements, {} animated units",
@@ -184,7 +214,12 @@ fn main() -> Result<()> {
     let mut ui_atlas = ui_assets::UiAtlas::load()?;
     if hero_select_open {
         for champion in &champions {
-            match portraits::bake_portrait(&cache, champion.model, champion.idle) {
+            match portraits::bake_portrait(
+                &cache,
+                champion.model,
+                &champion.attachments,
+                champion.idle,
+            ) {
                 Ok(image) => ui_atlas.add_hero_portrait(&champion.id, &image),
                 Err(err) => tracing::warn!("hero portrait {}: {err:#}", champion.id),
             }
@@ -214,6 +249,10 @@ fn main() -> Result<()> {
         demo_target,
         demo_timer: 0.0,
         demo_combat: cli.demo_combat,
+        demo_anim: cli.demo_anim,
+        demo_anim_timer: 0.0,
+        demo_anim_stage: 0,
+        demo_anim_targeted: false,
         demo_camp: cli.demo_camp,
         demo_watchtower: cli.demo_watchtower,
         demo_watchtower_timer: 0.0,
@@ -292,6 +331,10 @@ struct App {
     demo_target: Option<(f32, f32)>,
     demo_timer: f32,
     demo_combat: bool,
+    demo_anim: bool,
+    demo_anim_timer: f32,
+    demo_anim_stage: u8,
+    demo_anim_targeted: bool,
     demo_camp: bool,
     demo_watchtower: bool,
     demo_watchtower_timer: f32,
@@ -390,9 +433,16 @@ impl ApplicationHandler for App {
         };
 
         self.scene = Some(scene);
-        renderer.camera.distance = self.initial_distance;
+        renderer.camera.distance = if self.demo_anim {
+            780.0
+        } else {
+            self.initial_distance
+        };
         if let Some(pitch) = self.initial_pitch {
             renderer.camera.pitch = pitch;
+        }
+        if self.demo_anim {
+            renderer.camera.pitch = 0.52;
         }
         if self.hero_select.open {
             window.set_title("Rift - Choose Your Hero");
@@ -1052,12 +1102,51 @@ impl App {
                 }
             }
 
-            if steering {
+            if self.demo_anim {
+                self.demo_anim_timer += dt;
+                let stage = self.demo_anim_stage;
+                match stage {
+                    1 => animated.steer_player(Vec3::X),
+                    2 => animated.steer_player(-Vec3::X),
+                    4 if !self.demo_anim_targeted => {
+                        if let Some(index) = animated
+                            .units
+                            .iter()
+                            .position(|unit| unit.kind == UnitKind::Dummy && unit.health > 0.0)
+                        {
+                            animated.set_attack_target(index, collision, height);
+                        }
+                        self.demo_anim_targeted = true;
+                    }
+                    _ => {}
+                }
+                const STAGE_SECONDS: [f32; 5] = [1.4, 1.6, 1.6, 1.0, 2.6];
+                if self.demo_anim_timer >= STAGE_SECONDS[stage as usize] {
+                    self.demo_anim_timer = 0.0;
+                    self.demo_anim_stage = (stage + 1) % STAGE_SECONDS.len() as u8;
+                    self.demo_anim_targeted = false;
+                    if matches!(self.demo_anim_stage, 0 | 3) {
+                        animated.clear_player_orders();
+                    }
+                    const LABELS: [&str; 5] = [
+                        "idle",
+                        "walk east",
+                        "turn and walk west",
+                        "coast to stop",
+                        "attack dummy",
+                    ];
+                    let label = LABELS[self.demo_anim_stage as usize];
+                    log_event(&mut self.event_log, format!("ANIM DEMO: {label}"));
+                    tracing::info!("animation demo: stage {} ({label})", self.demo_anim_stage);
+                }
+            }
+
+            if steering && !self.demo_anim {
                 if let Some(point) =
                     renderer.pick_ground(self.mouse_pos.0, self.mouse_pos.1, height)
                 {
                     let dir = point - animated.player_pos();
-                    animated.steer_player(dir, dt, height, collision);
+                    animated.steer_player(dir);
                 }
             }
             if let Some((tx, ty)) = self.demo_target {
@@ -1448,7 +1537,14 @@ impl App {
 
         if let (Some(renderer), Some(animated)) = (self.renderer.as_mut(), self.animated.as_ref()) {
             renderer.camera.target = animated.player_pos() + Vec3::Y * 140.0;
-            renderer.camera.distance = self.initial_distance;
+            renderer.camera.distance = if self.demo_anim {
+                780.0
+            } else {
+                self.initial_distance
+            };
+            if self.demo_anim {
+                renderer.camera.pitch = 0.52;
+            }
             renderer.update_camera();
         }
         if let Some(window) = self.window.as_ref() {
@@ -1758,6 +1854,7 @@ fn has_demo_flags(cli: &Cli) -> bool {
     cli.demo_target.is_some()
         || cli.spawn.is_some()
         || cli.demo_combat
+        || cli.demo_anim
         || cli.demo_camp
         || cli.demo_watchtower
         || cli.demo_delivery

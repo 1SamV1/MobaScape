@@ -17,5 +17,7 @@
   "r_damage": 150,
   "e_heal": 100,
   "e_shield": 160,
-  "w_distance": 640
+  "w_distance": 640,
+  "weight": 90,
+  "attack_windup": 0.5
 }
