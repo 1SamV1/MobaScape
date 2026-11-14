@@ -240,17 +240,25 @@ fn albedo(input: VsOut) -> vec3<f32> {
         let dirt = textureSample(terrain_textures, terrain_sampler, uv, 1).rgb;
         let stone = textureSample(terrain_textures, terrain_sampler, uv, 2).rgb;
         let sand = textureSample(terrain_textures, terrain_sampler, uv, 3).rgb;
-        let water = textureSample(terrain_textures, terrain_sampler, uv, 4).rgb;
+        // No water-layer sample: the river water mesh covers these tiles.
+        // A flat deep-water tint is enough underneath and saves one texture
+        // fetch for every terrain fragment on the map.
+        let water = vec3<f32>(0.018, 0.060, 0.105);
 
         // Classify in display space: linear values compress saturation and
         // make grass look like stone.
         let d = pow(max(c, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.2));
-        let green = max(d.g - d.r, 0.0) + max(d.g - d.b, 0.0);
+        let green = max(d.g - d.r, 0.0) * 2.2 + max(d.g - d.b, 0.0);
         let brown = max(d.r - d.g, 0.0) * 2.0 + max(d.g - d.b, 0.0) * 0.15;
         let blue = max(d.b - d.g, 0.0) * 2.0 + max(d.b - d.r, 0.0);
         let sat = max(max(d.r, d.g), d.b) - min(min(d.r, d.g), d.b);
+        // Green ground must never inherit the cobblestone layer just because
+        // the cache underlay is slightly desaturated. Stone is only allowed
+        // when the colour is genuinely grey/white.
+        let green_dominance = smoothstep(0.015, 0.11, green);
         let gray = (1.0 - smoothstep(0.05, 0.25, sat))
-            * (1.0 - smoothstep(0.12, 0.30, d.r - d.b));
+            * (1.0 - smoothstep(0.12, 0.30, d.r - d.b))
+            * (1.0 - green_dominance);
         let sandy = max(d.r - d.b, 0.0) * max(d.g - d.b, 0.0) * 4.0;
         let total = max(green + brown + blue + gray + sandy, 0.0001);
         var tex = grass * (green / total)
