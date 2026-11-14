@@ -12,6 +12,8 @@ use crate::scene::{Atmosphere, HeightGrid, MeshData, SceneData, SceneVertex, srg
 use crate::terrain_textures::TerrainTextures;
 use crate::ui_assets::UiAtlas;
 
+const MSAA_SAMPLES: u32 = 4;
+
 #[repr(C)]
 #[derive(Copy, Clone, Default, bytemuck::Pod, bytemuck::Zeroable)]
 struct GpuLight {
@@ -164,6 +166,7 @@ pub struct Renderer {
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     scene_pipeline: wgpu::RenderPipeline,
+    water_pipeline: wgpu::RenderPipeline,
     hud_pipeline: wgpu::RenderPipeline,
     hud_bind_group: wgpu::BindGroup,
     _ui_texture: wgpu::Texture,
@@ -178,6 +181,8 @@ pub struct Renderer {
     _post_sampler: wgpu::Sampler,
     scene_color_view: wgpu::TextureView,
     _scene_color_texture: wgpu::Texture,
+    scene_msaa_view: wgpu::TextureView,
+    _scene_msaa_texture: wgpu::Texture,
     bloom_bright_pipeline: wgpu::RenderPipeline,
     bloom_blur_pipeline: wgpu::RenderPipeline,
     bloom_bright_bind_group_layout: wgpu::BindGroupLayout,
@@ -207,7 +212,9 @@ pub struct Renderer {
     depth_view: wgpu::TextureView,
     terrain: GpuMesh,
     models: GpuMesh,
+    water: GpuMesh,
     static_shadows: GpuMesh,
+    static_casters: GpuMesh,
     caster_vertex_buffer: wgpu::Buffer,
     caster_index_buffer: wgpu::Buffer,
     caster_vertex_capacity: usize,
@@ -689,7 +696,57 @@ impl Renderer {
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
-            multisample: wgpu::MultisampleState::default(),
+            multisample: wgpu::MultisampleState {
+                count: MSAA_SAMPLES,
+                ..Default::default()
+            },
+            multiview_mask: None,
+            cache: None,
+        });
+
+        let water_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("water pipeline"),
+            layout: Some(&scene_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &scene_shader,
+                entry_point: Some("vs"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                buffers: &[Some(wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<SceneVertex>() as wgpu::BufferAddress,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &SCENE_ATTRS,
+                })],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &scene_shader,
+                entry_point: Some("fs"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: scene_format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                unclipped_depth: false,
+                conservative: false,
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::Less),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState {
+                count: MSAA_SAMPLES,
+                ..Default::default()
+            },
             multiview_mask: None,
             cache: None,
         });
@@ -765,13 +822,7 @@ impl Renderer {
                 unclipped_depth: false,
                 conservative: false,
             },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: Some(false),
-                depth_compare: Some(wgpu::CompareFunction::Always),
-                stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
-            }),
+            depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
             multiview_mask: None,
             cache: None,
@@ -812,7 +863,10 @@ impl Renderer {
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
-            multisample: wgpu::MultisampleState::default(),
+            multisample: wgpu::MultisampleState {
+                count: MSAA_SAMPLES,
+                ..Default::default()
+            },
             multiview_mask: None,
             cache: None,
         });
@@ -860,7 +914,10 @@ impl Renderer {
                     clamp: 0.0,
                 },
             }),
-            multisample: wgpu::MultisampleState::default(),
+            multisample: wgpu::MultisampleState {
+                count: MSAA_SAMPLES,
+                ..Default::default()
+            },
             multiview_mask: None,
             cache: None,
         });
@@ -995,6 +1052,8 @@ impl Renderer {
         let bloom_sampler = create_post_sampler(&device);
         let (scene_color_texture, scene_color_view) =
             create_hdr_target(&device, width, height, "hdr scene");
+        let (scene_msaa_texture, scene_msaa_view) =
+            create_msaa_target(&device, width, height, "hdr scene msaa");
         let (bloom_half_texture, bloom_half_view) =
             create_hdr_target(&device, 640, 360, "bloom half");
         let (bloom_temp_texture, bloom_temp_view) =
@@ -1080,7 +1139,9 @@ impl Renderer {
         let depth_view = create_depth_view(&device, width, height);
         let terrain = GpuMesh::upload(&device, &scene.terrain, "terrain");
         let models = GpuMesh::upload(&device, &scene.models, "models");
+        let water = GpuMesh::upload(&device, &scene.water, "water");
         let static_shadows = GpuMesh::upload(&device, &scene.shadows, "static shadows");
+        let static_casters = GpuMesh::upload(&device, &scene.shadow_casters, "static casters");
 
         let dynamic_vertex_capacity = 1024;
         let dynamic_index_capacity = 3072;
@@ -1148,6 +1209,7 @@ impl Renderer {
             queue,
             config,
             scene_pipeline,
+            water_pipeline,
             hud_pipeline,
             hud_bind_group,
             _ui_texture: ui_texture,
@@ -1162,6 +1224,8 @@ impl Renderer {
             _post_sampler: post_sampler,
             scene_color_view,
             _scene_color_texture: scene_color_texture,
+            scene_msaa_view,
+            _scene_msaa_texture: scene_msaa_texture,
             bloom_bright_pipeline,
             bloom_blur_pipeline,
             bloom_bright_bind_group_layout,
@@ -1191,7 +1255,9 @@ impl Renderer {
             depth_view,
             terrain,
             models,
+            water,
             static_shadows,
+            static_casters,
             caster_vertex_buffer,
             caster_index_buffer,
             caster_vertex_capacity,
@@ -1232,6 +1298,10 @@ impl Renderer {
         let (texture, view) = create_hdr_target(&self.device, width, height, "hdr scene");
         self._scene_color_texture = texture;
         self.scene_color_view = view;
+        let (msaa_texture, msaa_view) =
+            create_msaa_target(&self.device, width, height, "hdr scene msaa");
+        self._scene_msaa_texture = msaa_texture;
+        self.scene_msaa_view = msaa_view;
         self.bloom_bright_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("bloom bright bind group"),
             layout: &self.bloom_bright_bind_group_layout,
@@ -1586,9 +1656,17 @@ impl Renderer {
             });
             shadow_pass.set_pipeline(&self.shadow_pipeline);
             shadow_pass.set_bind_group(0, &self.shadow_bind_group, &[]);
-            // Static scenery is expensive to re-render into a camera-relative
-            // shadow map every frame; keep blob shadows for it and use the
-            // shadow map for dynamic units until static shadow caching lands.
+            // Large static props (trees, ruins, pocket buildings) cast into
+            // the same camera-relative map as units. Decorations stay on blob
+            // shadows because their contribution is invisible at this scale.
+            if self.static_casters.index_count > 0 {
+                shadow_pass.set_vertex_buffer(0, self.static_casters.vertex_buffer.slice(..));
+                shadow_pass.set_index_buffer(
+                    self.static_casters.index_buffer.slice(..),
+                    wgpu::IndexFormat::Uint32,
+                );
+                shadow_pass.draw_indexed(0..self.static_casters.index_count, 0, 0..1);
+            }
             if self.caster_index_count > 0 {
                 shadow_pass.set_vertex_buffer(0, self.caster_vertex_buffer.slice(..));
                 shadow_pass.set_index_buffer(
@@ -1603,9 +1681,9 @@ impl Renderer {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("scene pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &self.scene_color_view,
+                    view: &self.scene_msaa_view,
                     depth_slice: None,
-                    resolve_target: None,
+                    resolve_target: Some(&self.scene_color_view),
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
                             r: 0.58,
@@ -1613,7 +1691,7 @@ impl Renderer {
                             b: 0.82,
                             a: 1.0,
                         }),
-                        store: wgpu::StoreOp::Store,
+                        store: wgpu::StoreOp::Discard,
                     },
                 })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
@@ -1642,6 +1720,15 @@ impl Renderer {
                 pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
                 pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
                 pass.draw_indexed(0..mesh.index_count, 0, 0..1);
+            }
+            if self.water.index_count > 0 {
+                pass.set_pipeline(&self.water_pipeline);
+                pass.set_bind_group(0, &self.bind_group, &[]);
+                pass.set_vertex_buffer(0, self.water.vertex_buffer.slice(..));
+                pass.set_index_buffer(self.water.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..self.water.index_count, 0, 0..1);
+                pass.set_pipeline(&self.scene_pipeline);
+                pass.set_bind_group(0, &self.bind_group, &[]);
             }
             if self.dynamic_index_count > 0 {
                 pass.set_vertex_buffer(0, self.dynamic_vertex_buffer.slice(..));
@@ -1773,14 +1860,7 @@ impl Renderer {
                         store: wgpu::StoreOp::Store,
                     },
                 })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &self.depth_view,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    }),
-                    stencil_ops: None,
-                }),
+                depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
                 multiview_mask: None,
@@ -1833,6 +1913,30 @@ fn create_hdr_target(
         dimension: wgpu::TextureDimension::D2,
         format: wgpu::TextureFormat::Rgba16Float,
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    (texture, view)
+}
+
+fn create_msaa_target(
+    device: &wgpu::Device,
+    width: u32,
+    height: u32,
+    label: &str,
+) -> (wgpu::Texture, wgpu::TextureView) {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some(label),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: MSAA_SAMPLES,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba16Float,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
         view_formats: &[],
     });
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -1930,7 +2034,7 @@ fn create_depth_view(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Te
             depth_or_array_layers: 1,
         },
         mip_level_count: 1,
-        sample_count: 1,
+        sample_count: MSAA_SAMPLES,
         dimension: wgpu::TextureDimension::D2,
         format: wgpu::TextureFormat::Depth32Float,
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,

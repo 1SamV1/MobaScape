@@ -121,9 +121,9 @@ fn resize_texture(source: &RgbaImage) -> RgbaImage {
     }
     for pixel in image.pixels_mut() {
         if pixel[3] <= 8 {
-            *pixel = Rgba([avg[0], avg[1], avg[2], 255]);
-        } else {
-            pixel[3] = 255;
+            // Keep the cut-out transparent but fill its RGB with the average
+            // colour so filtered edges do not darken toward black.
+            *pixel = Rgba([avg[0], avg[1], avg[2], 0]);
         }
     }
     image

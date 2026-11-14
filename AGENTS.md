@@ -178,11 +178,15 @@ Cache location: `.cache/osrs-235/cache` by default. Pass `--cache` and
   lights. Model faces sample cache-native textures from index 9/8 with per-face
   planar UVs and nearest filtering.
 - **M5.1 shadows**: a 1024px sun shadow map covers 60x60 tiles around the
-  camera with PCF. Player, towers, inhibitors, nexuses, and camps are dynamic
-  casters; static scenery uses blob shadows. The map updates every other frame
-  and can be toggled with `--shadows off|blob|map`. Terrain and model vertices
-  carry baked contact AO. Full screen-space SSAO, HD water, MSAA, and
-  draw-distance streaming are not implemented yet.
+  camera with PCF. Player, towers, inhibitors, nexuses, camps, and large static
+  props are casters; small ground decor still uses blob shadows. The map
+  updates every other frame and can be toggled with
+  `--shadows off|blob|map`. Terrain and model vertices carry baked contact AO.
+  Full screen-space SSAO and draw-distance streaming are not implemented yet.
+- **M5.21 presentation**: walkable river with a blended HD water surface
+  (animated ripples, fresnel, sun specular), 4x MSAA resolved before post/bloom,
+  static sun casters, cache model textures, red/wider jungle-camp bars, and
+  camera-offset unit bars to prevent depth flicker.
 - `--graphics classic` preserves a flat baseline; `--debug-view albedo|normal|
   lighting|fog|lights|shadow|ao` helps tune the renderer.
 - **UI pass**: the Fountain Shop is a centered OSRS-style window with category
@@ -223,8 +227,8 @@ Cache location: `.cache/osrs-235/cache` by default. Pass `--cache` and
   Terrain is **not** cache-native per-tile texture blending yet; ground-layer
   decoding and anisotropic blending remain M5.3b.
 - M5.4 currently ships an offscreen post pass with FXAA, cheap bloom, color
-  grading, and dithering. MSAA, full SSAO, and chunked draw-distance/LOD are
-  still pending. The post pass samples the scene with corrected NDC UVs and the
+  grading, and dithering. Full SSAO, anisotropic filtering, and chunked
+  draw-distance/LOD are still pending. The post pass samples the scene with corrected NDC UVs and the
   HUD is rendered after post so text/icons stay crisp.
 - LZMA groups are implemented but not exercised by the pinned cache.
 - Config archives use real file IDs from the reference table; keep it that way.

@@ -1,6 +1,6 @@
 # Status
 
-Last updated: M5.20 cache model textures + 117HD ground language, 2026-11-13.
+Last updated: M5.21 HD water + MSAA + static sun shadows, 2026-11-14.
 
 ## Working
 
@@ -134,7 +134,8 @@ Last updated: M5.20 cache model textures + 117HD ground language, 2026-11-13.
   - Sun + hemispheric ambient lighting, optional 4-band stepping.
   - Sky gradient, procedural clouds, sun disk/glow, horizon haze.
   - Exponential height fog and ground haze.
-  - Static scenery blob shadows + per-unit blob shadows.
+  - Static scenery blob shadows + per-unit blob shadows, plus a static
+    sun-shadow caster mesh for trees, ruins and pocket buildings.
   - Up to 16 dynamic point lights: fountain, Q muzzle/impact, E/R effects,
     projectiles.
   - **Sun shadow map**: 1024px depth map, 60x60-tile orthographic frustum, PCF
@@ -170,6 +171,16 @@ Last updated: M5.20 cache model textures + 117HD ground language, 2026-11-13.
 - Model textures: 208 cache texture sprites uploaded to a 256-layer array;
   textured faces sample native leaf/wood/stone/flower art instead of flat
   fallbacks, with wood tree bases below the leaf canopy.
+- Water: 9,712-triangle river surface with two animated ripple layers,
+  fresnel sky reflection, sun specular and fog. Water is walkable and no longer
+  an invisible collision wall.
+- MSAA: the HDR scene target is 4x multisampled and resolves into the post/bloom
+  chain; HUD remains single-sample and crisp.
+- Static shadows: trees, ruins and pocket buildings cast into the 1024px sun
+  shadow map alongside units.
+- Combat presentation: jungle camp health slashed, critter camps are 150 HP /
+  9 damage, camp bars are red and wider, and unit bars are pulled toward the
+  camera to stop depth flicker while moving.
 - Lane road: dirt-dominant, noise-warped 310-unit UVs remove the repeating
   cobble border while keeping the cache path sprite as a low-weight accent.
 - Fog run: visible enemies 7–13; dark fog mesh over unseen tiles.
@@ -178,13 +189,15 @@ Last updated: M5.20 cache model textures + 117HD ground language, 2026-11-13.
 
 ## Known issues
 
-- 117HD Core has **no HD water, MSAA, full SSAO, or draw-distance streaming**
-  yet. Terrain still uses pre-baked ground sprites in `assets/osrs-ground`
-  rather than cache-native ground-layer blending. Model texture sampling is in.
+- 117HD Core now has cache model textures, an HD river surface, 4x MSAA and
+  static sun casters. It still has **no full SSAO, anisotropic filtering, or
+  draw-distance streaming**. Terrain still uses pre-baked ground sprites in
+  `assets/osrs-ground` rather than cache-native ground-layer blending.
 - The post bloom is a cheap 8-tap screen-space glow, not a full HDR bloom chain.
-- Draw-distance streaming/LOD is still pending; the map remains a 3×3 block.
-- The shadow map covers dynamic units/structures/camps only; static scenery
-  still uses blob shadows. Static shadow caching/chunked casters are pending.
+- Draw-distance streaming/LOD is still pending; the map remains a 5×5 block.
+- The shadow map covers dynamic units/structures/camps and large static props;
+  small ground decorations still use cheap blob shadows. Chunked caster/LOD
+  caching is pending.
 - The shadow map is 1024px and updates every other frame; fast camera movement
   can show slight shadow lag.
 - The 3×3 region block edge is still visible at low camera pitch. A distant
@@ -213,8 +226,8 @@ Last updated: M5.20 cache model textures + 117HD ground language, 2026-11-13.
 1. **M5.2 117HD Water**: water mesh, fresnel, sky reflection, specular, caustics.
 2. **M5.3b ground blending**: cache-native terrain layers, per-tile texture
    IDs, anisotropic filtering, and alpha-tested foliage cut-outs.
-3. **M5.4b post + draw distance**: full SSAO, MSAA, proper HDR bloom,
-   chunked streaming/LOD, model batching.
+3. **M5.4b post + draw distance**: full SSAO, anisotropic texture filtering,
+   chunked streaming/LOD, and model batching.
 4. Static scenery shadow caching/chunked casters.
 5. Item selling/combining/passives and five champions with distinct kits.
 6. Server-authoritative fog, economy, and shop transactions.
@@ -251,6 +264,16 @@ Last updated: M5.20 cache model textures + 117HD ground language, 2026-11-13.
 - Model textures: 208 cache texture sprites uploaded to a 256-layer array;
   textured faces sample native leaf/wood/stone/flower art instead of flat
   fallbacks, with wood tree bases below the leaf canopy.
+- Water: 9,712-triangle river surface with two animated ripple layers,
+  fresnel sky reflection, sun specular and fog. Water is walkable and no longer
+  an invisible collision wall.
+- MSAA: the HDR scene target is 4x multisampled and resolves into the post/bloom
+  chain; HUD remains single-sample and crisp.
+- Static shadows: trees, ruins and pocket buildings cast into the 1024px sun
+  shadow map alongside units.
+- Combat presentation: jungle camp health slashed, critter camps are 150 HP /
+  9 damage, camp bars are red and wider, and unit bars are pulled toward the
+  camera to stop depth flicker while moving.
 - Lane road: dirt-dominant, noise-warped 310-unit UVs remove the repeating
   cobble border while keeping the cache path sprite as a low-weight accent.
 - Fog run: visible enemies 7–13; dark fog mesh over unseen tiles.

@@ -163,26 +163,71 @@ fn is_leaf_texture(id: u32) -> bool {
     return id == 8u || id == 28u || id == 30u || id == 41u || id == 60u;
 }
 
-fn sample_model_texture(input: VsOut) -> vec3<f32> {
+fn sample_model_texture(input: VsOut) -> vec4<f32> {
     // Textured faces carry a per-face planar UV generated on the CPU. This
     // follows the OSRS texture-plane idea and avoids the smeared triplanar
     // look on large cone/roof triangles.
-    let tex = textureSampleGrad(
+    let sampled = textureSampleGrad(
         model_textures, model_sampler, input.uv, input.texture_id, dpdx(input.uv), dpdy(input.uv)
-    ).rgb;
+    );
     // Cache foliage palettes are very dark in linear light. Lift leaves much
     // harder than wood/stone so canopies read like OSRS rather than black
     // silhouettes.
     if (is_leaf_texture(input.texture_id)) {
-        return pow(max(tex, vec3<f32>(0.0)), vec3<f32>(0.62)) * 1.75;
+        return vec4<f32>(
+            pow(max(sampled.rgb, vec3<f32>(0.0)), vec3<f32>(0.62)) * 1.75,
+            sampled.a
+        );
     }
-    return pow(max(tex, vec3<f32>(0.0)), vec3<f32>(0.88)) * 1.18;
+    return vec4<f32>(
+        pow(max(sampled.rgb, vec3<f32>(0.0)), vec3<f32>(0.88)) * 1.18,
+        sampled.a
+    );
+}
+
+fn water_surface(input: VsOut) -> vec4<f32> {
+    let time = scene.tuning.z;
+    let flow = vec2<f32>(time * 0.035, time * 0.018);
+    let uv_a = input.world.xz / 220.0 + flow;
+    let uv_b = input.world.zx / 170.0 - flow * 0.8;
+    let water_a = textureSample(terrain_textures, terrain_sampler, uv_a, 4).rgb;
+    let water_b = textureSample(terrain_textures, terrain_sampler, uv_b, 4).rgb;
+    let water_tex = mix(water_a, water_b, 0.45);
+
+    // Small analytic ripples keep the surface alive without another normal
+    // map. The amplitude is deliberately low so the river still reads as a
+    // flat OSRS water plane from the MOBA camera.
+    let ripple = vec3<f32>(
+        sin(input.world.x * 0.045 + time * 1.1) * 0.075
+            + sin(input.world.z * 0.12 - time * 0.9) * 0.035,
+        1.0,
+        cos(input.world.z * 0.055 - time * 0.8) * 0.06
+            + sin(input.world.x * 0.09 + time * 1.3) * 0.03
+    );
+    let N = normalize(ripple);
+    let V = normalize(scene.camera_pos.xyz - input.world);
+    let L = normalize(scene.sun_dir.xyz);
+    let fresnel = pow(1.0 - max(dot(N, V), 0.0), 3.0);
+    let sun = pow(max(dot(reflect(-L, N), V), 0.0), 96.0);
+    let sky = mix(scene.sky_horizon.rgb, scene.sky_top.rgb, 0.30);
+    let deep = mix(vec3<f32>(0.028, 0.105, 0.155), water_tex * 0.68, 0.62);
+    var color = mix(deep, sky, fresnel * 0.80);
+    color += scene.sun_color.rgb * sun * 0.85;
+
+    let fog = fog_factor(input);
+    color = mix(color, scene.fog_color.rgb, fog * 0.82);
+    let alpha = clamp(input.color.a * (0.52 + fresnel * 0.48), 0.0, 0.92);
+    return vec4<f32>(color, alpha);
 }
 
 fn albedo(input: VsOut) -> vec3<f32> {
     var c = input.color.rgb;
     if (input.material == 5u) {
-        return sample_model_texture(input) * input.color.rgb;
+        let tex = sample_model_texture(input);
+        if (is_leaf_texture(input.texture_id) && tex.a < 0.35) {
+            discard;
+        }
+        return tex.rgb * input.color.rgb;
     }
     if (input.material == 4u) {
         // Stable world-space planar UVs. Scaling UVs by the fragment normal
@@ -292,6 +337,11 @@ fn fs(input: VsOut) -> @location(0) vec4<f32> {
     }
     if (debug_view == 7u) {
         return vec4<f32>(vec3<f32>(input.ao), 1.0);
+    }
+
+    // River water is a blended surface with its own fresnel/ripple shading.
+    if (input.material == 6u) {
+        return water_surface(input);
     }
 
     // Unlit geometry: fog-of-war, world-space bars, rings, and markers.

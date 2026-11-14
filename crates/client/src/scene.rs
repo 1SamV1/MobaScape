@@ -23,7 +23,7 @@ const RUIN_SCALE_MAX: f32 = 1.85;
 /// Small cache objects scattered over the grass: flowers, ferns, mushrooms,
 /// loose rocks, twigs, roots and stumps. 117HD's ground is dense with these,
 /// and they do most of the work in making a flat texture field feel natural.
-const DECOR_LIMIT: usize = 1200;
+const DECOR_LIMIT: usize = 800;
 const DECOR_LANE_CLEAR: f32 = 2.6 * 128.0;
 const DECOR_STRUCTURE_CLEAR: f32 = 2.2 * 128.0;
 /// Cache decorations that are a single untextured plane or a placeholder cube
@@ -753,7 +753,9 @@ pub struct NpcSpawn {
 pub struct SceneData {
     pub terrain: MeshData,
     pub models: MeshData,
+    pub water: MeshData,
     pub shadows: MeshData,
+    pub shadow_casters: MeshData,
     pub placements: usize,
     pub height: HeightGrid,
     pub collision: WorldCollision,
@@ -948,6 +950,8 @@ pub fn build(
     // half and a dire half, with a walkable crossing in the centre.
     // ------------------------------------------------------------------
     let mut river_blocked: Vec<(i32, i32)> = Vec::new();
+    let mut water_mask = vec![0.0f32; size * size];
+    let mut water_level = vec![0.0f32; size * size];
     if let Some(river) = &map.river {
         let points = &river.points;
         if points.len() >= 2 {
@@ -1000,6 +1004,10 @@ pub fn build(
                         river.depth
                     };
                     let idx = gy * size + gx;
+                    if !bridge {
+                        water_mask[idx] = water_mask[idx].max(k);
+                        water_level[idx] = level;
+                    }
                     let bed = (level - depth).min(heights[idx]);
                     heights[idx] = heights[idx] * (1.0 - k) + bed * k;
                     let water = [40u8, 84, 126];
@@ -1135,6 +1143,92 @@ pub fn build(
         }
     }
 
+    // ------------------------------------------------------------------
+    // River water surface. The terrain carves the bed and keeps the water
+    // colour; this mesh draws the actual reflective sheet on top. It is a
+    // separate blended draw so the shader can do fresnel, sky reflection and
+    // animated ripples without changing the opaque terrain path.
+    // ------------------------------------------------------------------
+    let mut water_mesh = MeshData::new();
+    for gy in 0..size - 1 {
+        for gx in 0..size - 1 {
+            let i00 = gy * size + gx;
+            let i10 = i00 + 1;
+            let i01 = i00 + size;
+            let i11 = i01 + 1;
+            let masks = [
+                water_mask[i00],
+                water_mask[i10],
+                water_mask[i01],
+                water_mask[i11],
+            ];
+            let max_mask = masks.iter().copied().fold(0.0f32, f32::max);
+            if max_mask < 0.03 {
+                continue;
+            }
+            let mut level_sum = 0.0;
+            let mut level_count = 0.0;
+            for (index, mask) in [i00, i10, i01, i11].iter().zip(masks) {
+                if mask > 0.001 {
+                    level_sum += water_level[*index];
+                    level_count += 1.0;
+                }
+            }
+            let fallback = if level_count > 0.0 {
+                level_sum / level_count
+            } else {
+                continue;
+            };
+            let level_at = |index: usize, mask: f32| {
+                if mask > 0.001 {
+                    water_level[index]
+                } else {
+                    fallback
+                }
+            };
+            let x0 = (origin_tile_x + gx as i32) as f32 * 128.0;
+            let z0 = (origin_tile_y + gy as i32) as f32 * 128.0;
+            let x1 = x0 + 128.0;
+            let z1 = z0 + 128.0;
+            let opacity = |mask: f32| (smoothstep(0.0, 0.35, mask) * 0.88).clamp(0.0, 0.88);
+            let mut v00 = SceneVertex::new(
+                Vec3::new(x0, level_at(i00, masks[0]), z0),
+                Vec3::Y,
+                [255, 255, 255],
+            );
+            let mut v10 = SceneVertex::new(
+                Vec3::new(x1, level_at(i10, masks[1]), z0),
+                Vec3::Y,
+                [255, 255, 255],
+            );
+            let mut v01 = SceneVertex::new(
+                Vec3::new(x0, level_at(i01, masks[2]), z1),
+                Vec3::Y,
+                [255, 255, 255],
+            );
+            let mut v11 = SceneVertex::new(
+                Vec3::new(x1, level_at(i11, masks[3]), z1),
+                Vec3::Y,
+                [255, 255, 255],
+            );
+            v00.color[3] = opacity(masks[0]);
+            v10.color[3] = opacity(masks[1]);
+            v01.color[3] = opacity(masks[2]);
+            v11.color[3] = opacity(masks[3]);
+            v00.material = 6;
+            v10.material = 6;
+            v01.material = 6;
+            v11.material = 6;
+            water_mesh.push_triangle(v00, v01, v10);
+            water_mesh.push_triangle(v10, v01, v11);
+        }
+    }
+    tracing::info!(
+        "water surface: {} verts, {} tris",
+        water_mesh.vertices.len(),
+        water_mesh.indices.len() / 3
+    );
+
     let height = HeightGrid {
         origin_tile_x,
         origin_tile_y,
@@ -1156,31 +1250,13 @@ pub fn build(
         }
     }
 
-    // Collision: water and blocking scenery footprints. This is deliberately
-    // conservative; the editor will replace it with authored collision later.
+    // Collision: blocking scenery footprints only. Water is traversable by
+    // design: heroes and lane units wade through the shallow river and ponds
+    // instead of treating every shoreline as an invisible wall.
     let tiles_x = ((max_x - min_x + 1) * 64) as usize;
     let tiles_y = ((max_y - min_y + 1) * 64) as usize;
     let mut collision_grid = Grid::new(tiles_x, tiles_y);
     let mut sight_grid = Grid::new(tiles_x, tiles_y);
-    for ((rx, ry), terrain) in &terrains {
-        for ty in 0..64 {
-            for tx in 0..64 {
-                let tile = terrain.tile(0, tx, ty);
-                if tile.underlay_id == 0 {
-                    let gx = (*rx as i32 * 64 + tx as i32) - origin_tile_x;
-                    let gy = (*ry as i32 * 64 + ty as i32) - origin_tile_y;
-                    collision_grid.set_blocked(gx, gy, true);
-                }
-            }
-        }
-    }
-
-    for (gx, gy) in &pocket_water {
-        collision_grid.set_blocked(*gx, *gy, true);
-    }
-    for (gx, gy) in &river_blocked {
-        collision_grid.set_blocked(*gx, *gy, true);
-    }
 
     // Collision is only added for objects that are actually rendered, so the
     // player never walks into an invisible wall from one of the thousands of
@@ -1266,6 +1342,7 @@ pub fn build(
 
     let mut model_mesh = MeshData::new();
     let mut shadow_mesh = MeshData::new();
+    let mut shadow_caster_mesh = MeshData::new();
     let mut model_cache: HashMap<u32, Model> = HashMap::new();
     let mut placements = 0usize;
     let mut decor_placements = 0usize;
@@ -1285,6 +1362,16 @@ pub fn build(
             continue;
         };
         if !is_scenery(&def) {
+            continue;
+        }
+        let gx = rx as i32 * 64 + loc.x as i32 - origin_tile_x;
+        let gy = ry as i32 * 64 + loc.y as i32 - origin_tile_y;
+        if gx >= 0
+            && gy >= 0
+            && (gx as usize) < size
+            && (gy as usize) < size
+            && water_mask[gy as usize * size + gx as usize] > 0.03
+        {
             continue;
         }
         let Some(model_id) = def.first_model() else {
@@ -1307,6 +1394,13 @@ pub fn build(
             [1.0, 1.0, 1.0],
             scenery_texture_hint(&def, is_plant_object(&def)),
         );
+        append_model_caster(
+            &mut shadow_caster_mesh,
+            model,
+            base,
+            angle,
+            NATURAL_SCENERY_SCALE,
+        );
         let shadow_size =
             (def.size_x.max(def.size_y) as f32 * 128.0 * 0.55 * NATURAL_SCENERY_SCALE)
                 .clamp(70.0, 440.0);
@@ -1326,9 +1420,9 @@ pub fn build(
 
     // ------------------------------------------------------------------
     // Ground decoration: the cache's flower beds, ferns, grass tufts,
-    // mushrooms, loose rocks, twigs, roots and stumps. These are rendered
-    // without collision or sight blocking, and the budget is sorted by
-    // distance to a lane so the detail follows the player.
+    // mushrooms, loose rocks and twigs. These are rendered without collision
+    // or sight blocking, and the budget is sorted by distance to a lane so
+    // the detail follows the player.
     // ------------------------------------------------------------------
     for (_, rx, ry, loc, kind, model_id) in decor_candidates {
         if decor_placements >= DECOR_LIMIT {
@@ -1341,7 +1435,17 @@ pub fn build(
         if tile.underlay_id == 0 {
             continue;
         }
+        let gx = rx as i32 * 64 + loc.x as i32 - origin_tile_x;
+        let gy = ry as i32 * 64 + loc.y as i32 - origin_tile_y;
+        if gx < 0 || gy < 0 || gx as usize >= size || gy as usize >= size {
+            continue;
+        }
+        if water_mask[gy as usize * size + gx as usize] > 0.03 {
+            continue;
+        }
         let model = cached_model(cache, &mut model_cache, model_id)?;
+        let (model_min, model_max) = model.bounds();
+        let raw_height = (model_max[1] - model_min[1]).max(0) as f32;
         let wx = ((rx as f32 * 64.0) + loc.x as f32 + 0.5) * 128.0;
         let wz = ((ry as f32 * 64.0) + loc.y as f32 + 0.5) * 128.0;
         let base = Vec3::new(wx, height.height_at(wx, wz), wz);
@@ -1351,6 +1455,9 @@ pub fn build(
             .wrapping_add((loc.x as u32) << 16)
             .wrapping_add(loc.y as u32);
         let scale = 0.9 + hash01(seed) * 0.5;
+        if raw_height * scale > 150.0 {
+            continue;
+        }
         let angle = loc.rotation as f32 * std::f32::consts::FRAC_PI_2;
         append_ground_decor(&mut model_mesh, model, base, angle, scale, kind, seed);
         let shadow = kind.shadow_size() * scale;
@@ -1464,6 +1571,13 @@ pub fn build(
                 biome.tint,
                 scenery_texture_hint(def, is_plant_object(def)),
             );
+            append_model_caster(
+                &mut shadow_caster_mesh,
+                model,
+                base,
+                angle,
+                POCKET_SCENERY_SCALE,
+            );
             let shadow_size =
                 (def.size_x.max(def.size_y) as f32 * 128.0 * 0.55 * POCKET_SCENERY_SCALE)
                     .clamp(65.0, 420.0);
@@ -1521,6 +1635,7 @@ pub fn build(
             model_cache: &mut model_cache,
             model_mesh: &mut model_mesh,
             shadow_mesh: &mut shadow_mesh,
+            shadow_caster_mesh: &mut shadow_caster_mesh,
             collision_grid: &mut collision_grid,
         };
         for lane in &map.lanes {
@@ -1543,13 +1658,13 @@ pub fn build(
                         if rng.chance(0.12) {
                             continue;
                         }
-                        let offset = rng.range(4.9, 9.8) * 128.0;
-                        let along = rng.range(-1.1, 1.1) * 128.0;
+                        let offset = rng.range(5.4, 10.5) * 128.0;
+                        let along = rng.range(-1.4, 1.4) * 128.0;
                         let pos = point + perp * (offset * side) + dir * along;
                         let seed = rng.next_u32();
                         place_tree(&tree_context, &mut sink, pos, seed, &mut tree_count);
                         // Occasional cluster behind the first tree.
-                        if rng.chance(0.24) {
+                        if rng.chance(0.10) {
                             let extra = point
                                 + perp * (rng.range(6.5, 12.0) * 128.0 * side)
                                 + dir * rng.range(-1.6, 1.6) * 128.0;
@@ -1562,7 +1677,7 @@ pub fn build(
                             );
                         }
                     }
-                    travelled += rng.range(170.0, 470.0);
+                    travelled += rng.range(380.0, 880.0);
                 }
             }
         }
@@ -1580,6 +1695,7 @@ pub fn build(
             model_cache: &mut model_cache,
             model_mesh: &mut model_mesh,
             shadow_mesh: &mut shadow_mesh,
+            shadow_caster_mesh: &mut shadow_caster_mesh,
             collision_grid: &mut collision_grid,
         };
         for (lane_index, lane) in map.lanes.iter().enumerate() {
@@ -1675,7 +1791,9 @@ pub fn build(
     Ok(SceneData {
         terrain: terrain_mesh,
         models: model_mesh,
+        water: water_mesh,
         shadows: shadow_mesh,
+        shadow_casters: shadow_caster_mesh,
         placements,
         height,
         collision,
@@ -1840,8 +1958,6 @@ enum GroundDecor {
     Mushroom,
     Rock,
     Twig,
-    Root,
-    Stump,
     Plant,
 }
 
@@ -1886,12 +2002,6 @@ impl GroundDecor {
         if name.contains("twig") || name.contains("branch") {
             return Some(Self::Twig);
         }
-        if name.contains("root") {
-            return Some(Self::Root);
-        }
-        if name.contains("stump") || name.contains("log") {
-            return Some(Self::Stump);
-        }
         if name.contains("rock") || name.contains("boulder") || name.contains("stone") {
             return Some(Self::Rock);
         }
@@ -1906,14 +2016,14 @@ impl GroundDecor {
         {
             return Some(Self::Plant);
         }
+        // Roots and stumps are left to the full scenery pass; they are too
+        // large and structural for the low ground-cover layer.
         None
     }
 
     fn shadow_size(self) -> f32 {
         match self {
             Self::Rock => 62.0,
-            Self::Root => 52.0,
-            Self::Stump => 48.0,
             Self::Mushroom => 26.0,
             _ => 0.0,
         }
@@ -2166,6 +2276,7 @@ struct ScenerySink<'a> {
     model_cache: &'a mut HashMap<u32, Model>,
     model_mesh: &'a mut MeshData,
     shadow_mesh: &'a mut MeshData,
+    shadow_caster_mesh: &'a mut MeshData,
     collision_grid: &'a mut Grid,
 }
 
@@ -2239,6 +2350,7 @@ fn place_ruin(
         [0.92, 0.9, 0.86],
         pick_texture(TEX_STONE, seed),
     );
+    append_model_caster(sink.shadow_caster_mesh, model, base, angle, scale);
     push_blob_quad(
         sink.shadow_mesh,
         base,
@@ -2285,7 +2397,7 @@ fn place_tree(
     let pool: &[u32] = if side < 0.0 {
         &[1715, 1716, 1621, 1676, 1687, 1605, 1611, 1715]
     } else {
-        &[1570, 1637, 1681, 1683, 1611, 1611, 1611, 1605, 1676]
+        &[1570, 1637, 1681, 1683, 1611, 1605, 1676, 1637]
     };
     let model_id = pool[(seed as usize) % pool.len()];
     let model = if let Some(model) = sink.model_cache.get(&model_id) {
@@ -2319,6 +2431,7 @@ fn place_tree(
         tint,
         pick_texture(TEX_LEAVES, seed),
     );
+    append_model_caster(sink.shadow_caster_mesh, model, base, angle, scale);
     push_blob_quad(
         sink.shadow_mesh,
         base,
@@ -2409,7 +2522,7 @@ fn decor_texture_hint(kind: GroundDecor, seed: u32) -> u32 {
             pick_texture(TEX_LEAVES, seed)
         }
         GroundDecor::Rock => pick_texture(TEX_STONE, seed),
-        GroundDecor::Twig | GroundDecor::Root | GroundDecor::Stump => pick_texture(TEX_WOOD, seed),
+        GroundDecor::Twig => pick_texture(TEX_WOOD, seed),
     }
 }
 
@@ -2467,6 +2580,24 @@ fn append_ground_decor(
         scale,
         ModelStyle::Decor { kind, seed },
     );
+}
+
+/// Position-only copy of a static prop for the sun shadow map. Colours, UVs
+/// and materials are irrelevant to the depth pass, so this avoids re-running
+/// the texture/colour work for every caster triangle.
+fn append_model_caster(mesh: &mut MeshData, model: &Model, base: Vec3, angle: f32, scale: f32) {
+    let rot = Mat3::from_rotation_y(angle);
+    for &[a, b, c] in &model.faces {
+        let pa = model_vertex_scaled(model, a as usize, base, rot, scale);
+        let pb = model_vertex_scaled(model, b as usize, base, rot, scale);
+        let pc = model_vertex_scaled(model, c as usize, base, rot, scale);
+        let normal = (pb - pa).cross(pc - pa).normalize_or_zero();
+        mesh.push_triangle(
+            SceneVertex::new(pa, normal, [0, 0, 0]),
+            SceneVertex::new(pb, normal, [0, 0, 0]),
+            SceneVertex::new(pc, normal, [0, 0, 0]),
+        );
+    }
 }
 
 fn append_model_styled(
